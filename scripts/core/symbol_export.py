@@ -35,9 +35,11 @@ REPO_DIR   = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
 
 # Default-generated names carry no information -- drop them from every output.
+# Checked against BOTH the leaf and the full (namespaced) name, so a label like
+# ``switchD_1402aa534::switchdataD_...`` is caught via its namespace root.
 _NOISE_PREFIXES = (
     "FUN_", "thunk_FUN_", "sub_", "LAB_", "DAT_", "UNK_", "SUB_",
-    "switchD_", "caseD_", "u_", "s_",  # auto string/switch labels
+    "switchD_", "switchdataD_", "caseD_", "PTR_", "u_", "s_", "j_",
 )
 
 
@@ -118,18 +120,19 @@ def collect(program, want_sigs=False):
             continue
         if sym.getSource() == SourceType.DEFAULT:
             continue
-        name = sym.getName()
-        if _is_noise(name):
+        leaf = sym.getName()
+        full = sym.getName(True)
+        if _is_noise(leaf) or _is_noise(full):
             continue
         rva = rva_of(sym.getAddress())
         if rva is None or rva < 0:
             continue
-        key = (rva, name)
+        key = (rva, full)
         if key in seen:
             continue
         seen.add(key)
-        labels.append({"rva": rva, "name": sym.getName(True),
-                       "kind": _classify_label(name)})
+        labels.append({"rva": rva, "name": full,
+                       "kind": _classify_label(leaf)})
 
     functions.sort(key=lambda e: e["rva"])
     labels.sort(key=lambda e: e["rva"])
