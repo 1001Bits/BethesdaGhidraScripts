@@ -130,6 +130,47 @@ def write_addrlib_csv(
             fh.write(f"{sid},{id_to_rva[sid]:x}\n")
 
 
+def write_versionlib_bin_v5(
+    path: str,
+    id_to_rva: Dict[int, int],
+    version_tuple,
+    *,
+    ptr_size: int = 8,
+    name: str = "",
+) -> None:
+    """Write a meh321 **V5** Starfield versionlib .bin (drop-in for the loader).
+
+    Layout (see commonlibsf/address_library.py:_parse_bytes)::
+        fmt        u32 == 5
+        version[4] 4 x u32
+        name       char[64] zero-padded
+        ptr_size   u64
+        addr_count u32                 (= max_id + 1)
+        entries    u32[addr_count]      indexed by id, value = rva (0 = absent)
+
+    The flat array makes this efficient only for dense id spaces -- Starfield's
+    ids run 0..~1.1M, so a function-only versionlib is a few MB.  Ids absent
+    from ``id_to_rva`` are written as 0 (no mapping), which is exactly how a
+    function-only versionlib should present data/global ids it can't port.
+    """
+    import struct
+    vt = tuple(version_tuple)
+    if len(vt) != 4:
+        raise ValueError("version_tuple must be 4 ints (got %r)" % (vt,))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    addr_count = (max(id_to_rva) + 1) if id_to_rva else 0
+    arr = bytearray(addr_count * 4)
+    for sid, rva in id_to_rva.items():
+        struct.pack_into("<I", arr, sid * 4, rva & 0xFFFFFFFF)
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<I", 5))
+        fh.write(struct.pack("<4I", *vt))
+        fh.write(name.encode("utf-8")[:64].ljust(64, b"\x00"))
+        fh.write(struct.pack("<Q", ptr_size))
+        fh.write(struct.pack("<I", addr_count))
+        fh.write(arr)
+
+
 def load_for_roundtrip(path: str) -> Dict[int, int]:
     """Parse an emitted CSV back to {id: rva}, mirroring the loaders' rules.
 
