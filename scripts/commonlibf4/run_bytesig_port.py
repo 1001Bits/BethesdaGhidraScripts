@@ -43,6 +43,8 @@ sys.path.insert(0, str(_PROJECT_DIR / "scripts" / "core"))
 import ast
 from bytesig_port import load_pe_text, build_prefix_index, port_symbols  # noqa: E402
 from steamless     import ensure_unpacked                                # noqa: E402
+from addrlib_emit  import build_name_to_id, join_ids, write_addrlib_csv  # noqa: E402
+from address_library import F4AddressLibrary                             # noqa: E402
 
 
 _JSON_LOADS_RE = re.compile(r"^_json(?:_sym)?\.loads\((.+)\)$")
@@ -216,6 +218,74 @@ def _merge_into_script(target: str, target_rva_key: str,
 
 TARGET_TO_RVA_KEY = {"og": "og", "ng": "ng", "vr": "v", "221": "221", "ae": "a"}
 
+# --- Address-library emit (item ①) ------------------------------------------
+# The byte-sig port resolves (name -> target_rva); re-attaching the source
+# AE/NG address-library ID can emit an id,offset file -- but ONLY where the
+# target shares the source's ID namespace.
+#
+# EMPIRICAL (cross-check vs the official bins): OG (1.10.163) uses a DISJOINT
+# id namespace from AE -- OG ids run 0..1.58M, AE ids run 15..8.7M, and every
+# AE-derived id resolves to ZERO OG-bin entries.  So an AE-id-keyed OG file is
+# meaningless to an OG consumer, exactly like VR.  Only NG/AE/221 share AE's
+# namespace, and those already ship official bins, so an emit there is valid
+# but redundant.  Net: F4 has no address library this usefully produces -- the
+# emitter's real home is Starfield future-patch versionlibs (consistent 1.16.x
+# namespace, no official bin).  This wiring stays as the validated harness +
+# correctness cross-check; it refuses the disjoint F4 targets by default.
+ADDRLIB_DIR        = _PROJECT_DIR / "addresslibrary" / "f4"
+TARGET_TO_VERSION  = {"og": "1-10-163-0", "ng": "1-10-984-0",
+                      "ae": "1-11-191-0", "221": "1-11-221-0", "vr": "1-2-72-0"}
+_SHARED_NS_TARGETS = {"ng", "ae", "221"}  # OG + VR are disjoint (verified empirically)
+
+
+def _emit_addrlib_supplement(tgt, ported, name_to_id, ambiguous,
+                             allow_disjoint=False):
+    """Emit an ``id,offset`` supplement CSV for `tgt` from the byte-sig pairs.
+
+    Cross-checks against meh321's official bin (if shipped): overlapping IDs
+    must agree -- that validates the byte-sig chain -- and the remainder is the
+    net-new supplement (IDs meh hasn't published for this build).
+    """
+    if tgt not in _SHARED_NS_TARGETS and not allow_disjoint:
+        print(f"  [addrlib] {tgt.upper()}: disjoint ID namespace -- refusing to "
+              f"emit (pass --allow-disjoint-namespace to override).")
+        return
+    id_to_rva, stats = join_ids(ported, name_to_id, ambiguous)
+    if not id_to_rva:
+        print(f"  [addrlib] {tgt.upper()}: no id-keyed pairs to emit.")
+        return
+    ver = TARGET_TO_VERSION.get(tgt, tgt)
+
+    overlap = match = mismatch = 0
+    official = F4AddressLibrary().load_bin(str(ADDRLIB_DIR / f"version-{ver}.bin"))
+    if official:
+        for sid, rva in id_to_rva.items():
+            off = official.get(sid)
+            if off is None:
+                continue
+            overlap += 1
+            if off == rva:
+                match += 1
+            else:
+                mismatch += 1
+    net_new = len(id_to_rva) - overlap
+
+    out = ADDRLIB_DIR / f"version-{ver}-supplement.csv"
+    write_addrlib_csv(str(out), id_to_rva, version_label=ver,
+                      note=f"bytesig-supplement net-new={net_new}")
+    print(f"  [addrlib] {tgt.upper()}: emitted {len(id_to_rva):,} ids "
+          f"(joined {stats['joined']}, no-id {stats['dropped_no_id']}, "
+          f"ambig {stats['dropped_ambiguous']}, conflict {stats['dropped_conflict']})")
+    if official:
+        rate = 100.0 * match / overlap if overlap else 0.0
+        print(f"  [addrlib] {tgt.upper()}: vs official bin -- overlap {overlap:,}, "
+              f"match {match:,} ({rate:.1f}%), MISMATCH {mismatch:,}, "
+              f"NET-NEW {net_new:,}")
+        if overlap > 50 and mismatch > overlap * 0.02:
+            print(f"  [addrlib] WARNING: >2% mismatch -- byte-sig port may be "
+                  f"placing some functions at wrong addresses; inspect before use.")
+    print(f"  [addrlib] wrote {out}")
+
 
 _F4_221_PDB_PUBLICS = (
     _PROJECT_DIR / "scripts" / "commonlibf4" / "refs" / "f4_221_pdb_publics.txt")
@@ -263,7 +333,8 @@ def _load_f4_221_pdb_names() -> dict[str, int]:
     return out
 
 
-def run(targets: list[str]) -> None:
+def run(targets: list[str], emit_addrlib: bool = False,
+        allow_disjoint: bool = False) -> None:
     print("=== Fallout 4 cross-version byte-signature port ===")
 
     # Source binary preference: AE first (has IDA fallback names), then NG
@@ -295,6 +366,20 @@ def run(targets: list[str]) -> None:
             name_to_src_rva.setdefault(n, rva)
 
     print(f"  Source name pool: {len(name_to_src_rva):,} unique")
+
+    # For --emit-addrlib: build name->id from the source SYMBOLS (only CommonLib
+    # entries carry address-library IDs; IDA/PDB names don't and are dropped).
+    name_to_id: dict[str, int] = {}
+    ambiguous: set[str] = set()
+    if emit_addrlib:
+        _src_script = GENERATED_DIR / f"CommonLibImport_F4_{src_ver.upper()}.py"
+        src_symbols = ((_extract_symbols_array(
+            _src_script.read_text(encoding="utf-8"), "SYMBOLS")
+            if _src_script.is_file() else None) or [])
+        name_to_id, ambiguous = build_name_to_id(src_symbols)
+        print(f"  [addrlib] source name->id: {len(name_to_id):,} "
+              f"({len(ambiguous)} ambiguous names dropped)")
+
     print(f"  Loading source binary: {src_path}")
     _, src_text_rva, src_text = load_pe_text(str(src_path))
     print(f"    .text RVA={src_text_rva:#x} size={len(src_text):,}")
@@ -348,6 +433,9 @@ def run(targets: list[str]) -> None:
 
         rva_key = TARGET_TO_RVA_KEY[tgt]
         _merge_into_script(tgt, rva_key, ported)
+        if emit_addrlib:
+            _emit_addrlib_supplement(tgt, ported, name_to_id, ambiguous,
+                                     allow_disjoint)
 
     # --- 1.11.221 PDB-public source pass ---
     # The Bethesda debug PDB ships ~22k demangled publics for 1.11.221.
@@ -414,13 +502,18 @@ def run(targets: list[str]) -> None:
 
 
 def main() -> None:
-    args = [a.lower() for a in sys.argv[1:]] or ["og", "ng", "vr", "221"]
+    raw = list(sys.argv[1:])
+    emit_addrlib   = "--emit-addrlib" in raw
+    allow_disjoint = "--allow-disjoint-namespace" in raw
+    args = [a.lower() for a in raw if not a.startswith("--")] or \
+        ["og", "ng", "vr", "221"]
     bad = [a for a in args if a not in ("og", "ng", "ae", "vr", "221")]
     if bad:
         print(f"Unknown target(s): {bad}")
-        print("Usage: python run_bytesig_port.py [og] [ng] [vr] [221]")
+        print("Usage: python run_bytesig_port.py [og] [ng] [vr] [221] "
+              "[--emit-addrlib] [--allow-disjoint-namespace]")
         sys.exit(2)
-    run(args)
+    run(args, emit_addrlib=emit_addrlib, allow_disjoint=allow_disjoint)
 
 
 if __name__ == "__main__":

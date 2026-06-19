@@ -630,6 +630,7 @@ MENU_ITEMS = [
     ("7", "Full rebuild (generate + import all)"),
     ("8", "Clean Ghidra project (start fresh)"),
     ("9", "Enrich an existing Ghidra project (RTTI vtable pipeline)"),
+    ("10", "Export symbols from an enriched project (JSON / .map / x64dbg)"),
     ("q", "Quit"),
 ]
 
@@ -871,6 +872,98 @@ def _enrich_menu():
     # and the main import pass would do the job).  Off by default since
     # it rewrites existing names.
     _offer_vtable_reconciler(pdir, pname, program_path)
+
+
+def _export_menu():
+    """Submenu: pick a Ghidra project + program, export its symbols to
+    distributable formats (JSON map, plain .map, x64dbg .dd64).
+
+    Light alternative to generating a PDB: serializes the names / data labels
+    / vtables an enriched program already carries, for loading into x64dbg,
+    Cheat Engine, or other tools.  READ-ONLY against the project.
+    """
+    projects = _discover_ghidra_projects()
+    if not projects:
+        print("  No Ghidra projects discovered.")
+        return
+
+    print()
+    print("-" * 60)
+    print("  Export symbols from an enriched Ghidra project")
+    print("-" * 60)
+    print("  Discovered Ghidra projects:")
+    for i, (label, _, _) in enumerate(projects, 1):
+        print(f"    {i}) {label}")
+    print("    b) Back")
+    print("-" * 60)
+    try:
+        sel = input("\n  project > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if sel == "b" or not sel.isdigit():
+        return
+    idx = int(sel)
+    if not (1 <= idx <= len(projects)):
+        print("  Invalid choice.")
+        return
+    label, pdir, pname = projects[idx - 1]
+    print(f"\n  Opening {label} to list programs ...")
+    result = _list_programs_in_project(pdir, pname)
+    if isinstance(result, dict) and result.get("locked"):
+        print(f"\n  Project {label!r} is locked — close Ghidra and retry.")
+        print(f"  Reason: {result['locked']}")
+        input("  Press Enter to return to main menu ... ")
+        return
+    if result is None:
+        print(f"\n  Could not open project {label!r}.  See error above.")
+        input("  Press Enter to return to main menu ... ")
+        return
+    programs = result
+    if not programs:
+        print("  No programs in project.")
+        input("  Press Enter to return to main menu ... ")
+        return
+
+    print()
+    print("-" * 60)
+    print(f"  Programs in {label}")
+    print("-" * 60)
+    for i, (path, _) in enumerate(programs, 1):
+        print(f"    {i:>3}) {path}")
+    print("    b) Back")
+    print("-" * 60)
+    try:
+        sel = input("\n  program > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if sel == "b" or not sel.isdigit():
+        return
+    pidx = int(sel)
+    if not (1 <= pidx <= len(programs)):
+        print("  Invalid choice.")
+        return
+    program_path, _ = programs[pidx - 1]
+
+    default_out = str(Path(__file__).resolve().parent / "symbols")
+    try:
+        out_dir = input(f"\n  output dir [{default_out}] > ").strip() or default_out
+        sig_ans = input("  include function prototypes? (slower) (y/N) > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not _wait_for_unlock(pdir, pname, "symbol export"):
+        return
+    args = [sys.executable,
+            str(SCRIPTS_DIR / "core" / "symbol_export.py"),
+            pdir, pname, program_path, out_dir]
+    if sig_ans == "y":
+        args.append("--signatures")
+    _header(f"Symbol export: {label} {program_path}")
+    subprocess.run(args, check=False)
+    input("\n  Press Enter to return to main menu ... ")
 
 
 def _infer_commonlib_script(program_name):
@@ -1179,6 +1272,8 @@ def _run_menu():
             clean_project()
         elif choice == "9":
             _enrich_menu()
+        elif choice == "10":
+            _export_menu()
         else:
             print("  Invalid choice.")
             continue
