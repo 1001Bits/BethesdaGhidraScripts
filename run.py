@@ -41,7 +41,6 @@ STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases
 LLVM_RELEASES_URL      = "https://api.github.com/repos/llvm/llvm-project/releases/latest"
 
 REQUIRED_PACKAGES = {
-    "pdbparse": "pdbparse",
     "pyghidra": "pyghidra",
     # capstone + numpy are only consumed by scripts/commonlibf4/run_bytesig_port.py
     # for the masked-retry pass that wildcards rel32 / rip-rel operands on
@@ -49,6 +48,16 @@ REQUIRED_PACKAGES = {
     # works for exact 32-byte matches; masked Pass 2 is skipped with a notice.
     "capstone": "capstone",
     "numpy":    "numpy",
+}
+
+# Best-effort only -- NEVER fatal.  pdbparse depends on an old `construct` that
+# does `import imp`, a module removed in Python 3.12+, so it fails to build on
+# modern Python (ModuleNotFoundError: No module named 'imp').  The PDB scripts
+# (pdb_symbols.py / pdb_publics_skyrim.py) guard the import and fall back to an
+# llvm-pdbutil `pretty --externals` dump, so pdbparse is a pure enhancement for
+# Python <= 3.11 and must not block setup on newer interpreters.
+OPTIONAL_PACKAGES = {
+    "pdbparse": "pdbparse",
 }
 
 
@@ -237,6 +246,20 @@ def check_prerequisites():
         print(f"  Installing: {', '.join(missing)} ...")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--quiet", *missing])
+
+    # Optional packages: attempt, but never abort setup if the build fails
+    # (e.g. pdbparse on Python 3.12+ -- it pulls in `construct`/`imp`).
+    for imp, pkg in OPTIONAL_PACKAGES.items():
+        if _can_import(imp):
+            continue
+        print(f"  Installing optional: {pkg} ...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", pkg])
+        except subprocess.CalledProcessError:
+            print(f"  NOTE: optional '{pkg}' could not be installed on this "
+                  f"Python ({sys.version.split()[0]}); the pipeline falls back "
+                  f"to llvm-pdbutil, so this is safe to ignore.")
     print("  Python packages: OK")
 
 
