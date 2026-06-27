@@ -188,6 +188,51 @@ def write_outputs(out_dir, module, image_base, functions, labels):
     return json_path, map_path, dd_path
 
 
+def collect_segments(program, image_base):
+    """PE sections as FakePDB ``Segment`` dicts (rva-relative)."""
+    default_space = program.getAddressFactory().getDefaultAddressSpace()
+    bitness = program.getDefaultPointerSize() * 8
+    segs = []
+    for b in program.getMemory().getBlocks():
+        start = b.getStart()
+        if start.getAddressSpace() != default_space:
+            continue
+        rva_start = start.getOffset() - image_base
+        rva_end = b.getEnd().getOffset() - image_base + 1
+        if rva_start < 0:
+            continue
+        perm = (("r" if b.isRead() else "-") + ("w" if b.isWrite() else "-")
+                + ("x" if b.isExecute() else "-"))
+        segs.append({"align": 16, "bitness": bitness, "name": b.getName(),
+                     "rva_start": rva_start, "rva_end": rva_end,
+                     "permission": perm, "selector": 0,
+                     "type": "CODE" if b.isExecute() else "DATA"})
+    return segs
+
+
+def build_fakepdb_root(module, bitness, segments, functions, labels):
+    """Assemble FakePDB's ``Root`` JSON (consumed by ``fakepdb_pdb generate``).
+
+    architecture is always ``'x86'`` in FakePDB's scheme -- ``bitness`` (64/32)
+    distinguishes.  ``pe.pdb_guid`` is left zeroed: pass the real exe as the
+    generator's optional 3rd arg to stamp the exe's CodeView debug GUID for
+    auto-load; without it the PDB still loads when pointed at manually.
+    """
+    image_size = max((s["rva_end"] for s in segments), default=0)
+    return {
+        "general": {"filename": module, "architecture": "x86", "bitness": bitness},
+        "pe": {"image_datetime": 0, "image_size": image_size,
+               "pdb_age": 1, "pdb_guid": [0] * 16},
+        "segments": segments,
+        "exports": [],
+        "functions": [{"start_rva": f["rva"], "name": f["name"],
+                       "is_public": True, "is_autonamed": False, "labels": []}
+                      for f in functions],
+        "names": [{"rva": l["rva"], "name": l["name"],
+                   "is_public": True, "is_func": False} for l in labels],
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -199,6 +244,9 @@ def main():
                     help="module name for x64dbg (default: program exe name)")
     ap.add_argument("--signatures", action="store_true",
                     help="include function prototypes in the JSON (slower)")
+    ap.add_argument("--fakepdb-json", action="store_true",
+                    help="also emit <module>.fakepdb.json for FakePDB's "
+                         "`fakepdb_pdb generate` (-> a real .pdb)")
     args = ap.parse_args()
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
@@ -230,12 +278,25 @@ def main():
             image_base, functions, labels = collect(program, args.signatures)
             jp, mp, dp = write_outputs(args.out_dir, module, image_base,
                                        functions, labels)
+            fpj = None
+            if args.fakepdb_json:
+                bitness = program.getDefaultPointerSize() * 8
+                segments = collect_segments(program, image_base)
+                root = build_fakepdb_root(module, bitness, segments,
+                                          functions, labels)
+                fpj = os.path.join(args.out_dir,
+                                   os.path.splitext(module)[0] + ".fakepdb.json")
+                with open(fpj, "w", encoding="utf-8") as fh:
+                    json.dump(root, fh)
+                fpj = "%s (%d segments)" % (fpj, len(segments))
         finally:
             program.release(consumer)
 
     print("Module: %s  (image_base=0x%X)" % (module, image_base))
     print("  functions: %d   labels: %d" % (len(functions), len(labels)))
     print("  wrote:\n    %s\n    %s\n    %s" % (jp, mp, dp))
+    if fpj:
+        print("    %s" % fpj)
 
 
 if __name__ == "__main__":
