@@ -49,14 +49,14 @@ function initializeScript() {
     return [new host.apiVersionSupport(1, 7)];
 }
 
-function __moduleBase(modName) {
+function __findModule(modName) {
     var want = modName.toLowerCase().replace(/\.exe$/, "");
     for (var m of host.currentProcess.Modules) {
         var n = ("" + m.Name).toLowerCase();
         // match "...\starfield.exe" or any module whose base name matches
         if (n.indexOf("\\" + want + ".") >= 0 || n.indexOf("\\" + want + "\\") >= 0
             || n.endsWith("\\" + want) || n.indexOf(want) >= 0) {
-            return m.BaseAddress;
+            return m;
         }
     }
     throw new Error("module not found in trace: " + modName);
@@ -71,7 +71,9 @@ function dumpVCalls(modName) {
         throw new Error("not a TTD session -- open a .run trace (cdb -z trace.run)");
     }
 
-    var base = __moduleBase(modName);
+    var mod = __findModule(modName);
+    var base = mod.BaseAddress;
+    var size = mod.Size;                // bound RVAs to this module's image
     var pattern = modName.replace(/\.exe$/i, "") + "!*";
     var calls = session.TTD.Calls(pattern);
 
@@ -84,16 +86,20 @@ function dumpVCalls(modName) {
         if (ret === undefined || tgt === undefined) { continue; }
         var rRva = ret.subtract(base);
         var tRva = tgt.subtract(base);
-        // drop anything outside the module image (negative RVA)
-        if (rRva.compareTo(0) < 0 || tRva.compareTo(0) < 0) { continue; }
+        // keep ONLY intra-module edges: both the call site and the target must
+        // lie inside this module's image.  A caller in another DLL (ret outside
+        // [base, base+size)) is not a useful xref for a single-binary analysis.
+        if (rRva.compareTo(0) < 0 || rRva.compareTo(size) >= 0 ||
+            tRva.compareTo(0) < 0 || tRva.compareTo(size) >= 0) { continue; }
         var key = rRva.toString(16) + "," + tRva.toString(16);
         seen[key] = (seen[key] || 0) + 1;
         kept++;
     }
 
     host.diagnostics.debugLog("# ttd_dump_calls " + modName +
-        " base=0x" + base.toString(16) + " calls=" + total +
-        " in-module=" + kept + " unique-edges=" + Object.keys(seen).length + "\n");
+        " base=0x" + base.toString(16) + " size=0x" + size.toString(16) +
+        " calls=" + total + " intra-module=" + kept +
+        " unique-edges=" + Object.keys(seen).length + "\n");
     host.diagnostics.debugLog("caller_rva,target_rva,count\n");
     for (var k in seen) {
         host.diagnostics.debugLog(k + "," + seen[k] + "\n");
