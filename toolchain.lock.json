@@ -1,0 +1,53 @@
+{
+  "fakepdb": {
+    "asset": "fakepdb_v0.3.zip",
+    "executable": "fakepdb.exe",
+    "executable_sha256": "576dbe7d9a7154608fe967b8ccde2e7a69799c185c381a43727a283002efe662",
+    "license": "Apache-2.0",
+    "release_tag": "v0.3",
+    "sha256": "198708824d69648d5822f7867b09a1f760f15debb0a340925f3a57523a249043",
+    "source_commit": "2d84f49c8db4473d0bf73ae425c730591e49e084",
+    "version": "0.3"
+  },
+  "ghidra": {
+    "asset": "ghidra_12.0.4_PUBLIC_20260303.zip",
+    "release_tag": "Ghidra_12.0.4_build",
+    "sha256": "c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120",
+    "version": "12.0.4"
+  },
+  "llvm": {
+    "release_tag": "llvmorg-20.1.8",
+    "version": "20.1.8",
+    "windows_aarch64_asset": "clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz",
+    "windows_aarch64_sha256": "0df3e81e8fe26370dd2b60b9e009d81cd130d3fdc41b257434aa663c5d9f0c13",
+    "windows_x86_64_asset": "clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz",
+    "windows_x86_64_sha256": "f229769f11d6a6edc8ada599c0cda964b7dee6ab1a08c6cf9dd7f513e85b107f"
+  },
+  "python": {
+    "architecture": "64-bit",
+    "implementation": "CPython",
+    "maximum": "3.14",
+    "minimum": "3.11",
+    "python_3_14_jpype_bridge": "1.7.1"
+  },
+  "python_requirements": "requirements.lock.txt",
+  "schema": 1,
+  "steamless": {
+    "asset": "Steamless.v3.1.0.5.-.by.atom0s.zip",
+    "cli_sha256": "70cd54354865ede605ec0fbfadf15f5302aa85a777394f28b0de6acfd243e795",
+    "release_tag": "v3.1.0.5",
+    "sha256": "e3e2d22e098ff3fb359b2876aa2bed9596f0501e6ff588cbffae90a76d2dc4f5",
+    "version": "3.1.0.5"
+  },
+  "submodules": {
+    "extern/AddressLibraryDatabase": "0379cb6fdaa0d68e69ef9ad1a2d39caa6611ac91",
+    "extern/CommonLibF4": "54ca33fd3948e2ac8665a4dc0306c94c52032932",
+    "extern/CommonLibF4/lib/commonlib-shared": "af93af74e9a572aa2af9b10ea9fdd73bf80b3c9c",
+    "extern/CommonLibSF": "186654e4a39e4792c7f4353655b0763b73640d11",
+    "extern/CommonLibSF/lib/commonlib-shared": "af93af74e9a572aa2af9b10ea9fdd73bf80b3c9c",
+    "extern/CommonLibSSE": "9d0e483f869cc7e82d5fe7e36939a6a3f9380163",
+    "extern/CommonLibVR": "d36bc08cae5d445804d4c22ccd49fec4e9dfbdc4",
+    "extern/CommonLibVR/extern/openvr": "60eb187801956ad277f1cae6680e3a410ee0873b",
+    "extern/xNVSE": "68047f86558f1c4663f0c312e67780af4e85c6bc"
+  }
+}

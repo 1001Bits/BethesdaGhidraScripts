@@ -39,9 +39,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
 IMAGE_BASE = 0x00400000  # PC FNV image base
 
-XBOX_EXE     = Path(r'D:\FNV Project\fnv-vr-injector\references\Fallout New Vegas Dev Kit\Diskuild_1.0.0.252\Fallout_Debug.exe')
-XBOX_PUBLICS = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_publics.txt')
-PC_RARE_IMM  = Path(r'C:\GhidraProjects\scripts\fnv_pc_rare_imms.txt')
+from paths import XBOX_EXE, artifact
+XBOX_PUBLICS = artifact('Fallout_Debug_publics.txt')
+PC_RARE_IMM  = artifact('fnv_pc_rare_imms.txt')
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from extract_xbox_string_xrefs import (
@@ -108,17 +108,14 @@ def scan_all_ppc_immediates(text_bytes: bytes, text_vaddr: int):
             else:
                 if rD != rA:
                     hi_anchor[rD] = None
-        elif op == 0x18:  # ori
-            if rA != 0 and hi_anchor[rA] is not None:
-                target = (hi_anchor[rA] | imm) & 0xFFFFFFFF
+        elif op == 0x18:  # ori rA, rS, uimm (rS=bits21, rA=bits16)
+            rS = rD
+            dest = rA
+            if hi_anchor[rS] is not None:
+                target = (hi_anchor[rS] | imm) & 0xFFFFFFFF
                 yield text_vaddr + i, target
-                if rD != rA:
-                    hi_anchor[rD] = None
-            elif rA == 0:
-                # ori r, 0, imm  -- yields imm (zero-extended)
-                yield text_vaddr + i, imm
-                if rD != rA:
-                    hi_anchor[rD] = None
+                if dest != rS:
+                    hi_anchor[dest] = None
         elif op == 0x1C or op == 0x1D:  # andi./andis.
             # don't materialize new values; just invalidate rD
             hi_anchor[rD] = None

@@ -420,6 +420,10 @@ def build_shift_map(ae_dump, vr_dump):
 
 
 def main():
+    raise SystemExit(
+        'DISABLED: this legacy builder emits an identity-unbound, '
+        'coverage-insufficient Skyrim VR shift map. Use the exact '
+        'binary-layout pipeline before enabling VR vtable overlays.')
     OUT_SHIFT.parent.mkdir(parents=True, exist_ok=True)
 
     # Cache hit: if both vtable dumps already exist, skip the (slow)

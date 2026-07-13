@@ -2,7 +2,7 @@
 """Dump every known PC FNV function-start RVA to a flat anchor list.
 
 Sources combined:
-  - fnv_pc_vtables.txt (every VFUNC RVA -- ~50k unique fn starts)
+  - PC vtable corpora (every VFUNC, normalized from its declared coordinate)
   - fnv_pc_symbols.txt (NVSE/JIP-LN known)
   - fnv_pdb_matched_classes.txt (legacy)
   - existing string_anchored.csv if present
@@ -16,6 +16,8 @@ import re
 import sys
 from pathlib import Path
 
+from addressing import FNV_IMAGE_BASE, load_vtable_records
+
 REFS = Path(__file__).resolve().parent / 'refs'
 IMAGE_BASE = 0x00400000
 
@@ -26,13 +28,14 @@ def main():
 
     anchors = set()
 
-    # 1. PC vtables -- every VFUNC line
-    p = REFS / 'fnv_pc_vtables.txt'
-    if p.is_file():
-        for ln in p.read_text(encoding='utf-8', errors='replace').splitlines():
-            m = re.match(r'\s+VFUNC\|0x([0-9A-Fa-f]+)\|', ln)
-            if m:
-                anchors.add(int(m.group(1), 16))
+    # 1. PC vtables -- normalize both legacy mixed-coordinate corpora, then
+    # emit the absolute VAs expected by the anchor snapper.
+    paths = [REFS / 'fnv_pc_vtables.txt',
+             REFS / 'fnv_pc_vtables_rtti_extra.txt']
+    if any(p.is_file() for p in paths):
+        for table in load_vtable_records(paths):
+            for _slot, rva in table.slots:
+                anchors.add(FNV_IMAGE_BASE + rva)
         print(f'  + vtables: {len(anchors):,}')
 
     # 2. NVSE-known

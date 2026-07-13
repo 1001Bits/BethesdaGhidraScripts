@@ -75,7 +75,7 @@ def _namespace(cp, st, parts):
     for part in parts:
         child = st.getNamespace(part, ns)
         if child is None:
-            child = st.createNameSpace(ns, part, SourceType.USER_DEFINED)
+            child = st.createNameSpace(ns, part, SourceType.ANALYSIS)
         ns = child
     return ns
 
@@ -89,20 +89,23 @@ def run():
 
     applied = errors = 0
     tx = cp.startTransaction('string-anchored rename') if APPLY else None
+    success = False
     try:
         for ep, name in plan:
             f = by_func[ep][0]
             parts = name.split('::')
             if APPLY:
                 try:
-                    f.setParentNamespace(_namespace(cp, st, parts[:-1]))
-                    f.setName(parts[-1], SourceType.USER_DEFINED)
+                    ns = _namespace(cp, st, parts[:-1])
+                    f.getSymbol().setNameAndNamespace(
+                        parts[-1], ns, SourceType.ANALYSIS)
                     applied += 1
                 except Exception:
                     errors += 1
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
 
     print('string-anchored rename (%s): %s'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN'))

@@ -109,15 +109,25 @@ def run():
               % (cp.getName(), best_len, _MIN_RUN))
         return
 
-    renamed = already = no_func = 0
+    planned = {}
+    o = best_start
+    for _ in range(best_len):
+        ad = af.getAddress(o)
+        nm = cand[o]
+        ev = _ptr(ad.add(exec_off))
+        o += stride
+        if ev is not None:
+            planned.setdefault(ev, set()).add(nm)
+
+    renamed = already = no_func = ambiguous = 0
     tx = cp.startTransaction('console-harvest') if APPLY else None
+    success = False
     try:
-        o = best_start
-        for _ in range(best_len):
-            ad = af.getAddress(o)
-            nm = cand[o]
-            ev = _ptr(ad.add(exec_off))
-            o += stride
+        for ev, names in planned.items():
+            if len(names) != 1:
+                ambiguous += 1
+                continue
+            nm = next(iter(names))
             f = fm.getFunctionAt(af.getAddress(ev))
             if f is None:
                 no_func += 1
@@ -128,21 +138,23 @@ def run():
                 continue
             if APPLY:
                 try:
-                    f.setName('Cmd_' + nm, SourceType.USER_DEFINED)
+                    f.setName('Cmd_' + nm, SourceType.ANALYSIS)
                     renamed += 1
                 except Exception:
                     pass
             else:
                 renamed += 1
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
 
     print('console-harvest (%s): %s  table@0x%X x%d (stride 0x%X)'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN',
              best_start, best_len, stride))
-    print('  %s=%d  already-named=%d  no-func=%d'
-          % ('renamed' if APPLY else 'would-rename', renamed, already, no_func))
+    print('  %s=%d  already-named=%d  no-func=%d  ambiguous=%d'
+          % ('renamed' if APPLY else 'would-rename', renamed, already,
+             no_func, ambiguous))
 
 
 run()

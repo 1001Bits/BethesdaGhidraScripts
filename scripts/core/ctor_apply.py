@@ -21,17 +21,18 @@ BGS_CTOR_CSV (same default path ctor_mine writes).
 import csv
 import os
 
+from evidence_identity import EvidenceIdentityError, validate_evidence
+
 APPLY = os.environ.get('BGS_ENRICH_APPLY', 'dry').lower() == 'go'
 
 
 def _resolve_type(dtm, name):
     name = name.strip()
-    its = dtm.getAllDataTypes()
-    # exact name match (first); structs/typedefs live in various categories
+    matches = []
     for dt in dtm.getAllDataTypes():
-        if dt.getName() == name:
-            return dt
-    return None
+        if dt.getName() == name or str(dt.getPathName()) == name:
+            matches.append(dt)
+    return matches[0] if len(matches) == 1 else None
 
 
 def run():
@@ -43,12 +44,27 @@ def run():
     if not os.path.isfile(csv_path):
         print('ctor-apply (%s): no proposals CSV at %s' % (cp.getName(), csv_path))
         return
+    try:
+        binding = validate_evidence(
+            csv_path, cp, 'ctor_fields', require_content=True)
+        if binding.get('address_coordinate') != 'NONE':
+            raise EvidenceIdentityError(
+                'constructor field evidence must use class-relative offsets')
+    except EvidenceIdentityError as exc:
+        print('ctor-apply: refusing stale/unbound proposals: %s' % exc)
+        return
 
     # index structs by name
-    structs = {}
+    struct_candidates = {}
     for dt in dtm.getAllDataTypes():
         if dt.getClass().getSimpleName() == 'StructureDB':
-            structs[dt.getName()] = dt
+            struct_candidates.setdefault(dt.getName(), []).append(dt)
+            struct_candidates.setdefault(str(dt.getPathName()), []).append(dt)
+
+    def resolve_struct(name):
+        candidates = struct_candidates.get(name, [])
+        unique = {str(dt.getPathName()): dt for dt in candidates}
+        return next(iter(unique.values())) if len(unique) == 1 else None
 
     def is_unk_at(sdt, off):
         """Current component at off is undefined/unk/pad (safe to fill)?"""
@@ -58,7 +74,7 @@ def run():
         fn = dtc.getFieldName() or ''
         tn = dtc.getDataType().getName().lower()
         return (dtc.getOffset() == off and
-                (fn.startswith(('unk', 'pad')) or 'undefined' in tn or not fn))
+                (fn.startswith(('unk', 'pad')) or 'undefined' in tn))
 
     def next_defined_off(sdt, off):
         best = sdt.getLength()
@@ -69,17 +85,31 @@ def run():
         return best
 
     rows = list(csv.DictReader(open(csv_path)))
-    typed = renamed = skipped_known = skipped_fit = skipped_notype = 0
+    typed = renamed = skipped_known = skipped_fit = skipped_notype = skipped_conf = 0
+    had_parent_transaction = (
+        APPLY and cp.getCurrentTransactionInfo() is not None)
     tx = cp.startTransaction('ctor-apply') if APPLY else None
+    commit = False
     try:
         for r in rows:
             cls = r['class']
-            sdt = structs.get(cls)
+            sdt = resolve_struct(cls)
             if sdt is None:
+                continue
+            decision = (r.get('decision') or '').strip().lower()
+            confidence = (r.get('confidence') or '').strip().lower()
+            if decision == 'skip':
+                skipped_conf += 1
+                continue
+            if decision not in ('apply', 'approved') and confidence != 'high':
+                skipped_conf += 1
                 continue
             try:
                 off = int(r['offset'], 16)
             except ValueError:
+                continue
+            if off < 0 or off >= sdt.getLength():
+                skipped_fit += 1
                 continue
             kind = r['name']
             tname = r['type']
@@ -89,20 +119,20 @@ def run():
                 skipped_known += 1
                 continue
             if kind == 'embedded':
-                dt = structs.get(tname) or _resolve_type(dtm, tname)
+                dt = resolve_struct(tname) or _resolve_type(dtm, tname)
                 if dt is None:
                     skipped_notype += 1
                     continue
                 sz = dt.getLength()
-                if off + sz > next_defined_off(sdt, off) or off + sz > sdt.getLength():
+                if (sz <= 0 or off + sz > next_defined_off(sdt, off) or
+                        off + sz > sdt.getLength()):
                     skipped_fit += 1
                     continue
                 if APPLY:
-                    try:
-                        sdt.replaceAtOffset(off, dt, sz, None, 'ctor-mine')
-                        typed += 1
-                    except Exception:
-                        skipped_fit += 1
+                    evidence = r.get('constructors') or 'constructor consensus'
+                    sdt.replaceAtOffset(
+                        off, dt, sz, None, 'ctor-mine: ' + evidence)
+                    typed += 1
                 else:
                     typed += 1
             else:                                    # param-derived field label
@@ -113,29 +143,33 @@ def run():
                     skipped_notype += 1
                     continue
                 sz = dt.getLength()
-                if off + sz > next_defined_off(sdt, off):
+                if (sz <= 0 or off + sz > next_defined_off(sdt, off) or
+                        off + sz > sdt.getLength()):
                     skipped_fit += 1
                     continue
                 if APPLY:
-                    try:
-                        sdt.replaceAtOffset(off, dt, sz, label, 'ctor-mine')
-                        typed += 1
-                        if label:
-                            renamed += 1
-                    except Exception:
-                        skipped_fit += 1
+                    evidence = r.get('constructors') or 'constructor consensus'
+                    sdt.replaceAtOffset(
+                        off, dt, sz, label, 'ctor-mine: ' + evidence)
+                    typed += 1
+                    if label:
+                        renamed += 1
                 else:
                     typed += 1
                     if label:
                         renamed += 1
+        commit = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            committed = bool(cp.endTransaction(tx, commit))
+            if commit and not had_parent_transaction and not committed:
+                raise RuntimeError('ctor-apply transaction did not commit')
 
     print('ctor-apply (%s): %s  %d fields typed (%d named), '
-          'skipped %d already-defined, %d no-fit, %d type-missing'
+          'skipped %d already-defined, %d no-fit, %d type-missing, %d unreviewed/low-confidence'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN', typed, renamed,
-             skipped_known, skipped_fit, skipped_notype))
+             skipped_known, skipped_fit, skipped_notype, skipped_conf))
 
 
-run()
+if 'currentProgram' in globals():
+    run()

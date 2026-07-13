@@ -29,8 +29,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
 IMAGE_BASE = 0x00400000
 
-XBOX_CALLGRAPH = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_callgraph.json')
-PC_CALLGRAPH   = Path(r'C:\GhidraProjects\scripts\fnv_pc_callgraph.json')
+from paths import artifact
+XBOX_CALLGRAPH = artifact('Fallout_Debug_callgraph.json')
+PC_CALLGRAPH   = artifact('fnv_pc_callgraph.json')
 
 
 def load_existing() -> Dict[int, str]:

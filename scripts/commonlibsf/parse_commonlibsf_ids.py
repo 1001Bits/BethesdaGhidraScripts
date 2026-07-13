@@ -27,7 +27,7 @@ _REPO_DIR   = _SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 from address_library import AddressLibrary
 
-IDS_DIR       = Path(r"C:/Development/Cell Offset Generator Starfield/external/CommonLibSF/include/RE")
+IDS_DIR       = _REPO_DIR / "extern" / "CommonLibSF" / "include" / "RE"
 # Targets 1.16.236 by name (the "sf116_*" refs CSV namespace was authored
 # against that build).  Override with --versionlib to point at a different
 # bin -- e.g. for 1.16.242, pass
@@ -47,7 +47,9 @@ RE_NS_OPEN   = re.compile(r'namespace\s+([A-Za-z0-9_:]+)\s*\{')
 RE_BRACE_OPEN  = re.compile(r'\{')
 RE_BRACE_CLOSE = re.compile(r'\}')
 RE_ID_DIRECT = re.compile(r'inline\s+constexpr\s+REL::ID\s+(\w+)\s*\{\s*([0-9]+)\s*\}')
-RE_ID_ARRAY  = re.compile(r'inline\s+constexpr\s+std::array<\s*REL::ID,\s*\d+>\s*(\w+)\s*\{\s*REL::ID\(([0-9]+)\)')
+RE_ID_ARRAY  = re.compile(r'inline\s+constexpr\s+std::array<\s*REL::ID,\s*\d+>\s*(\w+)\s*\{([^}]+)\}')
+RE_ID_IN_ARRAY = re.compile(r'REL::ID\s*\(\s*([0-9]+)\s*\)')
+RE_VERSIONLIB = re.compile(r'versionlib-(\d+)-(\d+)-(\d+)-(\d+)\.bin$', re.I)
 
 
 def parse_ids_header(path: Path, kind: str) -> List[Tuple[int, str, str]]:
@@ -93,11 +95,15 @@ def parse_ids_header(path: Path, kind: str) -> List[Tuple[int, str, str]]:
                 out.append((int(id_str), full, kind))
                 i = m.end()
                 continue
-            m2 = RE_ID_ARRAY.search(text, i, i + 300)
+            close = text.find('}', i)
+            m2 = RE_ID_ARRAY.search(
+                text, i, (close + 1) if close != -1 else len(text))
             if m2 and m2.start() == i:
-                ident, id_str = m2.group(1), m2.group(2)
-                full = "::".join(ns_stack + [ident]) if ns_stack else ident
-                out.append((int(id_str), full, kind))
+                ident = m2.group(1)
+                for index, id_str in enumerate(RE_ID_IN_ARRAY.findall(m2.group(2))):
+                    element = ident if index == 0 else '{}_{}'.format(ident, index + 1)
+                    full = "::".join(ns_stack + [element]) if ns_stack else element
+                    out.append((int(id_str), full, kind))
                 i = m2.end()
                 continue
         i += 1
@@ -108,16 +114,27 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--versionlib', default=str(VERSIONLIB),
                     help='Path to versionlib-X-Y-Z-W.bin (default: {})'.format(VERSIONLIB))
+    ap.add_argument('--ids-dir', default=str(IDS_DIR),
+                    help='CommonLibSF include/RE directory')
+    ap.add_argument('--out', default=str(OUT_CSV), help='output CSV')
     args = ap.parse_args()
+    ids_dir = Path(args.ids_dir)
+    out_csv = Path(args.out)
 
     al = AddressLibrary()
-    db = al.load_bin(args.versionlib)
+    match = RE_VERSIONLIB.search(str(args.versionlib))
+    if not match:
+        raise RuntimeError('--versionlib must use versionlib-X-Y-Z-W.bin naming')
+    expected_version = tuple(int(part) for part in match.groups())
+    db = al.load_bin(args.versionlib, expected_version=expected_version)
+    if not db:
+        raise RuntimeError('version library contains no mappings')
     print(f"Loaded versionlib {Path(args.versionlib).name}: {len(db)} ID->RVA mappings")
 
     sources = [
-        (IDS_DIR / "IDs.h", "func"),
-        (IDS_DIR / "IDs_RTTI.h", "rtti"),
-        (IDS_DIR / "IDs_VTABLE.h", "vtbl"),
+        (ids_dir / "IDs.h", "func"),
+        (ids_dir / "IDs_RTTI.h", "rtti"),
+        (ids_dir / "IDs_VTABLE.h", "vtbl"),
     ]
 
     all_names: List[Tuple[int, str, str]] = []
@@ -129,11 +146,11 @@ def main():
         print(f"  parsed {len(rows):>6} entries from {path.name}")
         all_names.extend(rows)
 
-    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
     n_hit = 0
     n_no_rva = 0
     n_id_zero = 0
-    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["target_va", "name", "kind"])
         for rid, name, kind in all_names:
@@ -147,13 +164,13 @@ def main():
             va = IMAGE_BASE + rva
             w.writerow([f"0x{va:x}", name, kind])
             n_hit += 1
-    print(f"\nWrote {OUT_CSV}")
+    print(f"\nWrote {out_csv}")
     print(f"  hit:        {n_hit}")
     print(f"  id=0:       {n_id_zero}")
     print(f"  no_rva:     {n_no_rva}")
     # Kind breakdown
     kind_counts = {}
-    with open(OUT_CSV, encoding="utf-8") as f:
+    with open(out_csv, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             kind_counts[row["kind"]] = kind_counts.get(row["kind"], 0) + 1
     print("  by kind:")

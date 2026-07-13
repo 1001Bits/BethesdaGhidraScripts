@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -44,7 +45,14 @@ import ast
 from bytesig_port import load_pe_text, build_prefix_index, port_symbols  # noqa: E402
 from steamless     import ensure_unpacked                                # noqa: E402
 from addrlib_emit  import build_name_to_id, join_ids, write_addrlib_csv  # noqa: E402
+from binary_identity import inspect_pe                                   # noqa: E402
+from pe_unwind import extract_runtime_functions                          # noqa: E402
+from importer_binding import accepts_manifest                           # noqa: E402
 from address_library import F4AddressLibrary                             # noqa: E402
+from bytesig_evidence import (                                           # noqa: E402
+    load_validated as load_bytesig_evidence,
+    persist as persist_bytesig_evidence,
+)
 
 
 _JSON_LOADS_RE = re.compile(r"^_json(?:_sym)?\.loads\((.+)\)$")
@@ -74,6 +82,15 @@ EXES_DIR       = _PROJECT_DIR / "exes" / "f4"
 GENERATED_DIR  = _PROJECT_DIR / "ghidrascripts"
 EXTRAS_DIR     = _PROJECT_DIR / "extras"
 STEAMLESS_CLI  = _PROJECT_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
+IDA_CORPUS_SHA256 = 'b0c327619f1a4e71fb3061c571d44a9d4de9154ab641dcc1932414dcbca639c0'
+IDA_SOURCE_SHA256 = {
+    # AE 1.11.191 packed Steam exe ...
+    '81694b37816c8045855905a52c5fb13583c5803121fabb5024760892014e9bc6',
+    # ... its Steamless-unpacked artifact (the matcher runs on this one,
+    # so the corpus gate must accept it or the IDA pool silently drops)
+    'e555c6c0e7aba3e9e4801c2e5e11e3a76b42ce080683b4b9c1cf074c2030b737',
+    'a5c5df53bf9f99201d35261851adf28f7bce309328c2b5ffd2a66326a7f4752a',
+}
 
 VERSION_TO_BIN_NAME = {
     "og": "Fallout4.exe",
@@ -124,10 +141,14 @@ def _load_commonlib_f4_names(source: str) -> dict[str, int]:
     return out
 
 
-def _load_ida_names() -> dict[str, int]:
+def _load_ida_names(source_manifest) -> dict[str, int]:
     """{name: rva} from extras/IDAImportNames_1.11.191.0.py (AE-keyed)."""
     p = EXTRAS_DIR / "IDAImportNames_1.11.191.0.py"
     if not p.is_file():
+        return {}
+    if (hashlib.sha256(p.read_bytes()).hexdigest() != IDA_CORPUS_SHA256 or
+            source_manifest.get('sha256', '').lower() not in IDA_SOURCE_SHA256):
+        print('  IDAImportNames corpus/source identity mismatch; skipping.')
         return {}
     name_re = re.compile(
         r"^\s*NAME\(\s*0x([0-9A-Fa-f]+)\s*,\s*['\"]([^'\"]+)['\"]\s*\)\s*$")
@@ -159,9 +180,19 @@ def _load_ida_names() -> dict[str, int]:
     return out
 
 
+def _section_for_rva(manifest, rva):
+    for section in manifest.get('sections', []):
+        start = int(section.get('rva', 0))
+        size = max(int(section.get('virtual_size', 0)),
+                   int(section.get('raw_size', 0)))
+        if start <= rva < start + size:
+            return section.get('name', '')
+    return ''
+
+
 def _merge_into_script(target: str, target_rva_key: str,
-                       ported: list[tuple[str, int]],
-                       src_tag: str = "AE-bytesig-port") -> int:
+                       ported: list[tuple[str, int]], target_manifest: dict,
+                       src_tag: str = "identity-bound-bytesig-port") -> int:
     """Inject ported (name, target_rva) entries into the target's generated
     script's SYMBOLS array.  Returns the number of new entries added.
 
@@ -174,6 +205,12 @@ def _merge_into_script(target: str, target_rva_key: str,
     if not script.is_file():
         print(f"  {fname}: not found, skipping merge")
         return 0
+    try:
+        bound_manifest = accepts_manifest(script, target_manifest)
+    except ValueError as exc:
+        raise RuntimeError(
+            '{} is not bound to the bytesig target: {}'.format(fname, exc))
+    target_manifest = bound_manifest
     content = script.read_text(encoding="utf-8")
     syms = _extract_symbols_array(content, "SYMBOLS")
     if syms is None:
@@ -181,23 +218,43 @@ def _merge_into_script(target: str, target_rva_key: str,
         return 0
     m = re.search(r"^SYMBOLS = (.+?)$", content, re.M)
     by_name: dict[str, dict] = {}
+    by_rva: dict[int, dict] = {}
     for s in syms:
         if s.get("t") == "func":
             by_name.setdefault(s["n"], s)
+            if s.get(target_rva_key):
+                by_rva.setdefault(s[target_rva_key], s)
 
     added = augmented = 0
     for name, rva in ported:
         existing = by_name.get(name)
+        occupant = by_rva.get(rva)
+        if occupant is not None and occupant.get('n') != name:
+            continue
+        if existing is not None and existing.get(target_rva_key) not in (None, rva):
+            continue
         if existing is not None and target_rva_key not in existing:
             existing[target_rva_key] = rva
             existing.setdefault("src_bytesig", src_tag)
+            existing.setdefault('target_sha256', {})[target_rva_key] = \
+                target_manifest['sha256']
+            section = _section_for_rva(target_manifest, rva)
+            if section:
+                existing.setdefault('sections', {})[target_rva_key] = section
             augmented += 1
         elif existing is None:
-            syms.append({
+            entry = {
                 "n": name, "t": "func", "sig": "",
                 target_rva_key: rva,
                 "src": src_tag,
-            })
+                'target_sha256': {target_rva_key: target_manifest['sha256']},
+            }
+            section = _section_for_rva(target_manifest, rva)
+            if section:
+                entry['sections'] = {target_rva_key: section}
+            syms.append(entry)
+            by_name[name] = entry
+            by_rva[rva] = entry
             added += 1
     # Preserve the safe-loads wrapper so JSON ``false``/``true``/``null``
     # round-trip through the rewrite (see ghidra_import_gen.py).  Always
@@ -205,15 +262,33 @@ def _merge_into_script(target: str, target_rva_key: str,
     symbols_json = json.dumps(syms, separators=(",", ":"))
     new_blob = "SYMBOLS = _json_sym.loads(" + repr(symbols_json) + ")"
     content = content[:m.start()] + new_blob + content[m.end():]
-    script.write_text(content, encoding="utf-8")
+    temporary = script.with_name(script.name + '.tmp')
+    temporary.write_text(content, encoding="utf-8")
+    os.replace(temporary, script)
     print(f"  {fname}: merged {augmented} augmented + {added} new entries "
           f"({len(ported)} ported)")
 
-    # Persist so parse_commonlib_types.py re-merges on regen (union, first-win).
-    from bytesig_port_combined import _persist_ported_csv
-    _persist_ported_csv(
-        _SCRIPT_DIR / "refs" / f"bytesig_ported_{target}.csv", ported, src_tag)
     return augmented + added
+
+
+def _runtime_boundaries(path: Path):
+    extracted = extract_runtime_functions(str(path))
+    rows = extracted.get('runtime_functions', [])
+    if not rows:
+        raise RuntimeError('{} has no validated AMD64 runtime functions'.format(path))
+    return ({int(row['begin_rva']): int(row['size']) for row in rows},
+            {int(row['begin_rva']) for row in rows})
+
+
+def _reconcile_pairs(pairs):
+    unique = set(pairs)
+    names = {}
+    targets = {}
+    for name, rva in unique:
+        names.setdefault(name, set()).add(rva)
+        targets.setdefault(rva, set()).add(name)
+    return sorted((name, rva) for name, rva in unique
+                  if len(names[name]) == 1 and len(targets[rva]) == 1)
 
 
 TARGET_TO_RVA_KEY = {"og": "og", "ng": "ng", "vr": "v", "221": "221", "ae": "a"}
@@ -291,46 +366,29 @@ _F4_221_PDB_PUBLICS = (
     _PROJECT_DIR / "scripts" / "commonlibf4" / "refs" / "f4_221_pdb_publics.txt")
 
 
-def _load_f4_221_pdb_names() -> dict[str, int]:
-    """{name: rva} from the Bethesda debug PDB publics dump.
-
-    Source: ``Fallout4_1_11_221_for_debug.pdb`` dumped via
-    ``llvm-pdbutil pretty --externals`` and checked into refs/.
-    Filtered to function-shaped C++ qualified names (drops RTTI_*,
-    vftable, lambdas, std:: noise, raw ``?``-mangled leftovers).
-    """
+def _load_f4_221_pdb_names(target_pe: Path) -> dict[str, int]:
+    """Reciprocal-unique function starts from the community PDB corpus."""
     if not _F4_221_PDB_PUBLICS.is_file():
         return {}
-    line_re = re.compile(
-        r"^\s*public\s+\[0x([0-9A-Fa-f]+)\]\s+(\S.*?)\s*$")
+    from pdb_publics_f4_221 import load_executable_name_rvas
+    target_manifest = inspect_pe(str(target_pe))
+    rows = load_executable_name_rvas(
+        str(target_pe), target_manifest['sha256'])
     bad_substr = ("RTTI_", "::`vftable'", "::`RTTI",
                   "type_info::", "`typeinfo for", "anonymous namespace",
                   "`vector-deleting-destructor", "<lambda_")
     name_rx = re.compile(r"^[A-Za-z_][\w:]*$")
-    out: dict[str, int] = {}
-    with open(_F4_221_PDB_PUBLICS, "r", encoding="utf-8", errors="replace") as f:
-        for ln in f:
-            m = line_re.match(ln)
-            if not m:
-                continue
-            try:
-                rva = int(m.group(1), 16)
-            except ValueError:
-                continue
-            if rva == 0:
-                continue
-            raw = m.group(2)
-            if any(b in raw for b in bad_substr):
-                continue
-            # Strip args ``Foo::Bar(args)`` -> ``Foo::Bar``.  Walks back to the
-            # matching '(' so templated names with embedded parens survive.
-            qname = raw.split("(", 1)[0].strip()
-            if not qname or "<" in qname or ">" in qname:
-                continue
-            if not name_rx.match(qname):
-                continue
-            out.setdefault(qname, rva)
-    return out
+    normalized: dict[str, set[int]] = {}
+    for raw, rva in rows.items():
+        if any(b in raw for b in bad_substr):
+            continue
+        qname = raw.split("(", 1)[0].strip()
+        if (not qname or "<" in qname or ">" in qname or
+                not name_rx.match(qname)):
+            continue
+        normalized.setdefault(qname, set()).add(rva)
+    return {name: next(iter(rvas)) for name, rvas in normalized.items()
+            if len(rvas) == 1}
 
 
 def run(targets: list[str], emit_addrlib: bool = False,
@@ -359,7 +417,7 @@ def run(targets: list[str], emit_addrlib: bool = False,
     name_to_src_rva.update(primary)
 
     if src_ver == "ae":
-        ida = _load_ida_names()
+        ida = _load_ida_names(inspect_pe(str(src_path)))
         new_ida = sum(1 for n in ida if n not in name_to_src_rva)
         print(f"  IDAImportNames_1.11.191.0.py: {len(ida):,} names ({new_ida} new)")
         for n, rva in ida.items():
@@ -381,6 +439,8 @@ def run(targets: list[str], emit_addrlib: bool = False,
               f"({len(ambiguous)} ambiguous names dropped)")
 
     print(f"  Loading source binary: {src_path}")
+    src_manifest = inspect_pe(str(src_path))
+    src_function_sizes, _src_function_starts = _runtime_boundaries(src_path)
     _, src_text_rva, src_text = load_pe_text(str(src_path))
     print(f"    .text RVA={src_text_rva:#x} size={len(src_text):,}")
 
@@ -389,6 +449,8 @@ def run(targets: list[str], emit_addrlib: bool = False,
     # Cache masked source signatures across the target loop -- Capstone
     # disasm of N source RVAs is otherwise repeated per target.
     src_sig_cache_ae: dict[int, tuple] = {}
+    target_manifests: dict[str, dict] = {}
+    touched_targets: set[str] = set()
 
     for tgt in targets:
         if tgt == src_ver:
@@ -400,6 +462,9 @@ def run(targets: list[str], emit_addrlib: bool = False,
             continue
         print(f"\n  --- {src_ver.upper()} -> {tgt.upper()} ---")
         print(f"  Loading {tgt.upper()} binary: {tgt_path.name}")
+        target_manifest = inspect_pe(str(tgt_path))
+        _target_sizes, target_function_starts = _runtime_boundaries(tgt_path)
+        target_manifests[tgt] = target_manifest
         _, tgt_text_rva, tgt_text = load_pe_text(str(tgt_path))
         print("  Building prefix index ...")
         tgt_idx = build_prefix_index(tgt_text, k=6)
@@ -409,7 +474,9 @@ def run(targets: list[str], emit_addrlib: bool = False,
         ported, stats = port_symbols(
             src_rvas, src_text_rva, src_text,
             tgt_text_rva, tgt_text, tgt_idx,
-            window=32, prefix_k=6, masked=False, progress_every=0)
+            window=32, prefix_k=6, masked=False, progress_every=0,
+            src_function_sizes=src_function_sizes,
+            target_function_starts=target_function_starts)
         print(f"    exact: ok={stats['ok']:,} no_prefix={stats['no_prefix']:,} "
               f"ambig={stats['ambiguous_or_zero']:,} miss_src={stats['missing_src']:,}")
 
@@ -422,7 +489,9 @@ def run(targets: list[str], emit_addrlib: bool = False,
                     unmatched, src_text_rva, src_text,
                     tgt_text_rva, tgt_text, tgt_idx,
                     window=48, prefix_k=6, masked=True, progress_every=0,
-                    src_sig_cache=src_sig_cache_ae)
+                    src_sig_cache=src_sig_cache_ae,
+                    src_function_sizes=src_function_sizes,
+                    target_function_starts=target_function_starts)
                 ported.extend(ported2)
                 print(f"    masked: ok={stats2['ok']:,} "
                       f"no_prefix={stats2['no_prefix']:,} "
@@ -431,74 +500,105 @@ def run(targets: list[str], emit_addrlib: bool = False,
                 print(f"    SKIPPED ({e}) — install capstone+numpy for the "
                       f"cross-build masked-retry pass")
 
-        rva_key = TARGET_TO_RVA_KEY[tgt]
-        _merge_into_script(tgt, rva_key, ported)
+        ported = _reconcile_pairs(ported)
+        evidence_path = (_SCRIPT_DIR / 'refs' /
+                         f'bytesig_ported_{tgt}.csv')
+        persist_bytesig_evidence(
+            evidence_path, ported, '{}-bytesig-port'.format(src_ver.upper()),
+            src_manifest, target_manifest, source_rvas=name_to_src_rva)
+        touched_targets.add(tgt)
         if emit_addrlib:
             _emit_addrlib_supplement(tgt, ported, name_to_id, ambiguous,
                                      allow_disjoint)
 
     # --- 1.11.221 PDB-public source pass ---
-    # The Bethesda debug PDB ships ~22k demangled publics for 1.11.221.
+    # The reviewed community corpus has ~25k reciprocal-unique `.pdata`
+    # function starts for 1.11.221 after ambiguity quarantine.
     # Most names aren't in CommonLibF4 / IDA's AE source pool, so an
     # AE-side port misses them entirely.  Run a second pass with the 221
     # binary as the source so OG / NG / AE / VR each inherit the PDB
     # names CommonLibF4 doesn't document.
-    pdb_names = _load_f4_221_pdb_names()
-    if not pdb_names:
-        print("\n  No 1.11.221 PDB-public source pool — skip 221-source pass.")
-        return
     src221_path = _binary_for("221")
-    if src221_path is None or not src221_path.is_file():
+    pdb_names = (_load_f4_221_pdb_names(src221_path)
+                 if src221_path is not None and src221_path.is_file() else {})
+    if not pdb_names and src221_path is not None and src221_path.is_file():
+        print("\n  No 1.11.221 PDB-public source pool — skip 221-source pass.")
+    elif src221_path is None or not src221_path.is_file():
         print(f"\n  exes/f4/221/Fallout4.exe not present — skip 221-source pass.")
-        return
-    print(f"\n=== 1.11.221 PDB-public source pass ===")
-    print(f"  Source binary: F4 221 ({src221_path.name})")
-    print(f"  Source name pool: {len(pdb_names):,} unique PDB publics")
-    print(f"  Loading source binary: {src221_path}")
-    _, src221_text_rva, src221_text = load_pe_text(str(src221_path))
-    print(f"    .text RVA={src221_text_rva:#x} size={len(src221_text):,}")
-    src221_rvas = list(pdb_names.items())
+    else:
+        print(f"\n=== 1.11.221 PDB-public source pass ===")
+        print(f"  Source binary: F4 221 ({src221_path.name})")
+        print(f"  Source name pool: {len(pdb_names):,} unique PDB publics")
+        print(f"  Loading source binary: {src221_path}")
+        src221_manifest = inspect_pe(str(src221_path))
+        src221_function_sizes, _ = _runtime_boundaries(src221_path)
+        _, src221_text_rva, src221_text = load_pe_text(str(src221_path))
+        print(f"    .text RVA={src221_text_rva:#x} size={len(src221_text):,}")
+        src221_rvas = list(pdb_names.items())
 
-    # Same cache trick for the 221-source pass.
-    src_sig_cache_221: dict[int, tuple] = {}
+        # Same cache trick for the 221-source pass.
+        src_sig_cache_221: dict[int, tuple] = {}
 
-    for tgt in targets:
-        if tgt == "221":
-            continue  # already named directly by parse_commonlib_types
-        tgt_path = _binary_for(tgt)
-        if tgt_path is None or not tgt_path.is_file():
-            print(f"  {tgt.upper()}: binary not present in exes/f4/{tgt}/ — "
-                  f"skipping")
-            continue
-        print(f"\n  --- 221 -> {tgt.upper()} ---")
-        _, tgt_text_rva, tgt_text = load_pe_text(str(tgt_path))
-        tgt_idx = build_prefix_index(tgt_text, k=6)
-        print(f"    {len(tgt_idx):,} unique 6-byte prefixes")
-        print("  Pass 1: exact 32-byte match ...")
-        ported, stats = port_symbols(
-            src221_rvas, src221_text_rva, src221_text,
-            tgt_text_rva, tgt_text, tgt_idx,
-            window=32, prefix_k=6, masked=False, progress_every=0)
-        print(f"    exact: ok={stats['ok']:,} no_prefix={stats['no_prefix']:,} "
-              f"ambig={stats['ambiguous_or_zero']:,}")
-        ported_names = {n for n, _ in ported}
-        unmatched = [(n, r) for (n, r) in src221_rvas if n not in ported_names]
-        if unmatched:
-            print(f"  Pass 2: masked 48-byte retry on {len(unmatched):,} unmatched ...")
-            try:
-                ported2, stats2 = port_symbols(
-                    unmatched, src221_text_rva, src221_text,
-                    tgt_text_rva, tgt_text, tgt_idx,
-                    window=48, prefix_k=6, masked=True, progress_every=0,
-                    src_sig_cache=src_sig_cache_221)
-                ported.extend(ported2)
-                print(f"    masked: ok={stats2['ok']:,} "
-                      f"no_prefix={stats2['no_prefix']:,} "
-                      f"ambig={stats2['ambiguous_or_zero']:,}")
-            except ImportError as e:
-                print(f"    SKIPPED ({e})")
-        rva_key = TARGET_TO_RVA_KEY[tgt]
-        _merge_into_script(tgt, rva_key, ported, src_tag="221-PDB-bytesig-port")
+        for tgt in targets:
+            if tgt == "221":
+                continue  # already named directly by parse_commonlib_types
+            tgt_path = _binary_for(tgt)
+            if tgt_path is None or not tgt_path.is_file():
+                print(f"  {tgt.upper()}: binary not present in exes/f4/{tgt}/ — "
+                      f"skipping")
+                continue
+            print(f"\n  --- 221 -> {tgt.upper()} ---")
+            target_manifest = target_manifests.get(tgt) or inspect_pe(str(tgt_path))
+            target_manifests[tgt] = target_manifest
+            _, target_function_starts = _runtime_boundaries(tgt_path)
+            _, tgt_text_rva, tgt_text = load_pe_text(str(tgt_path))
+            tgt_idx = build_prefix_index(tgt_text, k=6)
+            print(f"    {len(tgt_idx):,} unique 6-byte prefixes")
+            print("  Pass 1: exact 32-byte match ...")
+            ported, stats = port_symbols(
+                src221_rvas, src221_text_rva, src221_text,
+                tgt_text_rva, tgt_text, tgt_idx,
+                window=32, prefix_k=6, masked=False, progress_every=0,
+                src_function_sizes=src221_function_sizes,
+                target_function_starts=target_function_starts)
+            print(f"    exact: ok={stats['ok']:,} no_prefix={stats['no_prefix']:,} "
+                  f"ambig={stats['ambiguous_or_zero']:,}")
+            ported_names = {n for n, _ in ported}
+            unmatched = [(n, r) for (n, r) in src221_rvas if n not in ported_names]
+            if unmatched:
+                print(f"  Pass 2: masked 48-byte retry on {len(unmatched):,} unmatched ...")
+                try:
+                    ported2, stats2 = port_symbols(
+                        unmatched, src221_text_rva, src221_text,
+                        tgt_text_rva, tgt_text, tgt_idx,
+                        window=48, prefix_k=6, masked=True, progress_every=0,
+                        src_sig_cache=src_sig_cache_221,
+                        src_function_sizes=src221_function_sizes,
+                        target_function_starts=target_function_starts)
+                    ported.extend(ported2)
+                    print(f"    masked: ok={stats2['ok']:,} "
+                          f"no_prefix={stats2['no_prefix']:,} "
+                          f"ambig={stats2['ambiguous_or_zero']:,}")
+                except ImportError as e:
+                    print(f"    SKIPPED ({e})")
+            ported = _reconcile_pairs(ported)
+            evidence_path = (_SCRIPT_DIR / 'refs' /
+                             f'bytesig_ported_{tgt}.csv')
+            persist_bytesig_evidence(
+                evidence_path, ported, '221-PDB-bytesig-port',
+                src221_manifest, target_manifest, source_rvas=pdb_names)
+            touched_targets.add(tgt)
+
+    # Consume exactly the reconciled, target-bound artifact.  This final pass
+    # handles conflicts not only between exact/masked matches but also between
+    # the AE/NG and 221 source corpora.
+    for tgt in sorted(touched_targets):
+        evidence_path = _SCRIPT_DIR / 'refs' / f'bytesig_ported_{tgt}.csv'
+        rows, _identity = load_bytesig_evidence(
+            evidence_path, target_manifests[tgt])
+        safe_pairs = sorted({(row['name'], row['target_rva']) for row in rows})
+        _merge_into_script(
+            tgt, TARGET_TO_RVA_KEY[tgt], safe_pairs, target_manifests[tgt])
 
 
 def main() -> None:

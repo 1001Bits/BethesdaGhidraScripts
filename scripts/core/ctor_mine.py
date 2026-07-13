@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ctor_plan as cp_plan  # noqa: E402
+from evidence_identity import bind_evidence  # noqa: E402
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CATEGORY = os.environ.get('BGS_CTOR_CATEGORY', '')
@@ -36,6 +37,22 @@ TIMEOUT = int(os.environ.get('BGS_CTOR_TIMEOUT', '45') or 45)
 def _high_name(vn):
     h = vn.getHigh() if vn is not None else None
     return h.getName() if h is not None else None
+
+
+def _signed_constant(vn):
+    value = int(vn.getOffset())
+    try:
+        bits = int(vn.getSize()) * 8
+    except Exception:
+        bits = 64
+    if bits > 0:
+        # ``getOffset`` is a Java long: 64-bit negative constants can already
+        # be negative, whereas narrower constants are commonly zero-extended.
+        # Mask first so both forms receive exactly one sign extension.
+        value &= (1 << bits) - 1
+        if value & (1 << (bits - 1)):
+            value -= 1 << bits
+    return value
 
 
 def _addr_off(vn, this_name, pc, depth=0):
@@ -59,12 +76,12 @@ def _addr_off(vn, this_name, pc, depth=0):
     if oc == pc.PTRADD and len(ins) >= 3 and ins[1].isConstant() and ins[2].isConstant():
         s = _addr_off(ins[0], this_name, pc, depth + 1)
         if s is not None:
-            return s + int(ins[1].getOffset()) * int(ins[2].getOffset())
+            return s + _signed_constant(ins[1]) * _signed_constant(ins[2])
     # PTRSUB / INT_ADD carry the byte offset directly in ins[1].
     if oc in (pc.INT_ADD, pc.PTRSUB) and len(ins) >= 2 and ins[1].isConstant():
         s = _addr_off(ins[0], this_name, pc, depth + 1)
         if s is not None:
-            return s + int(ins[1].getOffset())
+            return s + _signed_constant(ins[1])
     return None
 
 
@@ -79,11 +96,16 @@ def _val_param(vn, param_names, pc, depth=0):
     d = vn.getDef()
     if d is None:
         return None
-    if d.getOpcode() in (pc.COPY, pc.CAST, pc.INDIRECT, pc.MULTIEQUAL):
-        for iv in d.getInputs():
-            r = _val_param(iv, param_names, pc, depth + 1)
-            if r is not None:
-                return r
+    if d.getOpcode() in (pc.COPY, pc.CAST, pc.INDIRECT):
+        inputs = list(d.getInputs())
+        return (_val_param(inputs[0], param_names, pc, depth + 1)
+                if inputs else None)
+    if d.getOpcode() == pc.MULTIEQUAL:
+        values = [_val_param(iv, param_names, pc, depth + 1)
+                  for iv in d.getInputs()]
+        if values and all(value is not None and value == values[0]
+                          for value in values):
+            return values[0]
     return None
 
 
@@ -277,7 +299,7 @@ def run():
 
     rows = []
     named = typed_unk = n_embed = 0
-    best_by_class = {}                      # cls -> (score, assignments, embedded)
+    evidence_by_class = {}                  # cls -> [(function, assignments, embedded)]
     print('ctor-mine: %d unk-bearing structs, %d unk-class vtables, '
           '%d functions reference a target vtable'
           % (len(unk_by_class), len(target_vt), len(cand_list)))
@@ -298,52 +320,65 @@ def run():
             emb = _embedded_objects(hf, this_name, vtmap, fm, callee_class)
             if not asg and not emb:         # destructors / no usable info
                 continue
-            score = len(asg) + len(emb)
-            prev = best_by_class.get(cls)
-            if prev is None or score > prev[0]:
-                best_by_class[cls] = (score, asg, emb)
+            source = '{}@0x{:X}'.format(f.getName(), f.getEntryPoint().getOffset())
+            evidence_by_class.setdefault(cls, []).append((source, asg, emb))
         except Exception:
             continue
     decomp.dispose()
     decomp2.dispose()
 
-    for cls, (_n, asg, emb) in best_by_class.items():
+    for cls, class_evidence in evidence_by_class.items():
         unk = unk_by_class.get(cls, set())
-        for off, (tn, pname) in sorted(asg.items()):
-            label = cp_plan.field_label(pname) or ''
+        observations = []
+        for source, asg, emb in class_evidence:
+            for off, (tn, pname) in asg.items():
+                observations.append((off, tn, cp_plan.field_label(pname) or '', source))
+            for off, ecls in emb.items():
+                observations.append((off, ecls, 'base' if off == 0 else 'embedded', source))
+        resolved, ambiguous = cp_plan.field_consensus(observations, min_independent=2)
+        for off, info in sorted(resolved.items()):
+            tn = info['type']
+            label = info['name'] or ''
             is_unk = off in unk
             rows.append((cls, '0x%X' % off, tn, label,
-                         'unknown' if is_unk else 'known'))
+                         'unknown' if is_unk else 'known', info['votes'],
+                         'high', ' | '.join(info['constructors'])))
             if label:
                 named += 1
             if is_unk:
                 typed_unk += 1
-        for off, ecls in sorted(emb.items()):
-            if off in asg:                  # param-assignment already covers it
+            if label == 'embedded':
+                n_embed += 1
+        # Keep rejected conflicts in the queue for review, but mark them low so
+        # ctor_apply will never mutate them automatically.
+        for off, proposals in sorted(ambiguous.items()):
+            if not proposals:
                 continue
+            top = proposals[0]
             is_unk = off in unk
-            kind = 'base' if off == 0 else 'embedded'
-            rows.append((cls, '0x%X' % off, ecls, kind,
-                         'unknown' if is_unk else 'known'))
-            n_embed += 1
-            if is_unk:
-                typed_unk += 1
-    classes_done = len(best_by_class)
+            rows.append((cls, '0x%X' % off, top['type'], top['name'] or '',
+                         'unknown' if is_unk else 'known', top['votes'],
+                         'low', ' | '.join(top['constructors'])))
+    classes_done = len(evidence_by_class)
 
-    rows.sort(key=lambda r: (r[4] != 'unknown', r[0], int(r[1], 16)))
+    rows.sort(key=lambda r: (r[6] != 'high', r[4] != 'unknown', r[0], int(r[1], 16)))
     if not os.path.isdir(os.path.dirname(out_csv)):
         os.makedirs(os.path.dirname(out_csv))
     with open(out_csv, 'w', newline='') as fh:
         w = csv.writer(fh)
-        w.writerow(['class', 'offset', 'type', 'name', 'slot_state'])
+        w.writerow(['class', 'offset', 'type', 'name', 'slot_state',
+                    'votes', 'confidence', 'constructors', 'decision'])
         for r in rows:
             w.writerow(r)
+    # Rows contain class-relative member offsets, not executable addresses.
+    bind_evidence(out_csv, prog, 'ctor_fields', address_coordinate='NONE')
     print('ctor-mine (%s): %d classes mined, %d field proposals '
           '(%d name a field, %d embedded-object types, %d fill an unknown slot)'
           % (prog.getName(), classes_done, len(rows), named, n_embed, typed_unk))
     for r in rows[:20]:
-        print('   %s +%s %s %s [%s]' % r)
+        print('   %s +%s %s %s [%s] votes=%s conf=%s' % r[:7])
     print('  -> ' + out_csv)
 
 
-run()
+if 'currentProgram' in globals():
+    run()

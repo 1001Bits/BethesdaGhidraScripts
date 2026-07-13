@@ -24,6 +24,8 @@ Layout:
 All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
 """
 import os
+import json
+import argparse
 import shutil
 import subprocess
 import sys
@@ -37,6 +39,8 @@ PROJECTS_DIR   = REPO_DIR / "ghidraprojects"
 STEAMLESS_CLI  = REPO_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
 
 GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
+PIPELINE_STAGE_GENERIC = "generic-v2"
+PIPELINE_STAGE_ENRICHED = "enriched-v2:"
 
 PROJECT_NAME = {
     'skyrim':    'SkyrimSE',
@@ -115,7 +119,7 @@ SPOT_CHECKS_OVERRIDES = {
         'min_named': 100,
     },
     # 1.11.221 now has meh321's version-1-11-221-0.bin (same ID namespace as
-    # AE) plus the Bethesda debug PDB publics merged in as fallback symbols.
+    # AE) plus identity-bound community PDB publics merged as fallback symbols.
     # VTABLE_* labels resolve identically to AE; function-name count tracks
     # AE primary (~25k) plus ~22k PDB-only publics.
     ('f4', '221'): {
@@ -126,11 +130,49 @@ SPOT_CHECKS_OVERRIDES = {
 
 
 sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
+from binary_identity import (  # noqa: E402
+    canonical_identity,
+    inspect_pe,
+    manifest_matches,
+)
 from steamless import ensure_unpacked as _ensure_unpacked_impl  # noqa: E402
+from importer_binding import (  # noqa: E402
+    ImporterBindingError,
+    accepts_manifest as _importer_accepts_manifest,
+)
+from pyghidra_result import (  # noqa: E402
+    end_outer_transaction,
+    require_script_success,
+)
 
 
 def _ensure_unpacked(binary: Path) -> Path:
     return _ensure_unpacked_impl(binary, STEAMLESS_CLI)
+
+
+def _enrichment_stage_action(stage: str, script_sha: str,
+                             newly_imported: bool) -> str:
+    """Return ``apply``/``skip`` or reject an unsafe project baseline."""
+    expected = PIPELINE_STAGE_ENRICHED + script_sha
+    if stage == expected:
+        return "skip"
+    if newly_imported and not stage:
+        return "apply"
+    if stage == PIPELINE_STAGE_GENERIC:
+        return "apply"
+    if not stage:
+        raise RuntimeError(
+            "existing program has no pipeline-stage provenance; it may "
+            "contain prior enrichment. Clean/reimport it before applying an "
+            "importer.")
+    if stage.startswith("enriched"):
+        raise RuntimeError(
+            "project was enriched by a different or legacy importer "
+            "({}); clean/reimport it before applying {}".format(
+                stage, script_sha))
+    raise RuntimeError(
+        "unknown pipeline stage {!r}; clean/reimport before mutation".format(
+            stage))
 
 
 def script_for(game: str, version: str) -> Path:
@@ -163,8 +205,15 @@ def discover_targets(filter_game=None, filter_ver=None):
             version = ver_dir.name
             if filter_ver and filter_ver != version:
                 continue
-            exes = sorted(ver_dir.glob("*.exe"))
+            exes = [p for p in sorted(ver_dir.glob("*.exe"))
+                    if "unpacked" not in p.name.lower()]
             if not exes:
+                continue
+            if len(exes) != 1:
+                raise RuntimeError(
+                    "ambiguous target folder {}: expected one original .exe, found {}"
+                    .format(ver_dir, ", ".join(p.name for p in exes)))
+            if game not in PROJECT_NAME:
                 continue
             targets.append((game, version, exes[0]))
     return targets
@@ -321,7 +370,60 @@ def _disable_noisy_analyzers(program):
             pass
 
 
-def _run_one(project, game, version, binary, script_path, monitor):
+_BGS_MANIFEST_OPTION = "BGS Target Manifest"
+
+
+def _validate_and_bind_program(program, binary: Path, newly_imported: bool):
+    """Fail closed when a project program is not the exact input PE.
+
+    Ghidra normally records an executable SHA-256 during import.  We also
+    persist our full canonical PE identity so subsequent runs validate the
+    architecture, image layout, timestamp and version as well as content.
+    Legacy projects are accepted only when Ghidra's own SHA-256 matches.
+    """
+    from ghidra.program.model.listing import Program
+
+    expected = inspect_pe(str(binary))
+    info = program.getOptions(Program.PROGRAM_INFO)
+    raw = info.getString(_BGS_MANIFEST_OPTION, "")
+    if raw:
+        try:
+            recorded = json.loads(raw)
+        except Exception as exc:
+            raise RuntimeError("invalid stored BGS target manifest: {}".format(exc))
+        ok, reasons = manifest_matches(recorded, expected)
+        if not ok:
+            raise RuntimeError(
+                "project program does not match {}:\n  {}\n"
+                "Refusing to mutate stale analysis. Reimport into a new folder "
+                "or run `python run.py clean`.".format(
+                    binary, "\n  ".join(reasons)))
+    elif not newly_imported:
+        ghidra_sha = (info.getString("Executable SHA256", "") or "").lower()
+        if not ghidra_sha or ghidra_sha != expected["sha256"].lower():
+            detail = "missing Ghidra import hash" if not ghidra_sha else (
+                "SHA-256 expected {}, project has {}".format(
+                    expected["sha256"], ghidra_sha))
+            raise RuntimeError(
+                "cannot prove existing project program identity ({}). "
+                "Refusing to mutate it; reimport or clean the pipeline project."
+                .format(detail))
+
+    pointer_size = int(program.getDefaultPointerSize())
+    if pointer_size != expected["pointer_size"]:
+        raise RuntimeError("program pointer size {} does not match PE {}".format(
+            pointer_size, expected["pointer_size"]))
+    if int(program.getImageBase().getOffset()) != expected["image_base"]:
+        raise RuntimeError("program image base does not match PE manifest")
+
+    # Binding is intentionally performed only after every check passed.
+    info.setString(_BGS_MANIFEST_OPTION,
+                   json.dumps(canonical_identity(expected), sort_keys=True))
+    return expected
+
+
+def _run_one(project, game, version, binary, script_path, monitor,
+             import_only=False):
     from ghidra.app.util.importer import MessageLog
     import ghidra
     import java.io
@@ -339,7 +441,8 @@ def _run_one(project, game, version, binary, script_path, monitor):
         if domain_file is not None:
             break
 
-    if domain_file is None:
+    newly_imported = domain_file is None
+    if newly_imported:
         print(f"Importing {binary} ...")
         msg_log         = MessageLog()
         jfile           = java.io.File(str(binary))
@@ -367,27 +470,113 @@ def _run_one(project, game, version, binary, script_path, monitor):
     consumer = java.lang.Object()
     program  = domain_file.getDomainObject(consumer, True, False, monitor)
     try:
-        # Suppress noisy analyzers before our script triggers any further
-        # auto-analysis (and persist the off-state so later opens stay quiet).
-        _disable_noisy_analyzers(program)
+        setup_tx = program.startTransaction("Bind exact pipeline target")
+        setup_commit = False
+        try:
+            manifest = _validate_and_bind_program(
+                program, binary, newly_imported)
+            # Suppress noisy analyzers before our script triggers any further
+            # auto-analysis (and persist the off-state so later opens stay quiet).
+            _disable_noisy_analyzers(program)
+            setup_commit = True
+        finally:
+            end_outer_transaction(
+                program, setup_tx, setup_commit, "target identity binding")
+        print("Target identity: {} {}-bit sha256={}...".format(
+            manifest["machine_name"], manifest["pointer_size"] * 8,
+            manifest["sha256"][:16]))
+        if import_only:
+            from ghidra.program.model.listing import Program
+            info = program.getOptions(Program.PROGRAM_INFO)
+            stage = info.getString("BGS Pipeline Stage", "") or ""
+            if not newly_imported and not stage:
+                raise RuntimeError(
+                    "existing program has no pipeline-stage provenance; it may "
+                    "contain prior enrichment. Refusing to use it as a clean "
+                    "Starfield shift preflight. Run `python run.py clean`.")
+            if stage.startswith("enriched"):
+                raise RuntimeError(
+                    "shift preflight requires a clean generic import, but this "
+                    "program is already enriched. Clean/reimport before deriving "
+                    "a new shift map.")
+            stage_tx = program.startTransaction("Record clean generic stage")
+            stage_commit = False
+            try:
+                info.setString("BGS Pipeline Stage", PIPELINE_STAGE_GENERIC)
+                stage_commit = True
+            finally:
+                end_outer_transaction(
+                    program, stage_tx, stage_commit, "generic stage binding")
+            program.save("identity-bound generic import", monitor)
+            print("Generic import ready; no enrichment script was applied.")
+            return True
+        try:
+            _importer_accepts_manifest(script_path, manifest)
+        except ImporterBindingError as exc:
+            raise RuntimeError(
+                "refusing legacy/unbound or wrong-target importer: {}".format(exc))
+        from ghidra.program.model.listing import Program
+        import hashlib
+        script_sha = hashlib.sha256(script_path.read_bytes()).hexdigest()
+        info = program.getOptions(Program.PROGRAM_INFO)
+        stage = info.getString("BGS Pipeline Stage", "") or ""
+        if newly_imported and not stage:
+            baseline_tx = program.startTransaction(
+                "Record clean pre-enrichment baseline")
+            baseline_commit = False
+            try:
+                info.setString("BGS Pipeline Stage", PIPELINE_STAGE_GENERIC)
+                baseline_commit = True
+            finally:
+                end_outer_transaction(
+                    program, baseline_tx, baseline_commit,
+                    "generic baseline binding")
+            program.save("exact identity-bound generic baseline", monitor)
+            stage = PIPELINE_STAGE_GENERIC
+        action = _enrichment_stage_action(stage, script_sha, newly_imported)
+        if action == "skip":
+            print("Exact importer already applied; verifying without re-applying.")
+            return _verify(program, game, version)
+
         print(f"Running {script_path.name} ...")
-        stdout, stderr = pyghidra.ghidra_script(
-            script_path, project, program, echo_stdout=False, echo_stderr=False)
-        stdout = _filter_noise(stdout)
-        stderr = _filter_noise(stderr)
-        if stdout: print(stdout)
-        if stderr: print("STDERR:", stderr, file=sys.stderr)
+        outer_tx = program.startTransaction(
+            "Atomic CommonLib importer " + script_path.name)
+        commit = False
+        try:
+            stdout, stderr = pyghidra.ghidra_script(
+                script_path, project, program,
+                echo_stdout=False, echo_stderr=False)
+            stdout = _filter_noise(stdout)
+            stderr = _filter_noise(stderr)
+            if stdout:
+                print(stdout)
+            require_script_success(stderr, script_path.name)
+            if not _verify(program, game, version):
+                raise RuntimeError(
+                    "post-import verification failed; all importer changes "
+                    "were rolled back")
+            info.setString(
+                "BGS Pipeline Stage", PIPELINE_STAGE_ENRICHED + script_sha)
+            commit = True
+        finally:
+            end_outer_transaction(
+                program, outer_tx, commit, script_path.name)
         program.save(f"CommonLib {game} {version} import", monitor)
         print("Saved.")
-        return _verify(program, game, version)
+        return True
     finally:
         program.release(consumer)
 
 
 def main():
-    args  = sys.argv[1:]
-    fg    = args[0] if len(args) > 0 else None
-    fv    = args[1] if len(args) > 1 else None
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('game', nargs='?')
+    ap.add_argument('version', nargs='?')
+    ap.add_argument('--import-only', action='store_true',
+                    help='identity-bind and save a generic import; do not enrich')
+    args = ap.parse_args()
+    fg = args.game
+    fv = args.version
     targets = discover_targets(fg, fv)
     if not targets:
         print(f"No targets found in {EXES_ROOT}")
@@ -406,6 +595,12 @@ def main():
     gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
     rep = project_dir / f"{GHIDRA_PROJECT_NAME}.rep"
     if rep.exists() and not gpr.exists():
+        try:
+            rep.resolve().relative_to(project_dir.resolve())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "refusing to remove a project repository outside {}".format(
+                    project_dir.resolve())) from exc
         shutil.rmtree(rep)
 
     failures = []
@@ -417,12 +612,13 @@ def main():
                 print("=" * 60)
                 binary = _ensure_unpacked(binary)
                 script_path = script_for(game, version)
-                if not script_path.is_file():
+                if not args.import_only and not script_path.is_file():
                     print(f"SKIP: script not found at {script_path}")
                     failures.append((game, version, "missing script"))
                     continue
                 try:
-                    ok = _run_one(project, game, version, binary, script_path, monitor)
+                    ok = _run_one(project, game, version, binary, script_path,
+                                  monitor, import_only=args.import_only)
                     if not ok:
                         failures.append((game, version, "verification failed"))
                 except Exception as e:

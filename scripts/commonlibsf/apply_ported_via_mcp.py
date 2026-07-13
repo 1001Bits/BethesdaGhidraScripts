@@ -20,10 +20,13 @@ import sys
 import time
 import urllib.request
 from html import unescape
+from pathlib import Path
 
-MCP_URL  = "http://localhost:8080/mcp"
-PROGRAM  = "Starfield.exe"
-CSV_PATH = r"C:/Development/Tools/BethesdaGhidraScripts/scripts/commonlibsf/refs/sf116_ported_names.csv"
+SCRIPT_DIR = Path(__file__).resolve().parent
+MCP_URL  = os.environ.get("BGS_MCP_URL", "http://localhost:8080/mcp")
+PROGRAM  = os.environ.get("BGS_MCP_PROGRAM", "Starfield.exe")
+CSV_PATH = os.environ.get(
+    "BGS_SF_PORTED_CSV", str(SCRIPT_DIR / "refs" / "sf116_ported_names.csv"))
 BATCH    = 80
 
 # Same sanitiser as the pyghidra path: Ghidra rejects names with spaces,
@@ -110,6 +113,11 @@ def text_of(r):
 # ---------------------------------------------------------------------
 
 def main():
+    raise SystemExit(
+        "DISABLED: the MCP bridge does not expose an executable SHA-256 "
+        "attestation or atomic rollback for batch_rename. Use "
+        "apply_ported_to_sf116.py, which validates the content-hashed "
+        "evidence sidecar and exact Ghidra Program identity.")
     if not os.path.isfile(CSV_PATH):
         print(f"ERROR: CSV missing: {CSV_PATH}"); sys.exit(2)
     print(f"MCP {MCP_URL}; program: {PROGRAM}")

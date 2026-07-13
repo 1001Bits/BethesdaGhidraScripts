@@ -17,6 +17,7 @@ Output: ``ghidrascripts/CommonLibImport_SF.py``.
 """
 
 import json as _json
+import hashlib
 import os
 import re
 import sys
@@ -34,6 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(SCRIPT_DIR), 'core'))
 
 from address_library import AddressLibrary
 from ids_parser import collect_all as collect_id_symbols
+from pe_layout import PELayout, attach_section
 from pe_version import get_pe_version
 
 
@@ -57,7 +59,53 @@ def _detect_sf_version():
     return None
 
 
-def _make_symbols(funcs, labels):
+def _detect_sf_target():
+    """Return ``(path, version, PELayout)`` for the one supported target.
+
+    Multiple regular executables are ambiguous and therefore fatal.  The old
+    first-file-wins behavior could pair one PE version with another binary's
+    address library merely because directory ordering changed.
+    """
+    candidates = []
+    if os.path.isdir(EXES_DIR):
+        for fname in sorted(os.listdir(EXES_DIR)):
+            if not fname.lower().endswith('.exe') or 'unpacked' in fname.lower():
+                continue
+            path = os.path.join(EXES_DIR, fname)
+            version = get_pe_version(path)
+            if version:
+                candidates.append((path, version))
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise RuntimeError(
+            'Expected exactly one packed Starfield target in {}, found: {}'.format(
+                EXES_DIR, ', '.join(os.path.basename(p) for p, _ in candidates)))
+    path, version = candidates[0]
+    _binding, analyzed_path = _target_binding(path)
+    layout = PELayout.read(analyzed_path)
+    if layout.pointer_size != 8 or layout.machine != 0x8664:
+        raise RuntimeError('Starfield target is not an AMD64 PE: {}'.format(path))
+    return path, version, layout
+
+
+def _target_binding(source_path):
+    """Return ``(lineage/manifest, analyzed path)`` prepared by run.py."""
+    from binary_identity import artifact_is_fresh, inspect_pe, read_manifest
+    directory = os.path.dirname(source_path)
+    stem = os.path.splitext(os.path.basename(source_path))[0]
+    for name in sorted(os.listdir(directory)):
+        artifact = os.path.join(directory, name)
+        if (artifact == source_path or 'unpacked' not in name.lower() or
+                not name.lower().startswith(stem.lower()) or
+                name.lower().endswith('.identity.json')):
+            continue
+        if artifact_is_fresh(source_path, artifact):
+            return read_manifest(artifact + '.identity.json'), artifact
+    return inspect_pe(source_path), source_path
+
+
+def _make_symbols(funcs, labels, layout):
     """Convert ids_parser output into the SYMBOLS array used by the import script.
 
     ``sf_off`` carries the offset; the script-side ``version_key`` map
@@ -72,26 +120,69 @@ def _make_symbols(funcs, labels):
         if key in seen:
             continue
         seen.add(key)
-        symbols.append({
+        symbol = {
             'n':   full_name,
             't':   'func',
             'sig': '',
             'sf':  f['sf_off'],
             'src': 'CommonLibSF',
-        })
+        }
+        if not attach_section(symbol, 'sf', layout, declared_kind='func'):
+            continue
+        symbols.append(symbol)
 
-    for l in labels:
+    # CommonLib's std::array order is not primary-first.  Assign the
+    # unsuffixed VTABLE_<Class> label only to the entry whose MSVC Complete
+    # Object Locator says subobject offset zero; use stable offset identities
+    # for secondary tables.  Failed COL validation drops the assertion.
+    classified_labels = []
+    identity_counts = {}
+    for original in labels:
+        l = dict(original)
+        class_name = l.get('vtable_class')
+        if class_name:
+            try:
+                subobject = layout.msvc_vtable_subobject_offset(l['sf_off'])
+            except (OSError, ValueError):
+                continue
+            identity = (class_name, subobject)
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+            l['_physical_vtable_identity'] = identity
+            l['vtable_subobject_offset'] = subobject
+        classified_labels.append(l)
+
+    unambiguous_labels = []
+    for l in classified_labels:
+        identity = l.pop('_physical_vtable_identity', None)
+        if identity is not None:
+            # A second COL for the same semantic class/subobject is not a new
+            # C++ class.  Ordinal suffixing used to launder that ambiguity as
+            # VTABLE_Class__primary_2 / __sub_20_2.  Omit both assertions
+            # unless the physical identity is unique.
+            if identity_counts.get(identity) != 1:
+                continue
+            class_name, subobject = identity
+            suffix = '' if subobject == 0 else '__sub_{:X}'.format(subobject)
+            l['n'] = 'VTABLE_{}{}'.format(class_name, suffix)
+            l['name'] = l['n']
+        unambiguous_labels.append(l)
+    classified_labels = unambiguous_labels
+
+    for l in classified_labels:
         key = (l['name'], 'label', l['sf_off'])
         if key in seen:
             continue
         seen.add(key)
-        symbols.append({
+        symbol = {
             'n':   l['name'],
             't':   'label',
             'sig': '',
             'sf':  l['sf_off'],
             'src': 'CommonLibSF',
-        })
+        }
+        if not attach_section(symbol, 'sf', layout, declared_kind='label'):
+            continue
+        symbols.append(symbol)
 
     return symbols
 
@@ -99,9 +190,11 @@ def _make_symbols(funcs, labels):
 SF_IMAGE_BASE = 0x140000000
 # The offline naming corpus in refs/ was produced against this binary.
 CORPUS_SOURCE_VERSION = (1, 16, 236, 0)
+CORPUS_SOURCE_SHA256 = '1d1409ca898ca596a3a605f3ebc5347f72cfd6e47e38020dec158ec9bdd7d351'
+CORPUS_ARTIFACT_SHA256 = 'fb4c781ffcd5ecf58b5750c04289c1a125326d429693516df58a31e50db8774f'
 
 
-def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
+def _build_fallback_symbols(addr_lib, sf_version, layout, verbose=True):
     """Assemble FALLBACK_SYMBOLS from the two on-disk name pools:
 
       1. ``extern/AddressLibraryDatabase/starfield.rename`` -- meh321's
@@ -141,8 +234,12 @@ def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
                     name = name[:-2]
                 if not name:
                     continue
-                out.append({'n': name, 't': 'func', 'sig': '',
-                            'sf': rva, 'src': 'starfield.rename'})
+                entry = {'n': name, 't': 'func', 'sig': '',
+                         'sf': rva, 'src': 'starfield.rename',
+                         'target_sha256': layout.sha256}
+                if not attach_section(entry, 'sf', layout, declared_kind='func'):
+                    continue
+                out.append(entry)
                 by_rva.add(rva)
                 n_rename += 1
     if verbose:
@@ -152,9 +249,17 @@ def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
     corpus_path = os.path.join(SCRIPT_DIR, 'refs',
                                'sf116_named_from_combined_final.csv')
     n_corpus = n_remap_miss = 0
+    corpus_hash = None
     if os.path.isfile(corpus_path):
+        digest = hashlib.sha256()
+        with open(corpus_path, 'rb') as corpus_stream:
+            for chunk in iter(lambda: corpus_stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        corpus_hash = digest.hexdigest()
+    if corpus_hash == CORPUS_ARTIFACT_SHA256:
         det = tuple(sf_version) + (0,) * (4 - len(sf_version))
-        same_build = det[:4] == CORPUS_SOURCE_VERSION
+        same_build = (det[:4] == CORPUS_SOURCE_VERSION and
+                      layout.sha256.lower() == CORPUS_SOURCE_SHA256)
         rev_236 = None
         det_db = None
         if not same_build:
@@ -163,7 +268,9 @@ def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
                 src_lib = AddressLibrary()
                 src_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'),
                                  pe_version=CORPUS_SOURCE_VERSION)
-                rev_236 = {rva: i for i, rva in src_lib.sf_db.items()}
+                rev_236 = {}
+                for id_value, source_rva in src_lib.sf_db.items():
+                    rev_236.setdefault(source_rva, set()).add(id_value)
                 det_db = addr_lib.sf_db
                 if verbose:
                     print('Corpus remap active: 1.16.236 -> {} via versionlib IDs'
@@ -190,8 +297,10 @@ def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
                 if same_build:
                     rva = rva236
                 else:
-                    id_ = rev_236.get(rva236) if rev_236 else None
-                    rva = det_db.get(id_) if (id_ is not None and det_db) else None
+                    ids = rev_236.get(rva236, set()) if rev_236 else set()
+                    candidates = {det_db[id_value] for id_value in ids
+                                  if det_db and id_value in det_db}
+                    rva = next(iter(candidates)) if len(candidates) == 1 else None
                     if rva is None:
                         n_remap_miss += 1
                         continue
@@ -200,10 +309,25 @@ def _build_fallback_symbols(addr_lib, sf_version, verbose=True):
                 name = parts[1].strip()
                 if not name:
                     continue
-                out.append({'n': name, 't': 'func', 'sig': '',
-                            'sf': rva, 'src': 'sf116_corpus'})
+                entry = {
+                    'n': name, 't': 'func', 'sig': '', 'sf': rva,
+                    'src': 'sf116_corpus',
+                    'source_version': '.'.join(str(x) for x in CORPUS_SOURCE_VERSION),
+                    'source_sha256': CORPUS_SOURCE_SHA256,
+                    'target_sha256': layout.sha256,
+                }
+                # This corpus claims to contain functions harvested from a
+                # Ghidra project.  Rows landing outside executable memory are
+                # contaminated evidence, not data labels; discard them.
+                if not attach_section(entry, 'sf', layout, declared_kind='func'):
+                    continue
+                if entry['t'] != 'func':
+                    continue
+                out.append(entry)
                 by_rva.add(rva)
                 n_corpus += 1
+    elif corpus_hash is not None:
+        print('WARNING: SF116 naming corpus hash mismatch; refusing unbound evidence.')
     if verbose:
         print('Fallback pool 2 (sf116 corpus): {} loaded{}'.format(
             n_corpus,
@@ -287,18 +411,21 @@ def main():
         sys.exit(1)
 
     # 1. Address library -- match the bin to the installed Starfield.exe.
-    sf_version = _detect_sf_version()
-    if sf_version is None:
+    target = _detect_sf_target()
+    if target is None:
         print('ERROR: Could not detect Starfield.exe version in {}.  '
               'Drop a Starfield.exe in that directory.'.format(EXES_DIR))
         sys.exit(1)
+    sf_exe, sf_version, pe_layout = target
     print('Detected Starfield.exe version: {}'.format(
         '.'.join(str(x) for x in sf_version)))
+    print('Target SHA-256: {}'.format(pe_layout.sha256))
 
     addr_lib = AddressLibrary()
     try:
         addr_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'),
-                          pe_version=sf_version)
+                          pe_version=sf_version,
+                          expected_sha256=pe_layout.sha256)
     except FileNotFoundError as e:
         print('ERROR: {}'.format(e))
         sys.exit(1)
@@ -316,7 +443,7 @@ def main():
     enums, structs, vtable_structs, template_source = _try_clang_types(verbose=True)
 
     # 4. Assemble SYMBOLS array
-    symbols      = _make_symbols(func_syms, label_syms)
+    symbols      = _make_symbols(func_syms, label_syms, pe_layout)
     symbols_json = _json.dumps(symbols, separators=(',', ':'))
 
     n_func  = sum(1 for s in symbols if s['t'] == 'func')
@@ -333,21 +460,60 @@ def main():
     # vtables were inferred in the first place.
     if vtable_structs:
         from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
-        from vtable_matcher import load_json as _load_shift_map_json
-        from vtable_patcher import patch_vtable_structs as _patch_vtable_structs
+        from sf_shift_manifest import (
+            ANCHOR_VERSION as _SHIFT_ANCHOR_VERSION,
+            load_validated as _load_validated_shift_map,
+            map_path as _shift_map_path,
+            version_token as _version_token,
+        )
 
         # Apply per-version shift map (if one exists) to remap onto the
         # actual binary layout.  Single-version pipeline today but symmetric
         # with the SSE/F4 builds; future SF patches can drop in a shift map
         # without touching this code.
-        shift_map_path = os.path.join(SCRIPT_DIR, 'refs', 'shift_sf.json')
-        shift_map = _load_shift_map_json(shift_map_path)
-        if shift_map:
-            print('Applying SF vtable shift map: {}'.format(shift_map_path))
-            _patch_vtable_structs(vtable_structs, shift_map, 'sf')
+        normalized_version = tuple(sf_version) + (0,) * (4 - len(sf_version))
+        normalized_version = normalized_version[:4]
+        if normalized_version != _SHIFT_ANCHOR_VERSION:
+            refs_dir = os.path.join(SCRIPT_DIR, 'refs')
+            shift_map_path = _shift_map_path(refs_dir, normalized_version)
+            ref_layout = os.path.join(
+                refs_dir, 'sf_{}_vtables.csv.gz'.format(
+                    _version_token(_SHIFT_ANCHOR_VERSION)))
+            target_layout = os.path.join(
+                refs_dir, 'sf_{}_vtables.csv.gz'.format(
+                    _version_token(normalized_version)))
+            if not os.path.isfile(shift_map_path):
+                raise RuntimeError(
+                    'No target-bound SF vtable shift map for {}.  Run '
+                    '`python scripts/commonlibsf/sf_shift_check.py --preflight` '
+                    'after importing/analyzing the target without applying '
+                    'CommonLibSF names.'.format('.'.join(map(str, normalized_version))))
+            shift_map = _load_validated_shift_map(
+                shift_map_path, normalized_version, pe_layout.sha256,
+                reference_layout=ref_layout, target_layout=target_layout,
+                reference_versionlib=os.path.join(
+                    PROJECT_DIR, 'addresslibrary', 'starfield',
+                    'versionlib-{}.bin'.format(
+                        _version_token(_SHIFT_ANCHOR_VERSION))),
+                target_versionlib=os.path.join(
+                    PROJECT_DIR, 'addresslibrary', 'starfield',
+                    'versionlib-{}.bin'.format(
+                        _version_token(normalized_version))))
+            print('Applying validated SF vtable shift map: {}'.format(shift_map_path))
+            from sf_vtable_policy import strict_patch_vtable_structs
+            strict_patch_vtable_structs(
+                vtable_structs, shift_map,
+                'sf_' + _version_token(normalized_version).replace('-', '_'))
+            anchors_path = os.path.join(
+                SCRIPT_DIR, 'anchors', 'sf_{}.csv'.format(
+                    _version_token(normalized_version)))
+        else:
+            print('SF target is the CommonLibSF anchor build; no shift map applies.')
+            anchors_path = os.path.join(SCRIPT_DIR, 'anchors', 'sf.csv')
 
-        _verify_anchors_or_exit('sf', vtable_structs,
-                                os.path.join(SCRIPT_DIR, 'anchors', 'sf.csv'))
+        _verify_anchors_or_exit(
+            'sf_' + _version_token(normalized_version),
+            vtable_structs, anchors_path)
     else:
         print('Skipping vtable anchor verification: no vtable_structs '
               '(labels-only run -- needs clang.exe for AST-based vtable '
@@ -357,7 +523,7 @@ def main():
     # Primary CommonLibSF symbols win on RVA collision at apply time
     # (fallbacks only rename FUN_/sub_ placeholders).
     print()
-    fallback_symbols = _build_fallback_symbols(addr_lib, sf_version)
+    fallback_symbols = _build_fallback_symbols(addr_lib, sf_version, pe_layout)
     primary_rvas = {s['sf'] for s in symbols if s.get('sf')}
     fallback_symbols = [s for s in fallback_symbols
                         if s['sf'] not in primary_rvas]
@@ -376,6 +542,7 @@ def main():
         fallback_symbols_json=fallback_symbols_json,
         template_source=template_source,
         project_name='CommonLibSF',
+        target_manifest=_target_binding(sf_exe)[0],
     )
     print('\nWrote {}'.format(output_path))
     print('  {} enums, {} structs, {} vtable structs, {} symbols, {} fallback'.format(

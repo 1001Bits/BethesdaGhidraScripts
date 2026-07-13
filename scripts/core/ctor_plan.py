@@ -30,10 +30,13 @@ def is_ctor(func_name, class_name):
     if not func_name:
         return False
     leaf = func_name.split('::')[-1]
+    lower_leaf = leaf.lower()
+    if leaf.startswith('~') or 'destructor' in lower_leaf or 'deleting_dtor' in lower_leaf:
+        return False
     return (leaf == class_name
             or leaf.endswith('_ctor')
             or leaf.endswith('::' + class_name)
-            or 'constructor' in leaf.lower())
+            or 'constructor' in lower_leaf)
 
 
 def field_label(param_name):
@@ -62,3 +65,45 @@ def best_ctor(candidates):
         if n > 0 and (best is None or n > best[1]):
             best = (fid, n)
     return best[0] if best else None
+
+
+def field_consensus(observations, min_independent=2):
+    """Resolve constructor field evidence without last-writer-wins guesses.
+
+    ``observations`` contains ``(offset, type_name, field_name, constructor)``.
+    Duplicate observations from the same constructor count once.  A proposal
+    is returned only when at least ``min_independent`` constructors agree and
+    no competing type/name has equal support.
+    """
+    by_offset = {}
+    seen = set()
+    for offset, type_name, field_name, constructor in observations:
+        if offset is None or not type_name or not constructor:
+            continue
+        key = (int(offset), type_name, field_name or '', constructor)
+        if key in seen:
+            continue
+        seen.add(key)
+        proposal = (type_name, field_name or '')
+        by_offset.setdefault(int(offset), {}).setdefault(proposal, set()).add(constructor)
+
+    resolved = {}
+    ambiguous = {}
+    for offset, proposals in by_offset.items():
+        ranked = sorted(proposals.items(), key=lambda item: (-len(item[1]), item[0]))
+        winner, constructors = ranked[0]
+        runner_count = len(ranked[1][1]) if len(ranked) > 1 else 0
+        if len(constructors) >= min_independent and len(constructors) > runner_count:
+            resolved[offset] = {
+                'type': winner[0], 'name': winner[1] or None,
+                'votes': len(constructors),
+                'constructors': sorted(constructors),
+                'confidence': 'high',
+            }
+        else:
+            ambiguous[offset] = [
+                {'type': proposal[0], 'name': proposal[1] or None,
+                 'votes': len(ctors), 'constructors': sorted(ctors)}
+                for proposal, ctors in ranked
+            ]
+    return resolved, ambiguous

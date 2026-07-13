@@ -217,13 +217,15 @@ def scan_ppc_string_xrefs(
             # addi modifies rD; if rD != rA, original rA anchor still valid
             if rD != rA:
                 hi_anchor[rD] = None
-        elif op == 0x18 and rA != 0:  # ori rD, rA, uimm
-            if hi_anchor[rA] is not None:
-                target_va = (hi_anchor[rA] | imm) & 0xFFFFFFFF
+        elif op == 0x18:  # ori rA, rS, uimm (source/dest fields differ from addi)
+            rS = rD
+            dest = rA
+            if hi_anchor[rS] is not None:
+                target_va = (hi_anchor[rS] | imm) & 0xFFFFFFFF
                 if target_va in string_va_set:
                     pairs.append((text_vaddr + i, target_va))
-            if rD != rA:
-                hi_anchor[rD] = None
+            if dest != rS:
+                hi_anchor[dest] = None
         else:
             # If this instruction writes to a tracked register, invalidate
             # its anchor (we only conservatively invalidate D-form writes).

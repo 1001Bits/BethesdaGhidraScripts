@@ -30,10 +30,20 @@ Usage:
   python scripts/havok/pe_havok_extract.py DLL [DLL2 ...] --out NAME.json
 """
 import argparse
+import hashlib
 import json
 import re
 import struct
 from pathlib import Path
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 REFS = Path(__file__).resolve().parent / "refs"
 TYPE_MAX = 40
@@ -218,7 +228,8 @@ def scan(path):
         # keep the richest definition if name seen twice across DLLs
         prev = records.get(nm)
         if prev is None or len(flist) > len(prev['fields']):
-            records[nm] = {'size': objsize, 'align': ptrsz, 'vtable': False,
+            records[nm] = {'size': objsize, 'align': ptrsz, 'kind': 'class',
+                           'vtable': False,
                            'fields': flist}
     return records, ptrsz
 
@@ -227,6 +238,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dlls', nargs='+')
     ap.add_argument('--out', default='havok_layouts_71_pe.json')
+    ap.add_argument('--havok-version', required=True)
+    ap.add_argument('--target', action='append', required=True,
+                    help='allowed target executable basename; repeatable')
     args = ap.parse_args()
     merged = {}
     ptrsz = 4
@@ -238,7 +252,15 @@ def main():
                 merged[k] = v
     REFS.mkdir(exist_ok=True)
     out = REFS / args.out
-    json.dump(merged, open(out, 'w'), indent=1)
+    from layout_schema import make_document
+    doc = make_document(merged, pointer_size=ptrsz,
+                        havok_version=args.havok_version,
+                        targets=args.target,
+                        source='in-binary hkClass reflection',
+                        input_modules=[{'file': Path(d).name,
+                                        'sha256': _sha256(d)}
+                                       for d in args.dlls])
+    json.dump(doc, open(out, 'w'), indent=1)
     withf = sum(1 for v in merged.values() if v['fields'])
     print("merged %d classes (%d with fields, ptr=%d) -> %s"
           % (len(merged), withf, ptrsz, out))

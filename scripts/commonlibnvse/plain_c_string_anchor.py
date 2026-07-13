@@ -35,9 +35,9 @@ from extract_pc_fnv_string_xrefs import (
 )
 
 
-XBOX_PUBLICS = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_publics.txt')
-PC_EXE       = Path(r'D:\FNV Project\FalloutNewVegas\FalloutNV.exe')
-PC_STRINGS   = Path(r'C:\GhidraProjects\scripts\fnv_pc_strings.txt')
+from paths import PC_EXE, artifact
+XBOX_PUBLICS = artifact('Fallout_Debug_publics.txt')
+PC_STRINGS   = artifact('fnv_pc_strings.txt')
 
 
 _PUB_RE = re.compile(r'\s*public\s+\[0x([0-9A-Fa-f]+)\]\s+(\S+)\s*$')

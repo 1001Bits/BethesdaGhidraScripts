@@ -31,9 +31,32 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / "refs"
 FNV_IMAGE_BASE = 0x00400000
 
+sys.path.insert(0, str(SCRIPT_DIR))
+from addressing import (AddressError, load_vtable_records,
+                        normalize_address)  # noqa: E402
+from vtable_schema import load_xbox_tables  # noqa: E402
+from paths import ARTIFACTS, artifact  # noqa: E402
+
+_XBOX_METHOD_IDENTITY_BY_RVA = {}
+
 _VTABLE_HINTS = ('_vtbl', '_vtable', 'vtable_', 'VTABLE_', '::vftable',
                  '_RTTI', 'RTTI_', '_RTTIType', 'kVtbl_', 'g_vftable_',
                  's_vtbl_')
+
+# These sources identify the PC address by decoding a vtable slot.  That is
+# direct executable-entry evidence, independent of how the method name was
+# recovered.  Heuristic xref/callgraph/immediate/constructor corpora are
+# intentionally absent: they may rename an existing Ghidra function but must
+# never cause the x86 importer to materialize a new one.
+_VERIFIED_ENTRY_SOURCES = frozenset((
+    'commonlib_vtable',
+    'xbox_vtable',
+    'xbox_pdb_matched',
+))
+
+
+def _verified_entry_source(source: str) -> bool:
+    return source in _VERIFIED_ENTRY_SOURCES
 
 
 def _looks_like_label(name: str) -> bool:
@@ -60,6 +83,10 @@ def _load_nvse_known(path: Path) -> List[Tuple[int, str]]:
         if name.startswith(('aka:', 'GAME -', 'GAME-', 'GECK -', 'GECK-',
                             'see 0x', 'see address', 'unknown ', '0x')):
             continue
+        if name.startswith(('kFlag', 'kFlags_', 'kEffFlag', 'kFormFlag',
+                            'kNiFlag')):
+            # Bitmask enum values were scraped as though they were addresses.
+            continue
         # Drop parenthetical noise the extractor appended to flag-enum names.
         name = re.sub(r'\s*\([^)]*\)\s*$', '', name).strip()
         if not name:
@@ -75,7 +102,10 @@ def _load_nvse_known(path: Path) -> List[Tuple[int, str]]:
             va = int(addr_s, 16)
         except ValueError:
             continue
-        out.append((va - FNV_IMAGE_BASE, name))
+        try:
+            out.append((normalize_address(va, 'VA'), name))
+        except AddressError:
+            continue
     return out
 
 
@@ -112,7 +142,10 @@ def _load_matched_vtable_methods(path: Path) -> List[Tuple[int, str]]:
             # Strip the trailing parenthesis form some destructors carry.
             clean = method.split('(')[0].strip()
             qname = f'{cls}::{clean}'
-            out.append((addr - FNV_IMAGE_BASE, qname))
+            try:
+                out.append((normalize_address(addr, 'VA'), qname))
+            except AddressError:
+                continue
     return out
 
 
@@ -160,28 +193,15 @@ def _load_xbox_vtable_methods() -> List[Tuple[int, str]]:
     if not xbox_path.is_file() or not pc_path.is_file():
         return []
 
-    xbox = json.loads(xbox_path.read_text(encoding='utf-8'))
+    raw_xbox = json.loads(xbox_path.read_text(encoding='utf-8'))
+    if not isinstance(raw_xbox, dict) or raw_xbox.get('schema') != 'fnv-xbox-vtables-v2':
+        # V1 was class-keyed and irreversibly overwrote duplicate physical
+        # tables.  It can be read by migration tools, but is not safe input for
+        # automatic naming.
+        return []
 
-    # Parse PC vtables: per class, ordered list of (slot_index, slot_rva).
-    pc_slots: Dict[str, List[Tuple[int, int]]] = {}
-    cur_cls = None
-    def _parse_pc(text: str):
-        nonlocal cur_cls
-        for line in text.splitlines():
-            m = _PC_VT_HDR.match(line)
-            if m:
-                cur_cls = m.group(2).strip()
-                pc_slots.setdefault(cur_cls, [])
-                continue
-            m = _PC_VT_ROW.match(line)
-            if m and cur_cls is not None:
-                va = int(m.group(1), 16)
-                slot = int(m.group(2))
-                pc_slots[cur_cls].append((slot, va))
-
-    _parse_pc(pc_path.read_text(encoding='utf-8', errors='replace'))
-    if pc_extra.is_file():
-        _parse_pc(pc_extra.read_text(encoding='utf-8', errors='replace'))
+    xbox_tables = load_xbox_tables(raw_xbox)
+    pc_records = load_vtable_records([pc_path, pc_extra])
 
     # Demangle on-the-fly via dbghelp -- when extract_xbox_vtables.py was
     # built llvm-undname.exe wasn't on this box so the JSON's ``d`` field
@@ -231,18 +251,14 @@ def _load_xbox_vtable_methods() -> List[Tuple[int, str]]:
             return qname
         return f'{cls_fallback}::vf{slot_i:03d}'
 
-    # Group Xbox keys by bare class.  Secondary vtables have the form
-    # ``Class::Base`` (multi-inheritance subobject); we need to pair
-    # them against PC FNV's MULTIPLE vtables for the same class.
-    xbox_by_class: Dict[str, List[Tuple[str, list]]] = {}
-    for key, slots in xbox.items():
-        if key.startswith('?$') or '::' not in key:
-            xbox_by_class.setdefault(key, []).append(('', slots))
-        else:
-            base, base_label = key.split('::', 1)
-            xbox_by_class.setdefault(base, []).append((base_label, slots))
+    xbox_by_class = {}
+    pc_by_class = {}
+    for table in xbox_tables:
+        xbox_by_class.setdefault(table.class_name, []).append(table)
+    for table in pc_records:
+        pc_by_class.setdefault(table.class_name, []).append(table)
 
-    def _emit_slot(xb_slot, pc_slot_va, cls, slot_idx, out_list):
+    def _emit_slot(xb_slot, pc_slot_rva, cls, slot_idx, table_ids, out_list):
         method_full = xb_slot.get('d') or xb_slot.get('m', '')
         mangled     = xb_slot.get('m', '')
         if not method_full or method_full.startswith('__unnamed_'):
@@ -253,37 +269,58 @@ def _load_xbox_vtable_methods() -> List[Tuple[int, str]]:
             except Exception:
                 pass
         qname = _qname_from_demangled(method_full, cls, slot_idx)
-        out_list.append((pc_slot_va - FNV_IMAGE_BASE, qname))
+        out_list.append((pc_slot_rva, qname))
+        _XBOX_METHOD_IDENTITY_BY_RVA[pc_slot_rva] = {
+            'qname': qname,
+            'demangled': method_full,
+            'mangled': mangled,
+            'xbox_table': table_ids[0],
+            'pc_table': table_ids[1],
+            'slot': slot_idx,
+        }
 
     out: List[Tuple[int, str]] = []
-    for cls, vt_list in xbox_by_class.items():
-        pc = pc_slots.get(cls)
-        if not pc:
+    for cls, xb_tables in xbox_by_class.items():
+        pc_tables = pc_by_class.get(cls, [])
+        if not pc_tables:
             continue
-        pc.sort(key=lambda x: x[0])
 
-        if len(vt_list) == 1:
-            _, xb_slots = vt_list[0]
-            n = min(len(xb_slots), len(pc))
-            for i in range(n):
-                _emit_slot(xb_slots[i], pc[i][1], cls, i, out)
-        else:
-            # Multi-inherit: Xbox has primary + secondaries.  PC has
-            # multiple consecutive vtables in .rdata for the same class.
-            # The Xbox primary is identified by base_label == ''.  Sort
-            # secondaries by Xbox emission order (preserving original
-            # JSON order is best-effort).  Match each Xbox vtable to a
-            # PC segment by consuming PC slots in order.
-            xb_sorted = sorted(vt_list, key=lambda x: 0 if x[0] == '' else 1)
-            pc_offset = 0
-            for base_label, xb_slots in xb_sorted:
-                n = len(xb_slots)
-                if pc_offset + n > len(pc):
-                    break
-                segment = pc[pc_offset:pc_offset + n]
-                for i, entry in enumerate(xb_slots):
-                    _emit_slot(entry, segment[i][1], cls, i, out)
-                pc_offset += n
+        # Only accept reciprocal-unique, exact-size table matches.  Positional
+        # concatenation was the source of widespread secondary-table method
+        # corruption when two tables had similar lengths.
+        xb_candidates = {
+            xb.identity: [pc for pc in pc_tables
+                          if len(pc.slots) == len(xb.slots) and
+                          (not xb.subobject or not pc.subobject or
+                           xb.subobject == pc.subobject)]
+            for xb in xb_tables
+        }
+        pc_candidates = {
+            pc.identity: [xb for xb in xb_tables
+                          if len(pc.slots) == len(xb.slots) and
+                          (not xb.subobject or not pc.subobject or
+                           xb.subobject == pc.subobject)]
+            for pc in pc_tables
+        }
+        pairs = []
+        for xb in xb_tables:
+            candidates = xb_candidates[xb.identity]
+            if len(candidates) != 1:
+                continue
+            pc = candidates[0]
+            reverse = pc_candidates[pc.identity]
+            if len(reverse) != 1 or reverse[0].identity != xb.identity:
+                continue
+            pairs.append((xb, pc))
+
+        for xb, pc in pairs:
+            pc_slots = dict(pc.slots)
+            for i, entry in enumerate(xb.slots):
+                pc_rva = pc_slots.get(i)
+                if pc_rva is None:
+                    continue
+                _emit_slot(entry, pc_rva, cls, i,
+                           (xb.identity, pc.identity), out)
     return out
 
 
@@ -295,7 +332,8 @@ def _load_string_anchored(path: Path) -> List[Tuple[int, str]]:
     out = []
     if not path.is_file():
         return out
-    for ln in path.read_text(encoding='utf-8', errors='replace').splitlines():
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    for ln in lines:
         if not ln or ln.startswith('#'):
             continue
         p = ln.split('|', 2)
@@ -305,7 +343,10 @@ def _load_string_anchored(path: Path) -> List[Tuple[int, str]]:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        try:
+            out.append((normalize_address(rva, 'RVA'), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
@@ -317,17 +358,32 @@ def _load_string_xref_names(path: Path) -> List[Tuple[int, str]]:
     out = []
     if not path.is_file():
         return out
-    for ln in path.read_text(encoding='utf-8', errors='replace').splitlines():
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    if '# EVIDENCE=reciprocal-unique;min-signal=0.5;min-votes=2' not in lines[:8]:
+        return out
+    for ln in lines:
         if not ln or ln.startswith('#'):
             continue
         p = ln.split('|', 4)
-        if len(p) < 2:
+        if len(p) < 4:
             continue
         try:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        tier = p[2].strip().upper()
+        try:
+            votes = int(p[3])
+        except ValueError:
+            continue
+        # Quarantine low-signal and one-vote transfers.  Existing T2-T4
+        # corpora were greedy assignments without reciprocal uniqueness.
+        if tier != 'T1' or votes < 2:
+            continue
+        try:
+            out.append((normalize_address(rva, 'RVA'), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
@@ -349,7 +405,10 @@ def _load_source_file_names(path: Path) -> List[Tuple[int, str]]:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        try:
+            out.append((normalize_address(rva, 'RVA'), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
@@ -372,11 +431,15 @@ def _load_imm_paired_names(path: Path) -> List[Tuple[int, str]]:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        try:
+            out.append((normalize_address(rva, 'RVA'), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
-def _load_constructor_names(path: Path) -> List[Tuple[int, str]]:
+def _load_constructor_names(path: Path, coordinate: str = 'RVA',
+                            required_evidence: str = '') -> List[Tuple[int, str]]:
     """Parse constructor_names.csv (``0xRVA|Class::Class|0xvtable_va``).
 
     Sources: vtable-VA byte-scan (find_fnv_constructors.py).
@@ -384,7 +447,11 @@ def _load_constructor_names(path: Path) -> List[Tuple[int, str]]:
     out = []
     if not path.is_file():
         return out
-    for ln in path.read_text(encoding='utf-8', errors='replace').splitlines():
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    if required_evidence and not any(
+            ln.strip() == '# EVIDENCE=' + required_evidence for ln in lines[:16]):
+        return out
+    for ln in lines:
         if not ln or ln.startswith('#'):
             continue
         p = ln.split('|', 2)
@@ -394,7 +461,10 @@ def _load_constructor_names(path: Path) -> List[Tuple[int, str]]:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        try:
+            out.append((normalize_address(rva, coordinate), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
@@ -407,7 +477,10 @@ def _load_global_labels(path: Path) -> List[Tuple[int, str]]:
     out = []
     if not path.is_file():
         return out
-    for ln in path.read_text(encoding='utf-8', errors='replace').splitlines():
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    if '# EVIDENCE=reciprocal-unique;min-votes=2' not in lines[:8]:
+        return out
+    for ln in lines:
         if not ln or ln.startswith('#'):
             continue
         p = ln.split('|', 3)
@@ -417,7 +490,16 @@ def _load_global_labels(path: Path) -> List[Tuple[int, str]]:
             rva = int(p[0], 16)
         except ValueError:
             continue
-        out.append((rva, p[1].strip()))
+        try:
+            votes = int(p[2]) if len(p) > 2 else 0
+        except ValueError:
+            continue
+        if votes < 2:
+            continue
+        try:
+            out.append((normalize_address(rva, 'RVA'), p[1].strip()))
+        except AddressError:
+            continue
     return out
 
 
@@ -433,22 +515,14 @@ def _load_pc_vtable_labels(path: Path) -> List[Tuple[int, str]]:
     out: List[Tuple[int, str]] = []
     if not path.is_file():
         return out
-    for ln in path.read_text(encoding='utf-8', errors='replace').splitlines():
-        if not ln.startswith('VTABLE|'):
-            continue
-        parts = ln.split('|')
-        if len(parts) < 3:
-            continue
-        try:
-            va = int(parts[1], 16)
-        except ValueError:
-            continue
-        rva = va - FNV_IMAGE_BASE
-        if rva <= 0:
-            continue
-        cls = parts[2].strip()
-        if not cls:
-            continue
+    records = load_vtable_records([path])
+    counts = {}
+    for rec in records:
+        counts[rec.class_name] = counts.get(rec.class_name, 0) + 1
+    ordinals = {}
+    for rec in records:
+        cls = rec.class_name
+        rva = rec.table_rva
         # rtti_extra rows carry partially-mangled template names like
         # ``?$SettingT@VGameSettingCollection`` -- sanitize to a Ghidra-
         # legal identifier (mirrors pdb_types_to_pipeline normalization).
@@ -458,7 +532,11 @@ def _load_pc_vtable_labels(path: Path) -> List[Tuple[int, str]]:
         cls = cls.strip('_')
         if not cls:
             continue
-        out.append((rva, 'VTABLE_' + cls))
+        ordinal = ordinals.get(rec.class_name, 0)
+        ordinals[rec.class_name] = ordinal + 1
+        suffix = ('__table_%d_%08X' % (ordinal, rva)
+                  if counts[rec.class_name] > 1 else '')
+        out.append((rva, 'VTABLE_' + cls + suffix))
     return out
 
 
@@ -468,7 +546,7 @@ def _load_pdb_compiland_index():
     know both sides of the PC<->Xbox correspondence)."""
     import json as _j
     out: Dict[int, str] = {}
-    cmp_path = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_modules.json')
+    cmp_path = artifact('Fallout_Debug_modules.json')
     if not cmp_path.is_file():
         return out
     va_to_cmp = _j.loads(cmp_path.read_text(encoding='utf-8'))
@@ -476,7 +554,7 @@ def _load_pdb_compiland_index():
     va_to_cmp = {int(k): v for k, v in va_to_cmp.items()}
 
     # PC RVA -> name -> (Xbox VA via funcs.json) -> compiland
-    funcs_path = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_funcs.json')
+    funcs_path = artifact('Fallout_Debug_funcs.json')
     name_to_xbox_va: Dict[str, int] = {}
     if funcs_path.is_file():
         for _cls, fns in _j.loads(funcs_path.read_text(encoding='utf-8')).items():
@@ -525,7 +603,7 @@ def _load_pdb_sig_index():
     """
     try:
         from pdb_signatures import load_sigs
-        base = Path(r'C:\GhidraProjects\scripts')
+        base = ARTIFACTS
         paths = [base / f'{n}_funcs.json' for n in (
                  'Fallout_Debug', 'Fallout',
                  'Fallout_Release_Beta', 'Fallout_Release_MemDebug')]
@@ -534,18 +612,21 @@ def _load_pdb_sig_index():
         return {}
 
 
-def _build_rva_to_sig_index(sig_by_qname: Dict[str, str]) -> Dict[int, str]:
+def _build_rva_to_sig_index(sig_by_qname: Dict[str, str]) -> Dict[int, Tuple[str, str]]:
     """Build PC-RVA -> sig index using sources that surface BOTH a name
     AND an address.  Used as a fallback when the symbol's final name
     differs from the PDB qualified form (e.g. xNVSE wrappers like
     ``FormHeap_Allocate`` are PDB's ``Bethesda::FormHeap::Allocate``).
     """
-    out: Dict[int, str] = {}
+    out: Dict[int, Tuple[str, str]] = {}
 
     # 1. xbox_vtable pairs (PC RVA -> qualified PDB name)
     for rva, name in _load_xbox_vtable_methods():
-        if name in sig_by_qname:
-            out.setdefault(rva, sig_by_qname[name])
+        identity = _XBOX_METHOD_IDENTITY_BY_RVA.get(rva, {}).get('demangled', '')
+        resolver = getattr(sig_by_qname, 'resolve', None)
+        sig = resolver(name, identity) if resolver else sig_by_qname.get(name)
+        if sig:
+            out.setdefault(rva, (name, sig))
 
     # 2. string_xref CSV (PC RVA -> qualified name)
     p = REFS_DIR / 'fnv_string_xref_names.csv'
@@ -561,39 +642,62 @@ def _build_rva_to_sig_index(sig_by_qname: Dict[str, str]) -> Dict[int, str]:
             except ValueError:
                 continue
             name = parts[1].strip()
-            if name in sig_by_qname:
-                out.setdefault(rva, sig_by_qname[name])
+            sig = sig_by_qname.get(name)
+            if sig:
+                out.setdefault(rva, (name, sig))
     return out
 
 
 def build_fallback_symbols() -> List[dict]:
     """Return the merged fallback symbol list for the FNV pipeline."""
+    include_experimental = os.environ.get('BGS_FNV_INCLUDE_EXPERIMENTAL') == '1'
     nvse_syms     = _load_nvse_known(REFS_DIR / 'fnv_pc_symbols.txt')
     jip_syms      = _load_nvse_known(REFS_DIR / 'fnv_jip_addresses.txt')
-    commonlib     = _load_constructor_names(REFS_DIR / 'fnv_commonlib_vtable_methods.csv')
+    commonlib_path = REFS_DIR / 'fnv_commonlib_vtable_methods.csv'
+    commonlib_text = (commonlib_path.read_text(encoding='utf-8', errors='replace')
+                      if commonlib_path.is_file() else '')
+    if '# ADDRESS_COORDINATE=RVA' in commonlib_text.splitlines()[:8]:
+        commonlib = _load_constructor_names(commonlib_path, 'RVA')
+    else:
+        # Legacy output combined duplicate tables and also wrote VAs in an
+        # RVA-labelled CSV.  It must be regenerated by the fixed scanner.
+        commonlib = []
     pdb_syms      = _load_matched_vtable_methods(REFS_DIR / 'fnv_pdb_matched_classes.txt')
     xbox_vt       = _load_xbox_vtable_methods()
     string_anch   = _load_string_anchored(REFS_DIR / 'fnv_string_anchored.csv')
     string_xref   = _load_string_xref_names(REFS_DIR / 'fnv_string_xref_names.csv')
-    src_file      = _load_source_file_names(REFS_DIR / 'fnv_source_file_names.csv')
-    imm_pairs     = _load_imm_paired_names(REFS_DIR / 'fnv_imm_paired_names.csv')
-    constructors  = _load_constructor_names(REFS_DIR / 'fnv_constructor_names.csv')
-    ghidra_ctors  = _load_constructor_names(REFS_DIR / 'fnv_ghidra_ctor_names.csv')
-    ghidra_dtors  = _load_constructor_names(REFS_DIR / 'fnv_ghidra_dtor_names.csv')
-    cgalign       = _load_constructor_names(REFS_DIR / 'fnv_callgraph_names.csv')
+    src_file      = (_load_source_file_names(REFS_DIR / 'fnv_source_file_names.csv')
+                     if include_experimental else [])
+    imm_pairs     = (_load_imm_paired_names(REFS_DIR / 'fnv_imm_paired_names.csv')
+                     if include_experimental else [])
+    constructors  = (_load_constructor_names(
+        REFS_DIR / 'fnv_constructor_names.csv', 'RVA',
+        'nearest-start;max-distance=256;opcode=C7')
+        if include_experimental else [])
+    ghidra_ctors  = (_load_constructor_names(REFS_DIR / 'fnv_ghidra_ctor_names.csv')
+                     if include_experimental else [])
+    ghidra_dtors  = (_load_constructor_names(REFS_DIR / 'fnv_ghidra_dtor_names.csv')
+                     if include_experimental else [])
+    cgalign       = (_load_constructor_names(REFS_DIR / 'fnv_callgraph_names.csv')
+                     if include_experimental else [])
     thunks        = _load_constructor_names(REFS_DIR / 'fnv_thunk_names.csv')  # same format
     globals_      = _load_global_labels(REFS_DIR / 'fnv_global_label_names.csv')
-    ghidra_globs  = _load_global_labels(REFS_DIR / 'fnv_ghidra_global_names.csv')
+    ghidra_globs  = (_load_global_labels(REFS_DIR / 'fnv_ghidra_global_names.csv')
+                     if include_experimental else [])
     pc_vtables    = (_load_pc_vtable_labels(REFS_DIR / 'fnv_pc_vtables.txt')
                      + _load_pc_vtable_labels(REFS_DIR / 'fnv_pc_vtables_rtti_extra.txt'))
 
     # Address -> (name, source).  Earlier source wins on collision.
     by_addr: Dict[int, Tuple[str, str]] = {}
     label_addrs: Dict[int, Tuple[str, str]] = {}  # data symbols (forced label)
+    # These scraped files contain a mixture of function entries, globals,
+    # vtables, hook sites, return sites and call instructions, but do not carry
+    # a machine-readable symbol kind.  Import them as labels only; creating a
+    # function requires a typed declaration or executable-section evidence.
     for rva, name in nvse_syms:
-        by_addr.setdefault(rva, (name, 'nvse_known'))
+        label_addrs.setdefault(rva, (name, 'nvse_known'))
     for rva, name in jip_syms:
-        by_addr.setdefault(rva, (name, 'jip_known'))
+        label_addrs.setdefault(rva, (name, 'jip_known'))
     for rva, name in commonlib:
         by_addr.setdefault(rva, (name, 'commonlib_vtable'))
     for rva, name in xbox_vt:
@@ -638,9 +742,9 @@ def build_fallback_symbols() -> List[dict]:
     _typedefs: dict = {}
     try:
         import json as _j
-        types_p = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_types.json')
-        enums_p = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_enums.json')
-        tdefs_p = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_typedefs.json')
+        types_p = artifact('Fallout_Debug_types.json')
+        enums_p = artifact('Fallout_Debug_enums.json')
+        tdefs_p = artifact('Fallout_Debug_typedefs.json')
         if types_p.is_file():
             _types_known = set(_j.loads(types_p.read_text(encoding='utf-8')))
         if enums_p.is_file():
@@ -701,25 +805,34 @@ def build_fallback_symbols() -> List[dict]:
     n_sd_from_dia  = 0
     n_locals_anno  = 0
     for rva, (name, src) in by_addr.items():
+        source_kind = src
         is_label = _looks_like_label(name)
         sig = ''
         sd  = None
         if not is_label:
-            sig = sig_index.get(name, '')
+            identity = _XBOX_METHOD_IDENTITY_BY_RVA.get(rva, {})
+            resolver = getattr(sig_index, 'resolve', None)
+            sig = (resolver(name, identity.get('demangled', ''))
+                   if resolver else sig_index.get(name, ''))
             if sig:
                 n_sigs_by_name += 1
             else:
                 # Try alias forms (destructor wrappers -> user dtor)
                 for alt in _alias_lookups(name):
-                    if alt in sig_index:
-                        sig = sig_index[alt]
+                    alt_sig = (resolver(alt, identity.get('demangled', ''))
+                               if resolver else sig_index.get(alt, ''))
+                    if alt_sig:
+                        sig = alt_sig
                         n_sigs_by_alias += 1
                         break
                 if not sig:
-                    # Fallback: try by RVA (catches nvse_known whose name
-                    # form doesn't match the PDB qualified form)
-                    sig = rva_sig_index.get(rva, '')
-                    if sig:
+                    # An RVA-only signature from a lower-priority competing
+                    # name is not proof that it belongs to the selected name.
+                    # Attach it only when both sources preserve the same full
+                    # qualified identity (normally already handled above).
+                    rva_entry = rva_sig_index.get(rva)
+                    if rva_entry and rva_entry[0] == name:
+                        sig = rva_entry[1]
                         n_sigs_by_rva += 1
         # Attach compiland (source .obj basename) into the src field so
         # ghidra_import_gen surfaces it via the existing ``Source: ...``
@@ -752,7 +865,7 @@ def build_fallback_symbols() -> List[dict]:
         # 3) Annotate src with locals if DIA has them
         if annotate_comment is not None:
             try:
-                anno = annotate_comment(name)
+                anno = annotate_comment(name, sig_hint=sig)
                 if anno:
                     src = f'{src} | {anno}'
                     n_locals_anno += 1
@@ -768,8 +881,12 @@ def build_fallback_symbols() -> List[dict]:
         }
         if sd is not None:
             entry['sd'] = sd
+        if not is_label and _verified_entry_source(source_kind):
+            entry['verified_entry'] = True
         out.append(entry)
     for rva, (name, src) in label_addrs.items():
+        if rva in by_addr:
+            continue
         cmp = compiland_index.get(rva, '')
         if cmp:
             src = f'{src} / {cmp}'

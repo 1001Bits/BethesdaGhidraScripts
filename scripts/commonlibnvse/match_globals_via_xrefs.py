@@ -36,8 +36,9 @@ IMAGE_BASE = 0x00400000
 sys.path.insert(0, str(SCRIPT_DIR.parent / 'core'))
 from pdb_symbols import undecorate  # noqa: E402
 
-XBOX_GLOBAL_XREFS = Path(r'C:\GhidraProjects\scripts\fnv_xbox_global_xrefs.txt')
-PC_DATA_XREFS     = Path(r'C:\GhidraProjects\scripts\fnv_pc_data_xrefs.txt')
+from paths import artifact
+XBOX_GLOBAL_XREFS = artifact('fnv_xbox_global_xrefs.txt')
+PC_DATA_XREFS     = artifact('fnv_pc_data_xrefs.txt')
 
 
 def load_xbox_global_xrefs(path: Path):
@@ -102,36 +103,14 @@ def load_pc_to_xbox_mapping():
                 rva = int(m.group(1), 16)
                 out[IMAGE_BASE + rva] = m.group(2)
 
-    # 2. Vtable slot pairing (xbox JSON + pc vtables)
-    xbox_p = REFS_DIR / 'fnv_xbox_vtables.json'
-    pc_p   = REFS_DIR / 'fnv_pc_vtables.txt'
-    if xbox_p.is_file() and pc_p.is_file():
-        xbox = json.loads(xbox_p.read_text(encoding='utf-8'))
-        pc_slots: Dict[str, List[Tuple[int, int]]] = {}
-        cur_cls = None
-        hdr_re = re.compile(r'^VTABLE\|0x([0-9A-Fa-f]+)\|([^|]+)\|')
-        row_re = re.compile(r'^\s+VFUNC\|0x([0-9A-Fa-f]+)\|[\w:]+::vf(?:unc_)?(\d+)\s*$')
-        for line in pc_p.read_text(encoding='utf-8', errors='replace').splitlines():
-            m = hdr_re.match(line)
-            if m:
-                cur_cls = m.group(2).strip()
-                pc_slots.setdefault(cur_cls, [])
-                continue
-            m = row_re.match(line)
-            if m and cur_cls is not None:
-                pc_slots[cur_cls].append((int(m.group(2)), int(m.group(1), 16)))
-        for cls, xb_slots in xbox.items():
-            pc = pc_slots.get(cls)
-            if not pc:
-                continue
-            pc.sort()
-            n = min(len(xb_slots), len(pc))
-            for i in range(n):
-                m_name = xb_slots[i].get('m', '')
-                if not m_name or m_name.startswith('__unnamed_') or not m_name.startswith('?'):
-                    continue
-                pc_va = IMAGE_BASE + pc[i][1]
-                out.setdefault(pc_va, m_name)
+    # 2. Vtable slot pairing.  Reuse the reciprocal-unique physical-table
+    # matcher rather than reimplementing the old VA/RVA-confused flattening.
+    import pdb_naming
+    pdb_naming._load_xbox_vtable_methods()
+    for pc_rva, ident in pdb_naming._XBOX_METHOD_IDENTITY_BY_RVA.items():
+        mangled = ident.get('mangled', '')
+        if mangled.startswith('?'):
+            out.setdefault(IMAGE_BASE + pc_rva, mangled)
     return out
 
 
@@ -164,29 +143,33 @@ def main():
                 edges[(d, g)] += 1
     print(f'  edges: {len(edges):,}')
 
-    # Sort edges by weight, greedy match
-    edge_list = sorted(edges.items(), key=lambda kv: -kv[1])
-    pc_claimed: Set[int] = set()
-    g_claimed: Set[int] = set()
+    # Accept only reciprocal-unique top candidates with at least two
+    # independent function voters and a strict runner-up margin.
+    by_pc = defaultdict(list)
+    by_global = defaultdict(list)
+    for (pc_d, g), w in edges.items():
+        by_pc[pc_d].append((w, g))
+        by_global[g].append((w, pc_d))
+
+    def unique_top(items):
+        ranked = sorted(items, reverse=True)
+        if not ranked or ranked[0][0] < 2:
+            return None
+        if len(ranked) > 1 and ranked[0][0] <= ranked[1][0]:
+            return None
+        return ranked[0]
+
     matches = []
-    # Two passes: first claim all votes >= 2 (high confidence), then any
-    # remaining votes >= 1 (low-confidence but better than nothing).
-    for (pc_d, g), w in edge_list:
-        if pc_d in pc_claimed or g in g_claimed or w < 2:
+    for pc_d, candidates in by_pc.items():
+        top = unique_top(candidates)
+        if top is None:
             continue
-        pc_claimed.add(pc_d)
-        g_claimed.add(g)
-        matches.append((pc_d, g, w))
-    high = len(matches)
-    for (pc_d, g), w in edge_list:
-        if pc_d in pc_claimed or g in g_claimed or w < 1:
+        w, g = top
+        reverse = unique_top(by_global[g])
+        if reverse is None or reverse[1] != pc_d:
             continue
-        pc_claimed.add(pc_d)
-        g_claimed.add(g)
         matches.append((pc_d, g, w))
-    low = len(matches) - high
-    print(f'Greedy matches (votes>=2 high-conf): {high:,}')
-    print(f'Greedy matches (votes==1 low-conf):  {low:,}')
+    print(f'Reciprocal-unique matches (votes>=2): {len(matches):,}')
 
     # Demangle global names
     print('Demangling...')
@@ -209,6 +192,8 @@ def main():
     written = 0
     with out_path.open('w', encoding='utf-8') as f:
         f.write('# global labels: 0x<pc_data_rva>|<qualified name>|votes|<mangled>\n')
+        f.write('# ADDRESS_COORDINATE=RVA\n')
+        f.write('# EVIDENCE=reciprocal-unique;min-votes=2\n')
         for pc_d, g, w in sorted(matches):
             mangled = g_name_by_va.get(g, '?')
             qname = qualify(demangled.get(mangled, mangled))

@@ -114,8 +114,9 @@ def find_function_start_for_offset(text_bytes: bytes, text_vaddr: int,
     Falls back to the most recent INT3 in [xref_off - max_back, xref_off].
     """
     start_off = max(0, xref_off - max_back)
-    # Find the LAST padding-then-non-padding transition in the window.
-    last_start = None
+    # Walking backwards means the first padding-to-code transition we see is
+    # the nearest candidate.  The previous implementation kept overwriting
+    # the candidate and returned the oldest transition in an 8 KiB window.
     i = xref_off
     while i > start_off:
         b = text_bytes[i - 1]
@@ -128,12 +129,10 @@ def find_function_start_for_offset(text_bytes: bytes, text_vaddr: int,
             # If padding run is >= 1 byte and what follows isn't padding,
             # that's a function start.
             if j + 1 < i:
-                last_start = i
-            i = j  # continue looking further back
+                return text_vaddr + i
+            i = j
         else:
             i -= 1
-    if last_start is not None:
-        return text_vaddr + last_start
     return 0
 
 

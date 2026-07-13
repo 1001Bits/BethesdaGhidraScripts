@@ -19,7 +19,7 @@ PROJECTS = [
     ("C:/GhidraProjects/Fallout", "F4VR"),
     ("C:/GhidraProjects/Skyrim", "SkyrimAE"),
     ("C:/GhidraProjects/Skyrim", "SkyrimSE"),
-    ("C:/Development/Tools/BethesdaGhidraScripts/ghidraprojects/BethesdaGhidraScripts",
+    (str(REPO_DIR / "ghidraprojects" / "BethesdaGhidraScripts"),
      "BethesdaGhidraScripts"),
 ]
 

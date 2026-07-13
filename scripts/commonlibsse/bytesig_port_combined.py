@@ -5,7 +5,7 @@
 Uses SkyrimSE.pdb as the source name pool by default (~94k publics
 demangled by llvm-pdbutil) and ports matching names into AE / VR
 programs imported alongside SE in the same Ghidra project (typically
-``C:/GhidraProjects/Combined.gpr``).  Renames functions in place so
+the project selected explicitly on the command line).  Renames functions in place so
 no separate apply pass is needed.
 
 Reads .text via Java byte[] chunked reads (a Python bytearray passes
@@ -13,13 +13,14 @@ by value and stays all zeros -- see the F4 sister script).
 
 Usage:
   python scripts/commonlibsse/bytesig_port_combined.py
-       [--project-dir C:/GhidraProjects --project-name Combined]
+       --project-dir <dir> --project-name <name>
        [--source se] [--targets ae vr]
 """
 from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 import json
 import os
 import re
@@ -33,6 +34,14 @@ PDB_PUBLICS  = REPO_DIR / "scripts" / "commonlibsse" / "refs" / "skyrimse_pdb_pu
 
 sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
 from bytesig_port import build_prefix_index, port_symbols  # noqa: E402
+from importer_binding import (                         # noqa: E402
+    accepts_manifest,
+    extract_target_manifests,
+)
+from bytesig_evidence import (                         # noqa: E402
+    load_validated as load_bytesig_evidence,
+    persist as persist_bytesig_evidence,
+)
 
 
 # Version → (CommonLibImport filename, [path-substring hints used to find
@@ -201,18 +210,100 @@ def _rename_in_program(program, ported: list[tuple[str, int]]) -> dict[str, int]
                 stats['no_func'] += 1
                 continue
             curr = f.getName()
+            if f.getSymbol().getSource() in (
+                    SourceType.USER_DEFINED, SourceType.IMPORTED):
+                stats['already_named'] += 1
+                continue
             if not (curr.startswith('FUN_') or curr.startswith('sub_')):
                 stats['already_named'] += 1
                 continue
-            f.setName(name, SourceType.USER_DEFINED)
+            f.setName(name, SourceType.ANALYSIS)
             stats['renamed'] += 1
         except Exception:
+            # e.g. DuplicateNameException when the name exists elsewhere in
+            # the program; skip this symbol rather than voiding the batch.
             stats['errored'] += 1
     return stats
 
 
+def _filter_function_entries(program, pairs):
+    """Keep only unique names/RVAs that are exact analyzed function entries."""
+    fm = program.getFunctionManager()
+    base = program.getImageBase()
+    names = Counter(name for name, _ in pairs)
+    rvas = Counter(rva for _, rva in pairs)
+    return [(name, rva) for name, rva in pairs
+            if names[name] == 1 and rvas[rva] == 1
+            and fm.getFunctionAt(base.add(int(rva))) is not None]
+
+
+def _program_manifest(program, program_path):
+    sha = (program.getExecutableSHA256() or '').lower()
+    if len(sha) != 64:
+        raise RuntimeError('{} lacks executable SHA-256 metadata'.format(program_path))
+    base = program.getImageBase().getOffset() & 0xFFFFFFFFFFFFFFFF
+    sections = []
+    for block in program.getMemory().getBlocks():
+        sections.append({
+            'name': block.getName(),
+            'rva': (block.getStart().getOffset() & 0xFFFFFFFFFFFFFFFF) - base,
+            'size': int(block.getSize()),
+            'executable': bool(block.isExecute()),
+        })
+    return {'sha256': sha, 'identity_kind': 'ghidra_program',
+            'program_path': program_path, 'image_base': base,
+            'sections': sections}
+
+
+def _function_boundaries(program):
+    base = program.getImageBase().getOffset() & 0xFFFFFFFFFFFFFFFF
+    starts = set()
+    sizes = {}
+    for function in program.getFunctionManager().getFunctions(True):
+        rva = ((function.getEntryPoint().getOffset() & 0xFFFFFFFFFFFFFFFF) -
+               base)
+        starts.add(rva)
+        try:
+            body = function.getBody()
+            size = (body.getMaxAddress().getOffset() -
+                    body.getMinAddress().getOffset() + 1)
+            if size > 0:
+                sizes[rva] = size
+        except Exception:
+            pass
+    return sizes, starts
+
+
+def _reconcile_pairs(pairs):
+    unique = set(pairs)
+    names = Counter(name for name, _ in unique)
+    rvas = Counter(rva for _, rva in unique)
+    return sorted((name, rva) for name, rva in unique
+                  if names[name] == 1 and rvas[rva] == 1)
+
+
+def _section_for_rva(manifest, rva):
+    for section in manifest.get('sections', []):
+        start = int(section.get('rva', 0))
+        if start <= rva < start + int(section.get('size', 0)):
+            return section.get('name', '')
+    return ''
+
+
+def _bound_script_manifest(script, program_manifest):
+    sha = program_manifest['sha256'].lower()
+    candidates = [item for item in extract_target_manifests(script)
+                  if item['sha256'].lower() == sha]
+    if len(candidates) != 1:
+        raise RuntimeError('{} is not bound to Ghidra target {}'.format(
+            script.name, sha))
+    return accepts_manifest(script, candidates[0])
+
+
 def _merge_into_target_script(target: str, ported: list[tuple[str, int]],
-                                src_tag: str) -> int:
+                              src_tag: str, source_manifest: dict,
+                              target_manifest: dict,
+                              source_rvas: dict[str, int]) -> int:
     """Merge (name, target_rva) entries into CommonLibImport_<TARGET>.py's
     SYMBOLS array.  Mirrors commonlibf4/run_bytesig_port._merge_into_script
     but with the Skyrim ``s``/``a``/``v`` RVA keys.
@@ -220,12 +311,21 @@ def _merge_into_target_script(target: str, ported: list[tuple[str, int]],
     Tolerates either raw-JSON or _json_sym.loads-wrapped SYMBOLS literal.
     Re-emits the wrapped form so JSON booleans round-trip safely.
     """
+    refs_csv = (REPO_DIR / 'scripts' / 'commonlibsse' / 'refs' /
+                f'bytesig_ported_{target}.csv')
+    persist_bytesig_evidence(
+        refs_csv, ported, src_tag, source_manifest, target_manifest,
+        source_rvas=source_rvas)
+    rows, _ = load_bytesig_evidence(refs_csv, target_manifest)
+    ported = sorted({(row['name'], row['target_rva']) for row in rows})
+
     rva_key = VERSION_TO_RVA_KEY[target]
     script_name = VERSIONS[target][0]
     p = GENERATED / script_name
     if not p.is_file():
         print(f"  {script_name}: not found, skipping write-back")
         return 0
+    target_manifest = _bound_script_manifest(p, target_manifest)
     content = p.read_text(encoding="utf-8")
     m = re.search(r"^SYMBOLS = (.+?)$", content, re.M)
     if not m:
@@ -239,19 +339,38 @@ def _merge_into_target_script(target: str, ported: list[tuple[str, int]],
         syms = json.loads(val)
 
     by_name = {s["n"]: s for s in syms if s.get("t") == "func"}
+    by_rva = {s.get(rva_key): s for s in syms
+              if s.get('t') == 'func' and s.get(rva_key)}
     added = augmented = 0
     for name, rva in ported:
         existing = by_name.get(name)
+        occupant = by_rva.get(rva)
+        if occupant is not None and occupant.get('n') != name:
+            continue
         if existing is not None:
+            if existing.get(rva_key) not in (None, rva):
+                continue
             if rva_key not in existing:
                 existing[rva_key] = rva
                 existing.setdefault("src_bytesig", src_tag)
+                existing.setdefault('target_sha256', {})[rva_key] = \
+                    target_manifest['sha256']
+                section = _section_for_rva(target_manifest, rva)
+                if section:
+                    existing.setdefault('sections', {})[rva_key] = section
                 augmented += 1
             continue
-        syms.append({
+        entry = {
             "n": name, "t": "func", "sig": "",
             rva_key: rva, "src": src_tag,
-        })
+            'target_sha256': {rva_key: target_manifest['sha256']},
+        }
+        section = _section_for_rva(target_manifest, rva)
+        if section:
+            entry['sections'] = {rva_key: section}
+        syms.append(entry)
+        by_name[name] = entry
+        by_rva[rva] = entry
         added += 1
     if added == 0 and augmented == 0:
         print(f"  {script_name}: no new SYMBOLS to merge")
@@ -259,50 +378,27 @@ def _merge_into_target_script(target: str, ported: list[tuple[str, int]],
     symbols_json = json.dumps(syms, separators=(",", ":"))
     new_blob = "SYMBOLS = _json_sym.loads(" + repr(symbols_json) + ")"
     content = content[:m.start()] + new_blob + content[m.end():]
-    p.write_text(content, encoding="utf-8")
+    temporary = p.with_name(p.name + '.tmp')
+    temporary.write_text(content, encoding="utf-8")
+    os.replace(temporary, p)
     print(f"  {script_name}: merged {augmented} augmented + {added} new "
           f"entries ({len(ported)} ported)")
 
-    # Persist the ported pairs to refs/ so parse_commonlib_types.py can
-    # re-merge them on every regen.  Without this the script-side merge
-    # above is wiped by the next generator run (the ~42-min bytesig pass
-    # would have to be repeated to get the names back).  Union-merged
-    # with any existing rows (first-win by RVA) so multiple port passes
-    # accumulate rather than clobber.
-    refs_csv = REPO_DIR / "scripts" / "commonlibsse" / "refs" / f"bytesig_ported_{target}.csv"
-    _persist_ported_csv(refs_csv, ported, src_tag)
     return augmented + added
 
 
 def _persist_ported_csv(refs_csv: Path, ported: list[tuple[str, int]],
-                        src_tag: str) -> None:
-    """Union-merge (rva -> name,src) rows into a refs CSV (first-win)."""
-    rows: dict[int, tuple[str, str]] = {}
-    if refs_csv.is_file():
-        for ln in refs_csv.read_text(encoding="utf-8").splitlines():
-            if not ln or ln.startswith("#"):
-                continue
-            parts = ln.split(",", 2)
-            if len(parts) < 2:
-                continue
-            try:
-                rows[int(parts[0], 16)] = (parts[1], parts[2] if len(parts) > 2 else "")
-            except ValueError:
-                continue
-    n_before = len(rows)
-    for name, rva in ported:
-        rows.setdefault(rva, (name, src_tag))
-    refs_csv.parent.mkdir(parents=True, exist_ok=True)
-    with refs_csv.open("w", encoding="utf-8") as fh:
-        fh.write("# bytesig-ported names: 0xRVA,name,src\n")
-        for rva in sorted(rows):
-            name, tag = rows[rva]
-            fh.write(f"0x{rva:08X},{name},{tag}\n")
-    print(f"  persisted {len(rows):,} pairs (+{len(rows) - n_before:,} new) -> {refs_csv}")
+                        src_tag: str, source_manifest: dict,
+                        target_manifest: dict,
+                        source_rvas: dict[str, int] | None = None):
+    return persist_bytesig_evidence(
+        refs_csv, ported, src_tag, source_manifest, target_manifest,
+        source_rvas=source_rvas)
 
 
 def _port_pair(src_name_to_rva, src_text_rva, src_text,
-               tgt_text_rva, tgt_text, src_sig_cache=None):
+               tgt_text_rva, tgt_text, src_sig_cache=None,
+               src_function_sizes=None, target_function_starts=None):
     """Match source symbols into target.  ``src_sig_cache`` is a dict
     persisted across target loops so Capstone disassembly is only done
     once per source RVA, not once per (source, target) pair."""
@@ -311,7 +407,9 @@ def _port_pair(src_name_to_rva, src_text_rva, src_text,
     ported, stats = port_symbols(
         src_pairs, src_text_rva, src_text,
         tgt_text_rva, tgt_text, tgt_idx,
-        window=32, prefix_k=6, masked=False, progress_every=0)
+        window=32, prefix_k=6, masked=False, progress_every=0,
+        src_function_sizes=src_function_sizes,
+        target_function_starts=target_function_starts)
     print(f"    exact: ok={stats['ok']:,} no_prefix={stats['no_prefix']:,} "
           f"ambig={stats['ambiguous_or_zero']:,} miss_src={stats['missing_src']:,}")
     ported_names = {n for n, _ in ported}
@@ -323,20 +421,22 @@ def _port_pair(src_name_to_rva, src_text_rva, src_text,
                 unmatched, src_text_rva, src_text,
                 tgt_text_rva, tgt_text, tgt_idx,
                 window=48, prefix_k=6, masked=True, progress_every=0,
-                src_sig_cache=src_sig_cache)
+                src_sig_cache=src_sig_cache,
+                src_function_sizes=src_function_sizes,
+                target_function_starts=target_function_starts)
             ported.extend(ported2)
             print(f"    masked: ok={stats2['ok']:,} "
                   f"no_prefix={stats2['no_prefix']:,} "
                   f"ambig={stats2['ambiguous_or_zero']:,}")
         except ImportError as e:
             print(f"    SKIPPED ({e}) — install capstone+numpy for Pass 2")
-    return ported
+    return _reconcile_pairs(ported)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--project-dir',  default="C:/GhidraProjects")
-    ap.add_argument('--project-name', default="Combined")
+    ap.add_argument('--project-dir', required=True)
+    ap.add_argument('--project-name', required=True)
     ap.add_argument('--source', default='se', choices=sorted(VERSIONS),
                     help="Source variant (default 'se' -- PDB-rich)")
     ap.add_argument('--targets', nargs='+', default=['ae', 'vr'],
@@ -380,11 +480,10 @@ def main():
     print(f"Source: Skyrim {args.source.upper()}")
     print(f"  CommonLibImport_{args.source.upper()}.py SYMBOLS: {len(src_names):,}")
     if args.source == 'se':
-        pdb = _read_se_pdb_publics()
-        new_pdb = sum(1 for n in pdb if n not in src_names)
-        for n, r in pdb.items():
-            src_names.setdefault(n, r)
-        print(f"  + SkyrimSE.pdb publics: {len(pdb):,} ({new_pdb} new)")
+        # The checked-in pretty dump has no exact PE/PDB identity sidecar.
+        # Validated PDB names already present in the generated importer remain
+        # available through _read_symbols_from_script(); detached rows do not.
+        print("  detached SkyrimSE PDB-public dump disabled (unbound evidence)")
     print(f"  Source name pool: {len(src_names):,} unique")
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
@@ -409,6 +508,13 @@ def main():
         consumer = java.lang.Object()
         src_prog = src_df.getDomainObject(consumer, False, False, monitor)
         try:
+            source_manifest = _program_manifest(src_prog, src_path)
+            source_script = GENERATED / VERSIONS[args.source][0]
+            _bound_script_manifest(source_script, source_manifest)
+            src_names = dict(_filter_function_entries(
+                src_prog, list(src_names.items())))
+            print(f"  source symbols at exact function entries: {len(src_names):,}")
+            src_function_sizes, _ = _function_boundaries(src_prog)
             _, src_text_rva, src_text = _load_text_block(src_prog)
             print(f"  source .text rva={src_text_rva:#x} size={len(src_text):,}")
         finally:
@@ -430,12 +536,17 @@ def main():
 
             tgt_prog = tgt_df.getDomainObject(consumer, True, False, monitor)
             try:
+                target_manifest = _program_manifest(tgt_prog, tgt_path)
+                _, target_function_starts = _function_boundaries(tgt_prog)
                 _, tgt_text_rva, tgt_text = _load_text_block(tgt_prog)
                 print(f"  target .text rva={tgt_text_rva:#x} size={len(tgt_text):,}")
                 print("  Pass 1: exact 32-byte match ...")
                 ported = _port_pair(src_names, src_text_rva, src_text,
                                     tgt_text_rva, tgt_text,
-                                    src_sig_cache=src_sig_cache)
+                                    src_sig_cache=src_sig_cache,
+                                    src_function_sizes=src_function_sizes,
+                                    target_function_starts=target_function_starts)
+                ported = _filter_function_entries(tgt_prog, ported)
                 if not ported:
                     print("  no matches — nothing to apply")
                     continue
@@ -446,10 +557,12 @@ def main():
                     print(f"  Applying {len(ported):,} renames to {tgt_path} ...")
                     tx = tgt_prog.startTransaction(
                         f"bytesig port {args.source}->{tgt}")
+                    commit = False
                     try:
                         stats = _rename_in_program(tgt_prog, ported)
+                        commit = True
                     finally:
-                        tgt_prog.endTransaction(tx, True)
+                        tgt_prog.endTransaction(tx, commit)
                     print(f"  renamed={stats['renamed']:,} "
                           f"already_named={stats['already_named']:,} "
                           f"no_func={stats['no_func']:,} "
@@ -457,7 +570,12 @@ def main():
                     grand_total += stats['renamed']
                     tgt_prog.save(f"bytesig port {args.source}->{tgt}", monitor)
                 if args.write_back_script:
-                    _merge_into_target_script(tgt, ported, src_tag=f'{args.source.upper()}-PDB-bytesig-port')
+                    _merge_into_target_script(
+                        tgt, ported,
+                        src_tag=f'{args.source.upper()}-PDB-bytesig-port',
+                        source_manifest=source_manifest,
+                        target_manifest=target_manifest,
+                        source_rvas=src_names)
             finally:
                 tgt_prog.release(consumer)
 

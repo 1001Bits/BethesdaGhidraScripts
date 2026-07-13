@@ -23,6 +23,9 @@ PROJECT_DIR  = REPO_DIR / "ghidraprojects" / "BethesdaGhidraScripts"
 PROJECT_NAME = "BethesdaGhidraScripts"
 SCRIPT_PATH  = REPO_DIR / "scripts" / "commonlibsf" / "bsim_query_apply.py"
 DB_URL       = "file:/" + str(REPO_DIR / "bsim" / "SF_BSim").replace("\\", "/")
+sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
+from pyghidra_result import end_outer_transaction, require_script_success
+from binary_identity import inspect_pe, verify_ghidra_program
 
 
 def main():
@@ -70,15 +73,24 @@ def main():
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, True, False, monitor)
         try:
+            executable = str(program.getExecutablePath() or '')
+            target_manifest = inspect_pe(executable)
+            verify_ghidra_program(program, [target_manifest])
             # Compose args list for the Jython/PyGhidra script
-            script_args = [DB_URL] + extra_args
+            script_args = ([DB_URL] + extra_args +
+                           ['--target-sha256=' + target_manifest['sha256']])
             print(f"Script args: {script_args}")
-            stdout, stderr = pyghidra.ghidra_script(
-                SCRIPT_PATH, project, program,
-                script_args=script_args,
-                echo_stdout=True, echo_stderr=True)
-            if stderr:
-                print("STDERR:", stderr, file=sys.stderr)
+            tx = program.startTransaction("Atomic BSim name port")
+            commit = False
+            try:
+                stdout, stderr = pyghidra.ghidra_script(
+                    SCRIPT_PATH, project, program,
+                    script_args=script_args,
+                    echo_stdout=True, echo_stderr=True)
+                require_script_success(stderr, SCRIPT_PATH.name)
+                commit = True
+            finally:
+                end_outer_transaction(program, tx, commit, SCRIPT_PATH.name)
             print("Saving program...")
             program.save("BSim cross-corpus name port", monitor)
             print("Done.")

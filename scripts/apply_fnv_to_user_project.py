@@ -18,6 +18,10 @@ from pathlib import Path
 REPO_DIR    = Path(__file__).resolve().parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
 SCRIPT_PATH = REPO_DIR / "ghidrascripts" / "CommonLibImport_FNV.py"
+CORE_DIR    = REPO_DIR / "scripts" / "core"
+sys.path.insert(0, str(CORE_DIR))
+from importer_binding import ImporterBindingError, verify_importer_for_program
+from pyghidra_result import end_outer_transaction, require_script_success
 
 PROJECT_DIR  = Path(r"C:/GhidraProjects/Fallout")
 PROJECT_NAME = "F4VR"
@@ -44,6 +48,10 @@ def main():
     program_name = args.program
     target_path  = args.program_path
     script_path  = Path(args.script)
+
+    if not script_path.is_file():
+        print(f"ERROR: {script_path} not found; generate an exact-target importer first")
+        sys.exit(1)
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     import pyghidra
@@ -94,12 +102,22 @@ def main():
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, True, False, monitor)
         try:
+            try:
+                verify_importer_for_program(script_path, program)
+            except (ImporterBindingError, OSError, ValueError) as exc:
+                print(f"ERROR: refusing unsafe importer: {exc}")
+                sys.exit(1)
             print(f"Running {script_path.name} via pyghidra...")
-            stdout, stderr = pyghidra.ghidra_script(
-                script_path, project, program,
-                echo_stdout=True, echo_stderr=True)
-            if stderr:
-                print("STDERR:", stderr, file=sys.stderr)
+            tx = program.startTransaction("Atomic " + script_path.name)
+            commit = False
+            try:
+                stdout, stderr = pyghidra.ghidra_script(
+                    script_path, project, program,
+                    echo_stdout=True, echo_stderr=True)
+                require_script_success(stderr, script_path.name)
+                commit = True
+            finally:
+                end_outer_transaction(program, tx, commit, script_path.name)
             print("Saving...")
             program.save("CommonLibFNV import (" + script_path.name + ")", monitor)
             print("Done.")

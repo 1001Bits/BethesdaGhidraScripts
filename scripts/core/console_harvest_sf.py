@@ -78,6 +78,15 @@ def run():
             return reg.getName(), ref.getToAddress().getOffset()
         return reg.getName(), None
 
+    def writes_reg(ins, name):
+        if ins is None:
+            return False
+        try:
+            return any(getattr(obj, 'getName', lambda: '')() == name
+                       for obj in ins.getResultObjects())
+        except Exception:
+            return False
+
     # Anchor on name strings: iterate code refs to defined identifier strings.
     candidates = []           # (name, exec_func_addr, call_target_addr)
     di = listing.getDefinedData(True)
@@ -106,28 +115,47 @@ def run():
             if reg is None or reg.getName() != 'RDX':   # name is arg2 (RDX)
                 continue
             seen_names += 1
+            owner = fm.getFunctionContaining(fr)
+            if owner is None:
+                continue
             # find the CALL forward and LEA R9 (exec) in the window
             exec_fn = None
             call_tgt = None
             cur = ins
             for _ in range(WINDOW_FWD):
                 cur = cur.getNext()
-                if cur is None:
+                if cur is None or fm.getFunctionContaining(cur.getAddress()) != owner:
                     break
                 if cur.getMnemonicString() == 'CALL':
                     for ref2 in cur.getReferencesFrom():
-                        call_tgt = ref2.getToAddress().getOffset()
+                        target = ref2.getToAddress()
+                        block = mem.getBlock(target)
+                        if (ref2.getReferenceType().isCall() and block is not None
+                                and block.isExecute()
+                                and fm.getFunctionAt(target) is not None):
+                            call_tgt = target.getOffset()
+                    break
+                if writes_reg(cur, 'RDX') or writes_reg(cur, 'R9'):
+                    call_tgt = None
+                    break
+                flow = cur.getFlowType()
+                if flow.isJump() or flow.isTerminal():
                     break
             # scan back for LEA R9,[func]
             cur = ins
             for _ in range(WINDOW_BACK):
                 cur = cur.getPrevious()
-                if cur is None:
+                if cur is None or fm.getFunctionContaining(cur.getAddress()) != owner:
                     break
                 rn, ta = lea_target(cur)
                 if (rn == 'R9' and ta is not None and tlo <= ta < thi
                         and fm.getFunctionAt(af.getAddress(ta)) is not None):
                     exec_fn = ta          # R9 must point at a real function entry
+                    break
+                if writes_reg(cur, 'R9'):
+                    break
+                flow = cur.getFlowType()
+                if flow.isJump() or flow.isTerminal() or flow.isCall():
                     break
             if exec_fn is not None and call_tgt is not None:
                 candidates.append((name, exec_fn, call_tgt))
@@ -143,14 +171,20 @@ def run():
     for a, n in share.most_common(6):
         print('   register fn @%X used by %d sites' % (a, n))
 
-    renamed = already = no_func = 0
+    by_exec = {}
+    for name, exec_fn, call_target in good:
+        by_exec.setdefault(exec_fn, set()).add((name, call_target))
+
+    renamed = already = no_func = ambiguous = 0
     tx = cp.startTransaction('sf-console') if APPLY else None
+    success = False
     try:
-        done = set()
-        for name, exec_fn, _ in good:
-            if exec_fn in done:
+        for exec_fn, evidence in by_exec.items():
+            names = {name for name, _ in evidence}
+            if len(names) != 1:
+                ambiguous += 1
                 continue
-            done.add(exec_fn)
+            name = next(iter(names))
             f = fm.getFunctionAt(af.getAddress(exec_fn))
             if f is None:
                 no_func += 1
@@ -162,18 +196,20 @@ def run():
                 continue
             if APPLY:
                 try:
-                    f.setName('Cmd_' + name, SourceType.USER_DEFINED)
+                    f.setName('Cmd_' + name, SourceType.ANALYSIS)
                     renamed += 1
                 except Exception:
                     pass
             else:
                 renamed += 1
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
 
-    print('  %s=%d  already-named=%d  no-func=%d'
-          % ('renamed' if APPLY else 'would-rename', renamed, already, no_func))
+    print('  %s=%d  already-named=%d  no-func=%d  ambiguous=%d'
+          % ('renamed' if APPLY else 'would-rename', renamed, already,
+             no_func, ambiguous))
     for name, exec_fn, _ in good[:15]:
         print('   Cmd_%-26s -> %X' % (name, exec_fn))
 

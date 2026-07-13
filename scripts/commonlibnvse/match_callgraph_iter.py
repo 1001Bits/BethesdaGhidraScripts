@@ -24,8 +24,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
 IMAGE_BASE = 0x00400000
 
-XBOX_CG = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_callgraph.json')
-PC_CG   = Path(r'C:\GhidraProjects\scripts\fnv_pc_callgraph.json')
+from paths import artifact
+XBOX_CG = artifact('Fallout_Debug_callgraph.json')
+PC_CG   = artifact('fnv_pc_callgraph.json')
 OUT_CSV = REFS_DIR / 'fnv_callgraph_names.csv'
 
 

@@ -1,8 +1,7 @@
-"""Skyrim PDB publics loader via llvm-pdbutil pretty --externals.
+"""Checked-in Skyrim PDB publics loader via llvm-pdbutil pretty --externals.
 
-Drop-in replacement for ``core/pdb_symbols.load_pdb_names`` when the
-``pdbparse`` package isn't available (it depends on a removed
-``imp`` module on Python 3.12+ and frequently fails to install).
+This remains a reproducible pre-extracted corpus alongside the native MSF 7
+reader in ``core/pdb_symbols.py``; it does not require a third-party PDB parser.
 
 Source: ``extras/SkyrimSE.pdb`` dumped via
 ``llvm-pdbutil pretty --externals`` and checked into refs/.  Format:
@@ -12,7 +11,7 @@ Source: ``extras/SkyrimSE.pdb`` dumped via
 The SkyrimSE.exe image base is 0x140000000; the RVAs in the dump are
 already image-relative offsets that the import script consumes as-is.
 
-Returns ``{rva: name}`` matching the pdbparse-backed loader's shape so
+Returns ``{rva: name}`` matching the native loader's shape so
 ``commonlibsse/parse_commonlib_types.py`` doesn't need to know which
 backend it's talking to.
 """
@@ -46,7 +45,7 @@ def _clean(name: str) -> str | None:
     if not base:
         return None
     base = _ADDR_SUFFIX_RE.sub('', base)
-    base = re.sub(r':{3,}', '::', base.replace('__', '::'))
+    base = re.sub(r':{3,}', '::', base)
     if not base:
         return None
     # Discard obvious compiler/RTTI noise we can't safely place; everything
@@ -58,7 +57,7 @@ def load_pdb_names(file_path: str | None = None) -> Dict[int, str]:
     """Return ``{rva: name}`` parsed from the llvm-pdbutil externals dump.
 
     The ``file_path`` argument is accepted for API compatibility with the
-    pdbparse-backed loader; the actual data comes from
+    native loader; the actual data comes from
     ``refs/skyrimse_pdb_publics.txt``.  Falls back to an empty dict when
     that refs file isn't present.
     """

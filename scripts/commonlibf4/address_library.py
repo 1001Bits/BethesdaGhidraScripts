@@ -21,7 +21,7 @@ porting from AE).
 
 from __future__ import annotations
 
-import glob
+import csv
 import os
 import struct
 import sys
@@ -44,58 +44,146 @@ class F4AddressLibrary:
     def load_bin(self, file_path: str) -> Dict[int, int]:
         if not os.path.exists(file_path):
             return {}
-        db = {}
+        db: Dict[int, int] = {}
         with open(file_path, 'rb') as f:
-            count = struct.unpack('<Q', f.read(8))[0]
-            for _ in range(count):
-                id_, offset = struct.unpack('<QQ', f.read(16))
-                db[id_] = offset
+            data = f.read()
+        if len(data) < 8:
+            raise ValueError('truncated F4 address-library header: {}'.format(file_path))
+        count = struct.unpack_from('<Q', data, 0)[0]
+        expected = 8 + count * 16
+        if expected != len(data):
+            raise ValueError(
+                'invalid F4 address-library length for {}: header declares '
+                '{} entries ({} bytes), file has {} bytes'.format(
+                    file_path, count, expected, len(data)))
+        previous_id = -1
+        for index in range(count):
+            id_, offset = struct.unpack_from('<QQ', data, 8 + index * 16)
+            if id_ <= previous_id:
+                raise ValueError(
+                    'F4 address-library IDs are not strictly increasing at '
+                    'entry {} in {}'.format(index, file_path))
+            if offset == 0:
+                raise ValueError('zero RVA for ID {} in {}'.format(id_, file_path))
+            previous_id = id_
+            db[id_] = offset
         return db
 
     @staticmethod
-    def load_csv(file_path: str, skip_meta: bool = True) -> Dict[int, int]:
-        """Read an 'id,offset' CSV file (header + optional metadata row).
+    def load_csv(file_path: str, expected_count: int = 93858,
+                 expected_marker: str = '1.13.1') -> Dict[int, int]:
+        """Read the exact community Fallout 4 VR address-library CSV.
 
         The community VR address library ships as CSV rather than the
         meh321 binary format.  Format:
 
           id,offset                          # header line
-          <metadata>,<game-version-string>   # one metadata row (skipped)
+          <entry-count>,<library-version>    # required metadata row
           <id>,<hex-offset>                  # entries
 
-        ``offset`` is parsed as hex without a ``0x`` prefix.
+        ``offset`` is parsed as hex without a ``0x`` prefix.  Every row and
+        the declared corpus identity must validate; duplicate offsets are
+        legitimate aliases, but duplicate IDs are rejected.
         """
         if not os.path.exists(file_path):
             return {}
         db: Dict[int, int] = {}
-        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
-        start = 2 if skip_meta and len(lines) > 1 else 1
-        for line in lines[start:]:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(',')
-            if len(parts) != 2:
-                continue
+        with open(file_path, 'r', encoding='utf-8', newline='') as f:
+            rows = csv.reader(f)
             try:
-                db[int(parts[0])] = int(parts[1], 16)
-            except ValueError:
-                continue
+                header = next(rows)
+                metadata = next(rows)
+            except StopIteration as exc:
+                raise ValueError(
+                    'truncated F4 VR address library {}'.format(file_path)) from exc
+            if header != ['id', 'offset']:
+                raise ValueError(
+                    'invalid F4 VR address-library header in {}'.format(file_path))
+            if len(metadata) != 2:
+                raise ValueError(
+                    'invalid F4 VR address-library metadata in {}'.format(file_path))
+            try:
+                declared_count = int(metadata[0], 10)
+            except ValueError as exc:
+                raise ValueError('invalid F4 VR address-library entry count') from exc
+            if (declared_count != int(expected_count) or
+                    metadata[1] != expected_marker):
+                raise ValueError(
+                    'F4 VR address-library metadata mismatch: {} / {} != {} / {}'.format(
+                        declared_count, metadata[1], expected_count,
+                        expected_marker))
+            for line_number, row in enumerate(rows, 3):
+                if len(row) != 2:
+                    raise ValueError(
+                        'malformed F4 VR address-library row {} in {}'.format(
+                            line_number, file_path))
+                try:
+                    relocation_id = int(row[0], 10)
+                    offset = int(row[1], 16)
+                except ValueError as exc:
+                    raise ValueError(
+                        'invalid F4 VR address-library row {} in {}'.format(
+                            line_number, file_path)) from exc
+                if relocation_id < 0 or offset < 0:
+                    raise ValueError(
+                        'negative F4 VR address-library value on row {}'.format(
+                            line_number))
+                if relocation_id in db:
+                    raise ValueError(
+                        'duplicate F4 VR relocation ID {} on row {}'.format(
+                            relocation_id, line_number))
+                db[relocation_id] = offset
+        if len(db) != declared_count:
+            raise ValueError(
+                'F4 VR address-library row count {} != metadata {}'.format(
+                    len(db), declared_count))
         return db
 
-    def load_all(self, base_path: str) -> None:
+    def load_all(self, base_path: str,
+                 ng_version: Tuple[int, int, int, int] = (1, 10, 984, 0)) -> None:
+        """Load the exact databases used by the generated script variants.
+
+        NG 1.10.980 and 1.10.984 are similar but not interchangeable.  The
+        old loader silently preferred 984 and fell back to 980 while still
+        labelling its output ``f4_ng``.  Require the requested revision so a
+        missing database fails closed instead of shifting every NG symbol.
+        """
         self.og_db = self.load_bin(os.path.join(base_path, 'version-1-10-163-0.bin'))
-        # NG ships as two patch revisions (1.10.980 then 1.10.984) with mostly
-        # identical address layouts; users may have either binary, so prefer
-        # the newer one when both are present and fall back to whichever ships.
-        ng_984 = os.path.join(base_path, 'version-1-10-984-0.bin')
-        ng_980 = os.path.join(base_path, 'version-1-10-980-0.bin')
-        ng_path = ng_984 if os.path.exists(ng_984) else ng_980
+        ng_label = '-'.join(str(x) for x in ng_version)
+        ng_path = os.path.join(base_path, 'version-{}.bin'.format(ng_label))
+        if not os.path.isfile(ng_path):
+            raise FileNotFoundError(
+                'Missing exact Fallout 4 NG address library {}.  Refusing '
+                'to substitute a different patch revision.'.format(ng_path))
         self.ng_db = self.load_bin(ng_path)
         self.ae_db = self.load_bin(os.path.join(base_path, 'version-1-11-191-0.bin'))
         self.vr_db = self.load_csv(os.path.join(base_path, 'version-1-2-72-0.csv'))
         self.db_221 = self.load_bin(os.path.join(base_path, 'version-1-11-221-0.bin'))
 
+        required = {
+            'OG 1.10.163': self.og_db,
+            'NG {}'.format('.'.join(str(x) for x in ng_version)): self.ng_db,
+            'AE 1.11.191': self.ae_db,
+            'VR 1.2.72': self.vr_db,
+            '1.11.221': self.db_221,
+        }
+        missing = [label for label, db in required.items() if not db]
+        if missing:
+            raise FileNotFoundError(
+                'Missing or empty Fallout 4 address libraries: {}'.format(
+                    ', '.join(missing)))
+
     def get_ae(self, id_: int) -> Optional[int]:
         return self.ae_db.get(id_) if id_ else None
+
+    def resolve_desktop(self, id_: int) -> Dict[str, int]:
+        """Resolve a shared desktop ID without ever probing the VR namespace."""
+        if not id_:
+            return {}
+        out = {}
+        for attr, key in (('og_db', 'og'), ('ng_db', 'ng'),
+                          ('ae_db', 'a'), ('db_221', '221')):
+            value = getattr(self, attr).get(id_)
+            if value:
+                out[key] = value
+        return out

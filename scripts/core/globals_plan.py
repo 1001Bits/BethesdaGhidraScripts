@@ -26,21 +26,27 @@ def aggregate_global_types(observations):
     ``callers`` up to 6 example caller names (reviewer leads).
     """
     by_g = collections.defaultdict(list)
+    seen_evidence = set()
     for g, cls, caller in observations:
         if g is None or not cls:
             continue
+        evidence_key = (g, cls, caller or '')
+        if evidence_key in seen_evidence:
+            continue
+        seen_evidence.add(evidence_key)
         by_g[g].append((cls, caller))
     out = {}
     for g, obs in by_g.items():
         tally = collections.Counter(cls for cls, _ in obs)
-        best, votes = tally.most_common(1)[0]
+        best, votes = sorted(tally.items(), key=lambda item: (-item[1], item[0]))[0]
         callers = []
         for _cls, caller in obs:
             if caller and caller not in callers and len(callers) < 6:
                 callers.append(caller)
+        independent = len(set(caller for _cls, caller in obs if caller))
         out[g] = {'type': best, 'votes': votes, 'total': len(obs),
                   'distinct': len(tally), 'classes': dict(tally),
-                  'callers': callers}
+                  'callers': callers, 'independent': independent}
     return out
 
 
@@ -53,7 +59,7 @@ def global_confidence(info):
                 base-class view leaked in) -> review must disambiguate
     """
     if info['distinct'] == 1:
-        return 'high' if info['total'] >= 2 else 'medium'
+        return 'high' if info.get('independent', 0) >= 2 else 'medium'
     if 2 * info['votes'] > info['total']:
         return 'medium'
     return 'low'

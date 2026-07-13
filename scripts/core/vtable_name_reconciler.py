@@ -41,13 +41,48 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+
+# Slot names the RTTI pass invents when it has no method name for a slot.
+# They are machine output, never analyst work, so they stay reconcilable no
+# matter which SourceType an older pipeline stamped on them.
+_PLACEHOLDER_SLOT = re.compile(r'(?:Func|vfunc_?)\d+(?:_v\d+)?')
+
+
+def _rename_slot(func, func_addr, program, target, expected_name, curr,
+                 dry_run, class_short, SourceType):
+    """Apply the bound CommonLib slot name, preserving the naming convention.
+
+    A function already inside a class namespace keeps it (leaf rename); a flat
+    function gets the flat ``Class::method`` form the CommonLib importer uses.
+    """
+    if dry_run:
+        print('  DRY {} @ 0x{:X} : {!r} -> {!r}'.format(
+            class_short, func_addr.getOffset(), curr, target))
+        return
+    try:
+        namespace = func.getParentNamespace()
+        in_class_ns = (namespace is not None and
+                       not namespace.isGlobal())
+        func.setName(expected_name if in_class_ns else target,
+                     SourceType.IMPORTED)
+        cu = program.getListing().getCodeUnitAt(func_addr)
+        if cu:
+            existing = cu.getComment(0) or ''
+            note = 'Reconciled from stale name: ' + curr
+            if note not in existing:
+                cu.setComment(0, note + ('\n' + existing if existing else ''))
+    except Exception as e:  # noqa: BLE001
+        print('  WARN setName failed on 0x{:X}: {}'.format(
+            func_addr.getOffset(), e))
 
 
 def _extract_vtables_from_import_script(script_path: Path
@@ -96,10 +131,47 @@ def _extract_vtables_from_import_script(script_path: Path
     for vt in parsed:
         if len(vt) < 5:
             continue
-        vname, class_full_name, vtbl_size, category, slots = vt
+        # Entries grew from 5 fields to 7 (..., vtable_kind, subobject_offset);
+        # slice so both generations parse.
+        vname, class_full_name, vtbl_size, category, slots = vt[:5]
+        if len(vt) >= 6 and vt[5] != 'primary':
+            continue
         compact_slots = [(s[0], s[1]) for s in slots if len(s) >= 2]
         out.append((vname, class_full_name, vtbl_size, category, compact_slots))
     return out
+
+
+def _extract_target_manifests(script_path: Path) -> list:
+    """Extract the JSON payload passed to TARGET_MANIFESTS in new importers."""
+    src = script_path.read_text(encoding='utf-8')
+    marker = 'TARGET_MANIFESTS = _json_target.loads('
+    start = src.find(marker)
+    if start < 0:
+        return []
+    start += len(marker)
+    expr = src[start:]
+    depth = 1
+    quote = None
+    escaped = False
+    for i, ch in enumerate(expr):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in ('\'', '"'):
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                payload = ast.literal_eval(expr[:i].strip())
+                value = json.loads(payload)
+                return value if isinstance(value, list) else []
+    return []
 
 
 def _find_program(project, program_name):
@@ -110,7 +182,15 @@ def _find_program(project, program_name):
     (``Starfield.exe``); we try a few common variants and finally fall
     back to a prefix match against the stem.
     """
-    root = project.getProjectData().getRootFolder()
+    project_data = project.getProjectData()
+    requested_path = str(program_name).replace('\\', '/')
+    if requested_path.startswith('/'):
+        exact = project_data.getFile(requested_path)
+        if exact is not None:
+            return exact
+
+    root = project_data.getRootFolder()
+    program_name = requested_path.rsplit('/', 1)[-1]
     stem = program_name.rsplit('.', 1)[0]
     candidates = (
         program_name,
@@ -150,8 +230,10 @@ def _vtbl_symbol(sym_table, class_short: str):
     a ``<class>::vftable`` namespace-scoped symbol if needed.
     """
     flat = list(sym_table.getSymbols('VTABLE_' + class_short))
-    if flat:
+    if len(flat) == 1:
         return flat[0]
+    if len(flat) > 1:
+        return None
     # Walk all symbols named 'vftable' and match parent namespace
     nameq = 'vftable'
     for s in sym_table.getSymbols(nameq):
@@ -181,6 +263,13 @@ def main():
     print('Parsing VTABLES from {} ...'.format(import_script))
     vtables = _extract_vtables_from_import_script(import_script)
     print('  parsed {} vtable entries'.format(len(vtables)))
+    if not vtables:
+        print('Reconciliation not applicable: importer has no VTABLES entries.')
+        return
+    target_manifests = _extract_target_manifests(import_script)
+    if not target_manifests:
+        print('ERROR: importer has no exact TARGET_MANIFESTS binding')
+        sys.exit(1)
 
     # Build per-class expectation: slot_off -> expected_name, plus the set
     # of all method names in this class's slots (used to detect stale CommonLib
@@ -212,15 +301,53 @@ def main():
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, not args.dry_run, False, monitor)
         try:
+            try:
+                from binary_identity import verify_ghidra_program
+                verify_ghidra_program(program, target_manifests)
+            except Exception as e:
+                print('ERROR: unable to verify program identity: {}'.format(e))
+                sys.exit(1)
+
             sym_table = program.getSymbolTable()
             fm = program.getFunctionManager()
             mem = program.getMemory()
             af = program.getAddressFactory().getDefaultAddressSpace()
+            ptr_size = program.getDefaultPointerSize()
+
+            def read_func_addr(vaddr, slot_off):
+                slot_addr = af.getAddress(vaddr + (slot_off // 8) * ptr_size)
+                raw = (mem.getLong(slot_addr) & 0xFFFFFFFFFFFFFFFF
+                       if ptr_size == 8 else mem.getInt(slot_addr) & 0xFFFFFFFF)
+                addr = af.getAddress(raw)
+                block = mem.getBlock(addr)
+                if block is None or not block.isInitialized() or not block.isExecute():
+                    return None
+                return addr
+
+            # Determine all proposed owners up front so a shared base/ICF body
+            # is never renamed repeatedly according to traversal order.
+            claims = {}
+            for class_short, slot_map in expectations.items():
+                vsym = _vtbl_symbol(sym_table, class_short)
+                if vsym is None:
+                    continue
+                vaddr = vsym.getAddress().getOffset()
+                for slot_off, expected_name in slot_map.items():
+                    if expected_name.startswith('fn_'):
+                        continue
+                    try:
+                        faddr = read_func_addr(vaddr, slot_off)
+                    except Exception:
+                        continue
+                    if faddr is not None:
+                        claims.setdefault(faddr.getOffset(), set()).add(
+                            class_short + '::' + expected_name)
 
             totals = {'reconciled': 0, 'ok': 0, 'unnamed': 0, 'manual': 0,
                       'no_vtable': 0, 'no_func': 0, 'read_fail': 0}
 
             tx = program.startTransaction('Vtable name reconciler') if not args.dry_run else None
+            commit = False
             try:
                 for class_short, slot_map in expectations.items():
                     vsym = _vtbl_symbol(sym_table, class_short)
@@ -233,27 +360,41 @@ def main():
                         if expected_name.startswith('fn_'):
                             continue  # placeholder; nothing to reconcile against
                         try:
-                            ptr = mem.getLong(af.getAddress(vaddr + slot_off))
+                            func_addr = read_func_addr(vaddr, slot_off)
                         except Exception:
                             totals['read_fail'] += 1
                             continue
-                        if ptr <= 0 or ptr & ~0xFFFFFFFFFFFFFFFF:
+                        if func_addr is None:
                             totals['read_fail'] += 1
                             continue
-                        func_addr = af.getAddress(ptr & 0xFFFFFFFFFFFFFFFF)
                         func = fm.getFunctionAt(func_addr)
-                        if func is None:
-                            func = fm.getFunctionContaining(func_addr)
                         if func is None:
                             totals['no_func'] += 1
                             continue
-                        curr = func.getName()
+                        leaf_curr = func.getName()
+                        # The RTTI pass names slots as namespace Class + leaf
+                        # FuncN, so the flat name alone hides the class.  Use
+                        # the namespaced name for the staleness analysis.
+                        curr = func.getName(True)
                         target = class_short + '::' + expected_name
-                        if curr == target:
+                        if len(claims.get(func_addr.getOffset(), ())) != 1:
+                            totals['manual'] += 1
+                            continue
+                        if curr == target or leaf_curr == expected_name:
                             totals['ok'] += 1
                             continue
-                        if _is_noise(curr):
+                        if _is_noise(curr) or _is_noise(leaf_curr):
                             totals['unnamed'] += 1
+                            continue
+                        # Machine-generated slot placeholders (FuncN, FuncN_vM,
+                        # vfunc_N) are never hand-authored, whatever source
+                        # type an older pipeline stamped on them -- upgrade
+                        # them to the bound CommonLib method name.
+                        if _PLACEHOLDER_SLOT.fullmatch(leaf_curr):
+                            _rename_slot(func, func_addr, program, target,
+                                         expected_name, curr, args.dry_run,
+                                         class_short, SourceType)
+                            totals['reconciled'] += 1
                             continue
                         # Only reconcile names of the form '<x>::<leaf>' where
                         # the leaf is one of THIS class's expected method names
@@ -272,28 +413,15 @@ def main():
                             totals['manual'] += 1
                             continue
                         # Stale CommonLib name: overwrite.
-                        if args.dry_run:
-                            print('  DRY {} @ 0x{:X} : {!r} -> {!r}'.format(
-                                class_short, func_addr.getOffset(), curr, target))
-                        else:
-                            try:
-                                func.setName(target, SourceType.USER_DEFINED)
-                                listing = program.getListing()
-                                cu = listing.getCodeUnitAt(func_addr)
-                                if cu:
-                                    existing = cu.getComment(0) or ''
-                                    note = 'Reconciled from stale name: ' + curr
-                                    if note not in existing:
-                                        cu.setComment(0, note + ('\n' + existing if existing else ''))
-                            except Exception as e:
-                                print('  WARN setName failed on 0x{:X}: {}'.format(
-                                    func_addr.getOffset(), e))
-                                continue
+                        _rename_slot(func, func_addr, program, target,
+                                     expected_name, curr, args.dry_run,
+                                     class_short, SourceType)
                         totals['reconciled'] += 1
+                commit = True
             finally:
                 if tx is not None:
-                    program.endTransaction(tx, True)
-                if not args.dry_run:
+                    program.endTransaction(tx, commit)
+                if not args.dry_run and commit:
                     program.save('Vtable name reconciler', monitor)
 
             print()

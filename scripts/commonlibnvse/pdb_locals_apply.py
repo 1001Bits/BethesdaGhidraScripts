@@ -8,7 +8,7 @@ local var data) and apply it to the FNV fallback symbols:
     types, surfaced via the symbol's ``src`` field.
 
 Public API:
-    load_locals() -> {qualified_name: {rva, len, params, locals}}
+    load_locals() -> {qualified_name: [{rva, len, params, locals}, ...]}
     sd_from_dia(qname, types_known, enums_known, typedefs) -> [ret, params, is_static] | None
     annotate_comment(qname) -> short text or None
 """
@@ -23,22 +23,88 @@ from typing import Dict, List, Optional, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pdb_types_to_pipeline import _convert_one  # noqa: E402
+from paths import artifact  # noqa: E402
 
 
-_LOCALS_PATH = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_locals.json')
+_LOCALS_PATH = artifact('Fallout_Debug_locals.json')
 
 
 _cache = {}
 
 
-def load_locals() -> Dict[str, dict]:
+def load_locals() -> Dict[str, List[dict]]:
     if 'data' in _cache:
         return _cache['data']
     if not _LOCALS_PATH.is_file():
         _cache['data'] = {}
         return {}
-    _cache['data'] = json.loads(_LOCALS_PATH.read_text(encoding='utf-8'))
+    raw = json.loads(_LOCALS_PATH.read_text(encoding='utf-8'))
+    by_name = {}
+    if isinstance(raw, dict) and raw.get('schema') == 'fnv-dia-locals-v2':
+        for entry in raw.get('entries', []):
+            name = entry.get('name', '')
+            if name:
+                by_name.setdefault(name, []).append(entry)
+    elif isinstance(raw, dict):
+        # Legacy v1 collapsed overloads.  Keep it readable, but represent it
+        # as a one-element candidate list so resolution stays fail-closed.
+        for name, entry in raw.items():
+            if isinstance(entry, dict):
+                e = dict(entry)
+                e.setdefault('name', name)
+                by_name.setdefault(name, []).append(e)
+    _cache['data'] = by_name
     return _cache['data']
+
+
+def _arg_count(sig: str) -> Optional[int]:
+    if not sig or '(' not in sig:
+        return None
+    start = sig.find('(')
+    depth = 0
+    count = 0
+    token = False
+    for ch in sig[start + 1:]:
+        if ch == '(' or ch == '<':
+            depth += 1
+            token = True
+        elif ch == ')' and depth == 0:
+            break
+        elif ch in ')>':
+            depth = max(0, depth - 1)
+        elif ch == ',' and depth == 0:
+            count += 1
+            token = False
+        elif not ch.isspace():
+            token = True
+    if not token and count == 0:
+        return 0
+    inside = sig[start + 1:sig.rfind(')')].strip()
+    return 0 if inside in ('', 'void') else count + 1
+
+
+def _resolve_entry(qname: str, sig_hint: str = '') -> Optional[dict]:
+    candidates = load_locals().get(qname, [])
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    # Prefer a unique full DIA identity match when the extractor supplied it.
+    norm_hint = re.sub(r'\s+', '', sig_hint)
+    identity_hits = [e for e in candidates
+                     if e.get('identity') and
+                     re.sub(r'\s+', '', e['identity']) in norm_hint]
+    if len(identity_hits) == 1:
+        return identity_hits[0]
+    # Parameter count is weaker but still safely disambiguates many overloads.
+    wanted = _arg_count(sig_hint)
+    if wanted is not None:
+        hits = [e for e in candidates
+                if sum(p.get('kind') != 'ObjectPtr'
+                       for p in e.get('params', [])) == wanted]
+        if len(hits) == 1:
+            return hits[0]
+    return None
 
 
 def sd_from_dia(qname: str, ret_sig_hint: str,
@@ -51,8 +117,7 @@ def sd_from_dia(qname: str, ret_sig_hint: str,
     that we'll use to extract the return type when DIA's data doesn't
     have it directly.
     """
-    data = load_locals()
-    entry = data.get(qname)
+    entry = _resolve_entry(qname, ret_sig_hint)
     if not entry:
         return None
     raw_params = entry.get('params', [])
@@ -91,13 +156,13 @@ def sd_from_dia(qname: str, ret_sig_hint: str,
     return [ret, params_out, is_static]
 
 
-def annotate_comment(qname: str, max_locals: int = 6) -> Optional[str]:
+def annotate_comment(qname: str, max_locals: int = 6,
+                     sig_hint: str = '') -> Optional[str]:
     """Build a short plate-comment fragment listing parameters + locals.
 
     Returns ``"params: a, b; locals: x:int, y:bool"`` or None.
     """
-    data = load_locals()
-    entry = data.get(qname)
+    entry = _resolve_entry(qname, sig_hint)
     if not entry:
         return None
     pieces = []

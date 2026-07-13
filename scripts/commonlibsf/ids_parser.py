@@ -35,8 +35,9 @@ _VTABLE_ARR_RE = re.compile(
 )
 _REL_ID_NUM_RE = re.compile(r'REL::ID\s*\(\s*(\d+)\s*\)')
 
-_NS_OPEN_RE       = re.compile(r'\bnamespace\s+([A-Za-z_][\w]*)\s*\{')
-_NS_DECL_ONLY_RE  = re.compile(r'^\s*namespace\s+([A-Za-z_][\w]*)\s*$')
+_QUALIFIED_NS = r'[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*'
+_NS_OPEN_RE       = re.compile(r'\bnamespace\s+(' + _QUALIFIED_NS + r')\s*\{')
+_NS_DECL_ONLY_RE  = re.compile(r'^\s*namespace\s+(' + _QUALIFIED_NS + r')\s*$')
 
 
 class _ScopeTracker:
@@ -69,7 +70,12 @@ class _ScopeTracker:
 
         # Same-line ``namespace X {`` (incl. ``namespace X::Y { ... ``)
         for m in _NS_OPEN_RE.finditer(line):
-            self._stack.append((m.group(1), self._depth))
+            # ``namespace RE::ID::Actor`` opens one lexical scope but names
+            # three namespace components.  Keep the components separately so
+            # callers never lose the RE::ID prefix or collapse nested class
+            # namespaces to an unqualified leaf name.
+            for component in m.group(1).split('::'):
+                self._stack.append((component, self._depth))
 
         # Bare ``namespace X`` waiting for ``{`` on next line
         if opens == 0 and closes == 0:
@@ -78,7 +84,8 @@ class _ScopeTracker:
                 self._pending = mm.group(1)
 
         if self._pending and opens > 0:
-            self._stack.append((self._pending, self._depth))
+            for component in self._pending.split('::'):
+                self._stack.append((component, self._depth))
             self._pending = None
 
         self._depth += opens - closes
@@ -200,7 +207,8 @@ def parse_rtti_h(re_include: str, addr_lib, filename: str,
 # IDs_VTABLE.h: std::array<REL::ID, N>
 # ---------------------------------------------------------------------------
 
-def parse_vtable_h(re_include: str, addr_lib) -> List[dict]:
+def parse_vtable_h(re_include: str, addr_lib,
+                   vtable_path: Optional[str] = None) -> List[dict]:
     """Parse ``RE/IDs_VTABLE.h`` for VTABLE_* labels.
 
     Each ``std::array<REL::ID, N>`` produces N labels: ``VTABLE_Name`` for
@@ -208,7 +216,7 @@ def parse_vtable_h(re_include: str, addr_lib) -> List[dict]:
     (i >= 2, 1-based after the primary).  Entries whose IDs aren't in the
     address library are dropped.
     """
-    path = os.path.join(re_include, 'IDs_VTABLE.h')
+    path = vtable_path or os.path.join(re_include, 'IDs_VTABLE.h')
     text = _read_text(path)
     if not text:
         return []
@@ -223,7 +231,18 @@ def parse_vtable_h(re_include: str, addr_lib) -> List[dict]:
             if not off:
                 continue
             lname = lname_base if idx == 0 else f'{lname_base}_{idx + 1}'
-            out.append({'name': lname, 'sf_off': off})
+            out.append({
+                'name': lname,
+                'sf_off': off,
+                # Array order is not a primary/secondary-vtable contract.
+                # Consumers with PE bytes must use the MSVC COL offset to
+                # decide which element receives the unsuffixed primary name.
+                'vtable_class': (lname_base[len('VTABLE_'):]
+                                 if lname_base.startswith('VTABLE_')
+                                 else lname_base),
+                'vtable_array_index': idx,
+                'vtable_id': sid,
+            })
     return out
 
 

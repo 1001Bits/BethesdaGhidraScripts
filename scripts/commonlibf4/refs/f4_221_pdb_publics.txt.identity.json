@@ -1,0 +1,74 @@
+{
+  "artifact": "f4_221_pdb_publics.txt",
+  "artifact_sha256": "ab927b7d8b8331f39372331c08f67bb95d164439fcee70bf56d0819fe644cff2",
+  "counts": {
+    "data_section_publics": 9995,
+    "executable_section_publics": 28034,
+    "publics": 38029,
+    "quarantined_records": 147,
+    "runtime_function_starts": 25340,
+    "same_name_multi_rva_groups": 60,
+    "same_rva_alias_groups": 15,
+    "unambiguous_records": 37882
+  },
+  "extractor": {
+    "msf_reader": "scripts/core/pdb_msf.py",
+    "msf_reader_sha256": "0e245aba681f2f83692c7c641da68e484980972156cf69bfe5bf4219702e1cc9",
+    "script": "scripts/commonlibf4/update_pdb_publics.py",
+    "script_sha256": "3ef7a45829bd1980c3b252602f9313a51593baa2216ff87d196180a94b408435"
+  },
+  "pdb": {
+    "age": 1,
+    "guid": "22776620-B648-4C12-98F7-D51833DAFFC9",
+    "machine": 34404,
+    "module_info_size": 0,
+    "signature": 1783977263,
+    "signature_utc": "2026-07-13T21:14:23+00:00",
+    "type_record_count": 0,
+    "version": 20000404
+  },
+  "schema_version": 2,
+  "source": {
+    "author": "Perchik71",
+    "canonical_filename": "Fallout4_1_11_221_for_debug.pdb",
+    "kind": "community-generated public-symbol-only PDB",
+    "license": "unknown",
+    "original_filename": "FakeDBG.pdb",
+    "redistribution": "raw PDB not bundled; obtain author permission/license before redistribution",
+    "sha256": "e64a17d4a3adb3cbb51848489f0674f320be302ee2e489cdf46810395a4cfb95",
+    "size": 4186112
+  },
+  "supersedes": {
+    "added_publics": 315,
+    "publics": 37714,
+    "removed_publics": 0,
+    "sha256": "a0b6ae0ac8818bf3984be54645c67db063e0aac431991f93212b603b1998a8db",
+    "size": 4149248
+  },
+  "targets": [
+    {
+      "file": "Fallout4.exe",
+      "file_version": [
+        1,
+        11,
+        221,
+        0
+      ],
+      "image_size": 69484544,
+      "machine": 34404,
+      "sha256": "428f9996cc4248e26c0f62f9fdd3eaf0e5eb305834b67ee5996538e593218b61"
+    },
+    {
+      "file": "Fallout4.exe.unpacked.exe",
+      "file_version": [
+        1,
+        11,
+        221,
+        0
+      ],
+      "image_size": 69484544,
+      "machine": 34404,
+      "sha256": "488015e2010308bfa164d3720cb618deea7e1c098b1d61af530d258a6f17d27b"
+    }
+  ]
+}

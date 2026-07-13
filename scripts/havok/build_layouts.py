@@ -28,15 +28,19 @@ Output: build/havok/havok_layouts.json  ({class: {size, align, vtable,
 fields:[{offset,type,name}]}}).
 """
 import argparse
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-CLCL = r"C:/Program Files/LLVM/bin/clang-cl.exe"
-SDK = Path(r"C:/Development/higgs-master/Havok 2014 SDK/Source")
+CLCL = os.environ.get('BGS_CLANG_CL') or shutil.which('clang-cl') or \
+       str(REPO / 'tools' / 'llvm' / 'bin' / 'clang-cl.exe')
+SDK = Path(os.environ.get('BGS_HAVOK_SDK',
+                          str(REPO / 'extern' / 'havok' / 'Source')))
 BUILD = REPO / "build" / "havok"
 
 # Module umbrellas, by BASENAME (resolved via header_index, so the same
@@ -63,6 +67,14 @@ PRUNE_RES = [
 ]
 
 _HEADER_INDEX = None
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def header_index():
@@ -131,17 +143,26 @@ def compile_tu(path, dump=False):
 
 
 def main():
-    global SDK, ARCH
+    global SDK, ARCH, CLCL
     ap = argparse.ArgumentParser()
     ap.add_argument('--max-iters', type=int, default=40)
     ap.add_argument('--sdk', default=str(SDK),
                     help="Havok SDK Source root (default: 2014 SDK)")
+    ap.add_argument('--clang-cl', default=str(CLCL))
     ap.add_argument('--arch', choices=['x64', 'x86'], default='x64')
     ap.add_argument('--out', default='havok_layouts.json',
                     help="output JSON filename under scripts/havok/refs/")
+    ap.add_argument('--havok-version', default='2014')
+    ap.add_argument('--target', action='append', default=[],
+                    help='allowed target executable basename; repeatable')
     args = ap.parse_args()
     SDK = Path(args.sdk)
+    CLCL = args.clang_cl
     ARCH = args.arch
+    if not Path(CLCL).is_file():
+        raise SystemExit('clang-cl not found; pass --clang-cl or set BGS_CLANG_CL')
+    if not SDK.is_dir():
+        raise SystemExit('Havok SDK Source not found; pass --sdk or set BGS_HAVOK_SDK')
     BUILD.mkdir(parents=True, exist_ok=True)
 
     classes = list(enumerate_classes())
@@ -206,6 +227,10 @@ def main():
 
     # final compile WITH layout dump
     rc, out, err = compile_tu(tu, dump=True)
+    if rc != 0:
+        print('final record-layout compile failed:')
+        print(err[-8000:])
+        sys.exit(1)
     dump_path = BUILD / "_all.layouts.txt"
     dump_path.write_text(out, errors='replace')
     nrec = out.count('Dumping AST Record Layout')
@@ -216,11 +241,24 @@ def main():
     import parse_layouts
     recs = parse_layouts.parse(out)
     recs = {k: v for k, v in recs.items() if k.startswith(('hk', 'bhk'))}
+    if not recs:
+        print('final compiler output contained no Havok record layouts')
+        sys.exit(1)
     import json
     refs = Path(__file__).resolve().parent / "refs"
     refs.mkdir(exist_ok=True)
     outjson = refs / args.out
-    json.dump(recs, open(outjson, 'w'), indent=1)
+    from layout_schema import make_document
+    ver = subprocess.run([CLCL, '--version'], capture_output=True, text=True)
+    compiler_version = ver.stdout.splitlines()[0] if ver.returncode == 0 and ver.stdout else ''
+    doc = make_document(
+        recs, pointer_size=8 if ARCH == 'x64' else 4,
+        architecture=ARCH, havok_version=args.havok_version,
+        targets=args.target, source='clang-cl SDK record-layout dump',
+        sdk_root=str(SDK), compiler=str(CLCL),
+        compiler_sha256=_sha256(CLCL), compiler_version=compiler_version,
+        translation_unit_sha256=_sha256(tu))
+    json.dump(doc, open(outjson, 'w'), indent=1)
     (refs / (args.out.replace('.json', '') + "_dropped.txt")).write_text(
         '\n'.join(sorted(dropped)))
     print("parsed %d hk* records -> %s" % (len(recs), outjson))

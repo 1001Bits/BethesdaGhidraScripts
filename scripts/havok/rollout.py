@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Roll the SDK-derived Havok structs + this-typing across every x64 game
+"""Roll target-tagged Havok structs + this-typing across compatible game
 program in a Ghidra project, in ONE project-open session.
 
-For each target program: import the /Havok structs (apply_structs) then
-this-type havok member functions (apply_this), and save.  x86 programs are
-skipped (the 2014 SDK layout is x64).
+For each target program, validate layout metadata, import /Havok structs,
+then this-type Havok member functions.  Both x86 and x64 are supported when
+the selected layout explicitly matches.
 
-  python scripts/havok/rollout.py --project-dir C:/GhidraProjects/Fallout
+  python scripts/havok/rollout.py --project-dir <project-dir>
      --project-name F4VR --programs "/Fallout4 AE.exe" "/Fallout4.exe NG"
   # or --all-exe to auto-pick every *.exe program in the project
 """
@@ -36,7 +36,7 @@ def main():
     ap.add_argument('--layouts', default=str(apply_structs.LAYOUTS))
     args = ap.parse_args()
 
-    records = json.load(open(args.layouts))
+    records, metadata = apply_structs.load_document(args.layouts)
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     import pyghidra
     pyghidra.start(install_dir=GHIDRA_DIR)
@@ -70,11 +70,9 @@ def main():
             consumer = java.lang.Object()
             program = df.getDomainObject(consumer, not args.dry_run, False, monitor)
             try:
-                if program.getDefaultPointerSize() != 8:
-                    print("\n### %s: x86 -- skip" % ppath)
-                    continue
                 print("\n### %s" % ppath)
-                apply_structs.run(program, records, args.dry_run, monitor)
+                apply_structs.run(program, records, args.dry_run, monitor,
+                                  metadata)
                 if not args.structs_only:
                     apply_this.run(program, args.dry_run, monitor)
             except Exception as e:  # noqa: BLE001

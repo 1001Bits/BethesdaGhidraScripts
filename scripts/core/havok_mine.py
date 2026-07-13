@@ -29,7 +29,7 @@ EVIDENCE (reproducible with this scanner):
     static hkClass object would add its m_name referrer.
 
 The only remaining route to havok field TYPES is the Havok 2014 SDK
-headers (C:/Development/higgs-master/Havok 2014 SDK), parsed into Ghidra
+headers (for example, a locally configured Havok SDK include tree), parsed into Ghidra
 structs.  That is a separate, partial-coverage effort: the SDK ships
 Physics2012 + Common but not the hkb*/hknp* gameplay headers, and offset
 computation requires compiling the (template/SIMD/alignment-macro heavy)

@@ -9,14 +9,20 @@
 #   name   Symbol name as it should appear in Ghidra.
 #   rva    RVA into FalloutNV.exe (i.e., VA minus the 0x00400000 image
 #          base for the standard FNV 1.4.0.525 build).  Hex or decimal.
+#   coordinate  Explicitly RVA or VA.  Defaults to RVA; values are never
+#          guessed from their magnitude because valid RVAs can exceed 0x400000.
 #   kind   Either "func" or "label".  Use "func" if you want Ghidra to
-#          materialize a function at this address; "label" places only a
-#          symbol.
+#          treat an existing function as callable; "label" places only a
+#          symbol.  On x86, kind alone cannot create a new function.
 #   class  Optional containing class (used to produce ClassName::Method).
+#   verified_entry  Set true only when the address is proven to be the first
+#          instruction of a procedure (for example, a PDB procedure/public
+#          code record or a decoded vtable target).  Never set it for hook,
+#          return-site, data-address, or byte-pattern guesses.
 #
 # Comment lines start with '#'.  Blank lines are skipped.
 #
 # Examples:
-# name,rva,kind,class
-# PlayerCharacter_GetSingleton,0x471B40,func,
-# TESForm_LookupByID,0x83A00,func,TESForm
+# name,rva,coordinate,kind,class,verified_entry
+# PlayerCharacter_GetSingleton,0x471B40,RVA,func,,true
+# SuspectedHookSite,0x83A00,RVA,label,,false

@@ -23,13 +23,20 @@ and saves the program.  Idempotent: an edge whose ref already exists is
 skipped.  A polymorphic site legitimately gets multiple targets (one per object
 type observed) -- all are placed.
 
+``--apply`` requires an ``<edges_csv>.identity.json`` trace-manifest sidecar
+(full PE manifest of the traced module + the TTD session id); produce it with::
+
+  python scripts/core/bind_evidence.py <edges_csv> --exe <traced_exe> \
+      --kind ttd_vcall_edges --trace-session-id <TTD SessionID>
+
 Usage:
   python apply_vcall_xrefs.py <project_dir> <project_name> <program_path> \
-      <edges_csv> [--apply] [--max N]
+      <edges_csv> [--apply] [--min-count N] [--max N]
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -59,8 +66,28 @@ def parse_edges(path):
                     count = int(parts[2])
                 except ValueError:
                     count = 1
+            if count <= 0:
+                continue
             out.append((caller, target, count))
     return out
+
+
+def load_trace_manifest(edge_path, manifest_path=None):
+    """Load the required trace/binary lineage sidecar."""
+    path = manifest_path or str(edge_path) + '.identity.json'
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8') as fh:
+        value = json.load(fh)
+    if not isinstance(value, dict):
+        raise ValueError('trace manifest must be an object')
+    target = value.get('target') or value.get('artifact')
+    trace = value.get('trace') or {}
+    if not isinstance(target, dict) or not target.get('sha256'):
+        raise ValueError('trace manifest requires exact target.sha256')
+    if not trace.get('session_id'):
+        raise ValueError('trace manifest requires trace.session_id')
+    return value
 
 
 def _resolve_program(project, program_path):
@@ -96,7 +123,7 @@ def _call_site(listing, addr):
     return None
 
 
-def apply_edges(program, edges, do_apply, monitor):
+def apply_edges(program, edges, do_apply, monitor, min_count=1):
     from ghidra.program.model.symbol import RefType, SourceType
 
     image_base = program.getImageBase().getOffset()
@@ -109,16 +136,26 @@ def apply_edges(program, edges, do_apply, monitor):
         return space.getAddress(image_base + rva)
 
     st = {"total": 0, "applied": 0, "dup": 0, "no_site": 0,
-          "target_oob": 0, "self": 0}
+          "target_oob": 0, "low_count": 0, "self": 0}
 
     tx = program.startTransaction("apply vcall xrefs") if do_apply else None
+    commit = False
     try:
-        for caller_rva, target_rva, _cnt in edges:
+        for caller_rva, target_rva, count in edges:
             st["total"] += 1
+            if count < min_count:
+                st['low_count'] += 1
+                continue
             site_a = addr(caller_rva)
             tgt_a = addr(target_rva)
-            if not mem.contains(tgt_a):
+            target_block = mem.getBlock(tgt_a)
+            site_block = mem.getBlock(site_a)
+            if (target_block is None or not target_block.isInitialized()
+                    or not target_block.isExecute()):
                 st["target_oob"] += 1
+                continue
+            if site_block is None or not site_block.isExecute():
+                st['no_site'] += 1
                 continue
             inst = _call_site(listing, site_a)
             if inst is None:
@@ -136,11 +173,12 @@ def apply_edges(program, edges, do_apply, monitor):
             if do_apply:
                 refmgr.addMemoryReference(
                     from_a, tgt_a, RefType.COMPUTED_CALL,
-                    SourceType.USER_DEFINED, 0)
+                    SourceType.ANALYSIS, 0)
             st["applied"] += 1
+        commit = True
     finally:
         if tx is not None:
-            program.endTransaction(tx, True)
+            program.endTransaction(tx, commit)
     return st
 
 
@@ -154,6 +192,9 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="place the refs + save (default: dry-run)")
     ap.add_argument("--max", type=int, default=0, help="limit to first N edges")
+    ap.add_argument('--min-count', type=int, default=1,
+                    help='minimum observations required for an edge')
+    ap.add_argument('--manifest', help='trace identity sidecar (default edges_csv.identity.json)')
     args = ap.parse_args()
 
     edges = parse_edges(args.edges_csv)
@@ -162,6 +203,10 @@ def main():
     print("Edges parsed: %d" % len(edges))
     if not edges:
         return
+    trace_manifest = load_trace_manifest(args.edges_csv, args.manifest)
+    if args.apply and trace_manifest is None:
+        print('ERROR: applying runtime edges requires an exact trace identity sidecar')
+        sys.exit(2)
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     import pyghidra
@@ -183,16 +228,21 @@ def main():
         consumer = java.lang.Object()
         program = df.getDomainObject(consumer, True, False, monitor)
         try:
-            st = apply_edges(program, edges, args.apply, monitor)
+            if trace_manifest is not None:
+                from binary_identity import verify_ghidra_program
+                expected = trace_manifest.get('target') or trace_manifest.get('artifact')
+                verify_ghidra_program(program, [expected])
+            st = apply_edges(program, edges, args.apply, monitor,
+                             min_count=max(1, args.min_count))
             if args.apply and st["applied"]:
                 program.save("apply vcall xrefs", monitor)
         finally:
             program.release(consumer)
 
     mode = "APPLIED" if args.apply else "DRY-RUN"
-    print("%s: %d/%d edges placed  (dup %d, no-call-site %d, target-oob %d, self %d)"
+    print("%s: %d/%d edges placed  (dup %d, no-call-site %d, target-oob %d, low-count %d, self %d)"
           % (mode, st["applied"], st["total"], st["dup"], st["no_site"],
-             st["target_oob"], st["self"]))
+             st["target_oob"], st['low_count'], st["self"]))
     if not args.apply:
         print("  re-run with --apply to write the COMPUTED_CALL refs + save.")
 

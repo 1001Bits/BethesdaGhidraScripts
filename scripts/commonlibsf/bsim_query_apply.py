@@ -11,8 +11,8 @@ Run via pyghidra or analyzeHeadless ``-postScript bsim_query_apply.py
 file:/path/to/SF_BSim 0.85 25.0``.
 
 Args (positional):
-  1. BSim DB URL  e.g. file:/C:/Development/Tools/BethesdaGhidraScripts/bsim/SF_BSim
-  2. min similarity threshold (0.0-1.0; lower=more matches, more noise)
+  1. BSim DB URL (required), e.g. file:/path/to/bsim/SF_BSim
+  2. min similarity threshold (values below 0.90 are refused)
   3. min significance bound (BSim's "self-significance" -- prunes tiny funcs)
   4. optional: --dry  (don't apply, just print stats)
 
@@ -24,10 +24,22 @@ import sys
 
 # Args
 args = list(getScriptArgs())
-DB_URL          = args[0] if len(args) > 0 else "file:/C:/Development/Tools/BethesdaGhidraScripts/bsim/SF_BSim"
-MIN_SIMILARITY  = float(args[1]) if len(args) > 1 else 0.85
-MIN_SIGNIFICANCE = float(args[2]) if len(args) > 2 else 25.0
+if not args or args[0].startswith('--'):
+    raise RuntimeError('BSim database URL is required as argument 1')
+DB_URL          = args[0]
+MIN_SIMILARITY  = max(float(args[1]), 0.90) if len(args) > 1 else 0.92
+MIN_SIGNIFICANCE = max(float(args[2]), 30.0) if len(args) > 2 else 40.0
 DRY_RUN         = "--dry" in args
+MIN_NAME_MARGIN = 0.05
+target_args = [arg.split('=', 1)[1] for arg in args
+               if arg.startswith('--target-sha256=')]
+if not DRY_RUN and len(target_args) != 1:
+    raise RuntimeError(
+        'mutating BSim runs require exactly one --target-sha256=<sha256>')
+if target_args:
+    actual_sha = str(currentProgram.getExecutableSHA256() or '').lower()
+    if len(target_args[0]) != 64 or actual_sha != target_args[0].lower():
+        raise RuntimeError('BSim target executable SHA-256 mismatch')
 
 MAX_MATCHES_PER_FUNCTION = 5
 
@@ -43,6 +55,7 @@ from ghidra.program.model.symbol import SourceType
 
 NOISE_PREFIXES = ("FUN_", "thunk_FUN_", "sub_")
 NOISE_SUBSTRINGS = ("_dynamic_initializer_for_", "_lambda_", "API-MS-")
+PLACEHOLDER_METHOD_RE = re.compile(r'(?:^|::)(?:Func|Method|VFunc)\d+$', re.I)
 
 
 def is_noise(name):
@@ -50,7 +63,9 @@ def is_noise(name):
         return True
     if any(name.startswith(p) for p in NOISE_PREFIXES):
         return True
-    return any(s in name for s in NOISE_SUBSTRINGS)
+    if any(s in name for s in NOISE_SUBSTRINGS):
+        return True
+    return bool(PLACEHOLDER_METHOD_RE.search(name))
 
 
 def is_overwritable(current_name):
@@ -75,18 +90,26 @@ def sanitize_name(name):
     return "::".join(out)
 
 
-def main():
+_ACTIVE_DATABASE = None
+_ACTIVE_GENSIG = None
+
+
+def _main_impl():
+    global _ACTIVE_DATABASE, _ACTIVE_GENSIG
     url = BSimClientFactory.deriveBSimURL(DB_URL)
     database = BSimClientFactory.buildClient(url, False)
+    _ACTIVE_DATABASE = database
     if not database.initialize():
         err = database.getLastError()
         print(f"DB init failed: {err.message if err else '?'}")
         return
 
     def new_gensig():
+        global _ACTIVE_GENSIG
         g = GenSignatures(False)
         g.setVectorFactory(database.getLSHVectorFactory())
         g.openProgram(currentProgram, None, None, None, None, None)
+        _ACTIVE_GENSIG = g
         return g
 
     gensig = new_gensig()
@@ -155,13 +178,16 @@ def main():
             local_func = fm.getFunctionAt(currentProgram.getImageBase().add(local_addr))
             if local_func is None:
                 continue
+            if local_func.getSymbol().getSource() in (
+                    SourceType.USER_DEFINED, SourceType.IMPORTED):
+                n_already_named += 1
+                continue
             if not is_overwritable(local_func.getName()):
                 n_already_named += 1
                 continue
 
             # Find highest-similarity match across all source programs
-            best = None
-            best_sim = -1.0
+            candidates = []
             sub_iter = sim.iterator()
             while sub_iter.hasNext():
                 note = sub_iter.next()
@@ -174,20 +200,35 @@ def main():
                 if is_noise(name):
                     continue
                 s = note.getSimilarity()
-                if s > best_sim:
-                    best_sim = s
-                    best = (exerec.getNameExec(), name, s, note.getSignificance())
+                candidates.append((s, note.getSignificance(), exerec.getMd5(),
+                                   exerec.getNameExec(), name))
 
-            if best is None:
+            if not candidates:
                 # Either no match or only noise/self matches
                 n_no_match += 1
                 continue
 
-            if best_sim < MIN_SIMILARITY:
+            candidates.sort(reverse=True)
+            best_sim, sig_score, best_md5, src_exe, src_name = candidates[0]
+            if best_sim < MIN_SIMILARITY or sig_score < MIN_SIGNIFICANCE:
                 n_below_thresh += 1
                 continue
 
-            src_exe, src_name, sim_score, sig_score = best
+            # Multiple hits with the same fully qualified name corroborate
+            # one another.  A close hit proposing a different name makes the
+            # result ambiguous and must not mutate the program.
+            competitor = next((s for s, _, _, _, n in candidates
+                               if n != src_name), None)
+            if competitor is not None and best_sim - competitor < MIN_NAME_MARGIN:
+                n_below_thresh += 1
+                continue
+            consensus = len({md5 for s, _, md5, _, n in candidates
+                             if n == src_name and s >= best_sim - 0.03})
+            if consensus < 2 and not (best_sim >= 0.99 and sig_score >= 50.0):
+                n_below_thresh += 1
+                continue
+
+            sim_score = best_sim
             new_name = sanitize_name(src_name)
             if DRY_RUN:
                 n_renamed += 1
@@ -204,15 +245,18 @@ def main():
                     for p in ns_parts:
                         sub = sym.getNamespace(p, parent)
                         if sub is None:
-                            sub = sym.createNameSpace(parent, p, SourceType.USER_DEFINED)
+                            sub = sym.createNameSpace(parent, p, SourceType.ANALYSIS)
                         parent = sub
                     local_func.setParentNamespace(parent)
-                    local_func.setName(leaf, SourceType.USER_DEFINED)
+                    local_func.setName(leaf, SourceType.ANALYSIS)
                     n_renamed += 1
                     if len(sample_renames) < 20:
                         sample_renames.append((local_func.getName(), new_name, src_exe, sim_score, sig_score))
                 except Exception as e:
                     n_db_err += 1
+                    raise RuntimeError(
+                        'BSim rename failed at {}: {}'.format(
+                            local_func.getEntryPoint(), e))
 
         n_scanned += len(scanned_funcs)
         chunk.clear()
@@ -221,6 +265,11 @@ def main():
         if monitor.isCancelled():
             break
         f = funcs_iter.next()
+        if f.getSymbol().getSource() in (
+                SourceType.USER_DEFINED, SourceType.IMPORTED):
+            n_already_named += 1
+            monitor.incrementProgress(1)
+            continue
         if not is_overwritable(f.getName()):
             n_already_named += 1
             monitor.incrementProgress(1)
@@ -245,8 +294,39 @@ def main():
         for cur, new, exe, sim, sig in sample_renames:
             print(f"  {cur:24s}  ->  {new[:60]:60s}  ({exe[:20]}  sim={sim:.3f}  sig={sig:.1f})")
 
-    gensig.dispose()
-    database.close()
+    # Resource cleanup and transaction commit/rollback are centralized in
+    # ``main`` so exceptions and cancellation cannot leak handles or leave a
+    # partially renamed Program.
+
+
+def main():
+    global _ACTIVE_DATABASE, _ACTIVE_GENSIG
+    transaction = None
+    commit = False
+    if not DRY_RUN:
+        transaction = currentProgram.startTransaction(
+            'Apply identity-bound BSim names')
+    try:
+        _main_impl()
+        if monitor.isCancelled():
+            raise RuntimeError(
+                'BSim application cancelled; rolling back all renames')
+        commit = True
+    finally:
+        if _ACTIVE_GENSIG is not None:
+            try:
+                _ACTIVE_GENSIG.dispose()
+            except Exception:
+                pass
+            _ACTIVE_GENSIG = None
+        if _ACTIVE_DATABASE is not None:
+            try:
+                _ACTIVE_DATABASE.close()
+            except Exception:
+                pass
+            _ACTIVE_DATABASE = None
+        if transaction is not None:
+            currentProgram.endTransaction(transaction, commit)
 
 
 main()

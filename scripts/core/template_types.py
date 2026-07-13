@@ -165,7 +165,24 @@ def collect_template_names(
     """
     found: Set[str] = set()
 
+    def collect_value(value) -> None:
+        if isinstance(value, str):
+            if '<' in value:
+                found.update(extract_template_names(value))
+            return
+        if isinstance(value, dict):
+            for nested in value.values():
+                collect_value(nested)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for nested in value:
+                collect_value(nested)
+
     for info in structs.values():
+        # Include the instantiation itself and template base classes, even when
+        # the type has no data fields.
+        collect_value(info.get('full_name', ''))
+        collect_value(info.get('bases', []))
         for f in info.get('fields', []):
             found |= _templates_from_descriptor(f.get('type', ''))
 
@@ -173,6 +190,12 @@ def collect_template_names(
             found |= _templates_from_descriptor(slot.get('ret', ''))
             for _pname, ptype in slot.get('params', []):
                 found |= _templates_from_descriptor(ptype)
+
+        # clang_types stores callable types in these dictionaries rather than
+        # ``vtable_slots``.  Missing them dropped templates that appeared only
+        # in method returns/parameters (a common smart-pointer/container case).
+        for key in ('vmethods', 'methods', 'method_sigs'):
+            collect_value(info.get(key, {}))
 
     for sig in (sig_strings or []):
         if '<' in sig:

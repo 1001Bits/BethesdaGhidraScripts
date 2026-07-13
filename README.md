@@ -48,7 +48,7 @@ This opens an interactive menu:
 
   Tools:
     Ghidra      : 12.0.4
-    Clang       : clang version 22.1.5
+    Clang       : clang version 20.1.8
     Steamless   : OK
     Python pkgs : OK
 
@@ -64,7 +64,7 @@ This opens an interactive menu:
 
 ----------------------------------------
   1) Install prerequisites (Python packages, Ghidra, Clang, Steamless)
-  2) Update CommonLib submodules to latest
+  2) Restore committed CommonLib submodule revisions
   3) Process a specific version (per-version menu)
   4) Generate import scripts (all detected versions)
   5) Run headless Ghidra import
@@ -72,6 +72,7 @@ This opens an interactive menu:
   7) Full rebuild (generate + import all)
   8) Clean Ghidra project (start fresh)
   9) Enrich an existing Ghidra project (RTTI vtable pipeline)
+ 10) Export symbols from an enriched project (JSON / .map / x64dbg / PDB)
   q) Quit
 ----------------------------------------
 ```
@@ -80,18 +81,18 @@ The status panel at the top shows what's installed and detected. Menu options:
 
 | Option | What it does |
 |--------|-------------|
-| **1** | Installs Python packages (`pdbparse`, `pyghidra`, `capstone`, `numpy`), downloads Ghidra, LLVM/Clang, and Steamless if missing. Safe to run multiple times -- skips anything already installed. |
-| **2** | Runs `git submodule update --init --recursive --remote` to pull the latest CommonLib (SSE/F4/SF) and AddressLibraryDatabase commits. Run this when upstream CommonLib has new types or fixes. |
+| **1** | Installs the locked Python packages and exact Ghidra 12.0.4, LLVM 20.1.8, Steamless 3.1.0.5, and FakePDB 0.3 assets. Downloads and installed native binaries are SHA-256/receipt verified. PDB identity/public extraction uses the repository's strict MSF reader and LLVM tooling; the obsolete `pdbparse` dependency is not installed. |
+| **2** | Runs `git submodule update --init --recursive` and restores the reviewed commits recorded by this repository. It does not silently move the evidence base to an unreviewed upstream revision. |
 | **3** | Per-version submenu: pick one detected version (e.g. just Skyrim VR, or just Fallout 4 OG) and run a subset of the pipeline against it -- generate only that version's script, import only its binary, etc. Useful when you don't want to rerun every game. |
 | **4** | Parses every supported CommonLib's headers with clang and generates the Ghidra import scripts under `ghidrascripts/` for **all** detected versions. Requires clang (option 1 installs it). |
-| **5** | Runs the generated import scripts against your executables in headless Ghidra. Creates or updates the Ghidra project with all types, symbols, and signatures. Steam DRM is stripped automatically via Steamless. |
+| **5** | Runs exact-target generated importers in headless Ghidra. PE identity, unpacking lineage, importer identity, architecture, sections, and anchors are checked before mutation. Import is transactional; a changed script requires a clean re-import. |
 | **6** | Opens Ghidra with the project loaded. |
 | **7** | Runs options 4 + 5 back-to-back. Use this after updating submodules or replacing an executable. |
 | **8** | Deletes the Ghidra project and state file so the next import starts from scratch. |
-| **9** | Picks an existing Ghidra project (yours, not the BGS one) and runs the generic RTTI-walk vtable-naming pipeline against it. Works on any MSVC PE that Ghidra has finished auto-analyzing (x64 or x86), including binaries this repo has no CommonLib for -- Fallout New Vegas, modded engine builds, etc. Only renames functions whose name is still Ghidra's default `FUN_*` placeholder; never overwrites imported or user-set symbols. |
+| **9** | Picks an existing Ghidra project (yours, not the BGS one) and runs the generic RTTI-walk vtable-naming pipeline against it. Works on any MSVC PE that Ghidra has finished auto-analyzing (x64 or x86), including binaries this repo has no CommonLib for -- Fallout New Vegas, modded engine builds, etc. Only renames functions whose name is still Ghidra's default `FUN_*` placeholder; never overwrites imported or user-set symbols. When an exact CommonLib importer is identifiable, the guided flow reuses that importer automatically for safe stale-slot reconciliation; it never asks the user to choose another version or perform a redundant dry run, and skips reconciliation when no AST slot map exists. |
+| **10** | Exports symbols from an enriched project as JSON, map, or x64dbg-compatible data. It can also build, round-trip validate, and package an exact-executable synthetic public-symbol PDB. |
 
-**First-time setup:** run **1**, then **2**, then **7** (or just **7** if you
-already have clang installed). After that, **6** opens Ghidra with everything
+**First-time setup:** run **1**, then **2**, then **7**. After that, **6** opens Ghidra with everything
 imported. Option **9** is still available as an enrich-only pass against any
 externally-prepared Ghidra project (handy when you already have a heavily-
 annotated FNV / modded-engine project somewhere else).
@@ -101,10 +102,21 @@ annotated FNV / modded-engine project somewhere else).
 For CI or scripting, pass a subcommand instead of using the menu:
 
 ```bash
-python run.py setup   # option 1 + 2: install tools and update submodules
+python run.py setup   # option 1 + 2: install tools, restore committed submodules
 python run.py build   # option 7: generate scripts + headless import
 python run.py all     # setup + build + open Ghidra
+python run.py clean   # remove only this pipeline's generated project/state
 ```
+
+### Migrating an older checkout
+
+Generated importers, Steamless caches, shift maps, and mined CSVs created by an
+older identity-unbound pipeline are intentionally not trusted. Regenerate them
+from the exact executables. If an existing pipeline project records a legacy or
+different importer stage, run `python run.py clean` before rebuilding; applying
+the new script over old symbols could otherwise leave stale names behind.
+Research-only legacy corpora remain quarantined until they have exact source,
+target, coordinate, and content provenance.
 
 ### How it works
 
@@ -118,11 +130,45 @@ are supported via the AddressLibraryDatabase.
 
 ### Requirements
 
-- **Python 3.10+** (64-bit)
+- **CPython 3.11 through 3.14** (64-bit)
 - **Git**
 
 Clang, Ghidra, Steamless, and Python packages are all fetched automatically on
-first run.
+first run. Reproducible versions and asset digests live in
+`toolchain.lock.json`; Python runtime pins live in `requirements.lock.txt`.
+The launcher deliberately uses binary wheels and selects the newest installed
+supported CPython instead of blindly using the newest Python on the machine.
+It verifies and, when necessary, installs the locked runtime into that selected
+interpreter before displaying the menu, so a newly selected Python cannot reach
+an enrichment action without PyGhidra being present.
+For CPython 3.14 it installs PyGhidra 3.0.2 without dependency re-resolution and
+uses the tested JPype 1.7.1 bridge; PyGhidra's older JPype 1.5.2 pin has no
+CPython 3.14 wheel. Consequently, `pip check` on 3.14 reports PyGhidra's stale
+JPype metadata pin even though the locked bridge is intentional and tested.
+Python 3.15 is currently a prerelease and remains outside this dependency
+matrix: Ghidra and JPype currently advertise support only through Python 3.14,
+and compatible CPython 3.15 binary wheels are not yet available for the full
+runtime. It fails immediately with a clear version message rather than
+attempting an unreproducible native build. Support can be added once the
+upstream bridge and wheel set exist and pass the same project-open tests.
+
+The standard-library `imp` module was removed in Python 3.12 (not 3.14). The
+legacy `pdbparse` package is tied to Construct 2.9.x, which imports `imp`, so it
+is intentionally excluded on every Python version. This does not disable the
+maintained PDB path: exact GUID/age validation and public-symbol extraction use
+the built-in MSF 7 reader, with LLVM/DIA used where richer records are needed.
+Here, “3.11 through 3.14” refers to the **CPython** version; the automatically
+installed Ghidra version is separately locked to 12.0.4.
+
+For a manual dependency install, preserve the lock's no-resolution rule:
+
+```bash
+python -m pip install --no-deps --only-binary=:all: -r requirements.lock.txt
+```
+
+The locked automatic LLVM/Steamless setup currently targets Windows. On another
+host, provide LLVM 20.1.8 and an identity-sidecar-bound unpacked PE prepared on
+Windows when the source contains a SteamStub `.bind` section.
 
 ---
 
@@ -168,6 +214,16 @@ function names alongside the types when the script runs.
 The byte-sig port only runs when both AE (or NG) and the target binary are
 present in `exes/f4/`; without them, OG/VR fall back to types-only coverage.
 
+For 1.11.221, the checked-in community PDB corpus now contains 37,714 exact-RVA
+public records from the latest supplied snapshot (4,068 more than the prior
+snapshot). It is a synthetic **public-symbol-only** PDB: it contains no compiler
+types, locals, private procedure records, source files, or line tables. The
+loader quarantines 15 same-RVA alias groups and 60 names used at multiple RVAs;
+cross-version byte-signature seeding is further limited to reciprocal-unique
+executable `.pdata` starts. The raw third-party PDB is not redistributed while
+its author/license are unknown; the derived corpus pins its SHA-256, GUID/age,
+target hashes, counts, and extractor hashes.
+
 Starfield uses the `Starfield-Reverse-Engineering/CommonLibSF` headers and
 meh321's **V5** address-library binary format (flat `uint32[id]` array
 indexed by ID -- much simpler than the V1/V2 delta encoding SSE/F4 use).
@@ -189,21 +245,22 @@ append-only ID convention keeps those resolutions stable across the
 1.16.x line -- only ID-namespace-changing patches (1.15 → 1.16 was one)
 break compatibility.
 
-**Auto-generated shift maps for non-1.16.236 builds.**  After a successful
-SF import, `run.py` invokes
-`scripts/commonlibsf/sf_shift_check.py`, which:
+**Auto-generated shift maps for non-1.16.236 builds.** Before generating a
+Starfield importer, `run.py` invokes
+`scripts/commonlibsf/sf_shift_check.py --preflight`, which:
 
-1. Reads the detected PE version against the canonical 1.16.236 anchor.
-2. Dumps the freshly-imported binary's per-class vtable layouts via a
+1. Binds the exact PE hash/version and the exact matching V5 version library.
+2. If a validated map is absent, creates a clean, identity-bound generic
+   Ghidra import without applying CommonLib names.
+3. Dumps the target's physical primary and secondary vtables via a
    small pyghidra script (`scripts/commonlibsf/dump_vtable_layouts.py`,
-   in-process — no MCP, ~30 seconds for a full SF binary).
-3. Diffs the dump against the committed 1.16.236 reference layout at
-   `scripts/commonlibsf/refs/sf_1-16-236-0_vtables.csv.gz` and writes
-   `refs/shift_sf.json` when the target diverges.
-4. Tells the user to re-run `python run.py build` so
-   `parse_commonlib_types.py` picks up the shift map on the next pass
-   and emits vtable structs whose slot names line up with the target
-   binary's layout.
+   using exact version-library addresses plus MSVC COL metadata, not imported
+   names as self-confirming evidence.
+4. Binds the compressed layout and its version library to sidecar hashes,
+   then diffs against the similarly-bound 1.16.236 reference.
+5. Writes `refs/shift_sf_<version>.json` only when class, coverage, layout,
+   and target-identity checks pass. Generation consumes that exact map in the
+   same build, so a second build is not required.
 
 If you're on a build that doesn't have a pre-shipped shift map (e.g.
 1.16.242 / 1.16.244 today), please share the dumped
@@ -211,11 +268,13 @@ If you're on a build that doesn't have a pre-shipped shift map (e.g.
 issue so the next release can ship a pre-built shift map for everyone
 else on that version.
 
-Fallout NV uses `xNVSE/NVSE` as its symbol/type source. FNV 1.4.0.525 is
-frozen so the hardcoded virtual addresses baked into xNVSE headers
-(`DEFINE_MEMBER_FN`, typed-constant addresses, casted fn-pointer
-constants) are stable -- the scanner converts them to RVAs by subtracting
-the standard 0x00400000 image base. Type extraction runs the same libclang
+Fallout NV uses `xNVSE/NVSE` as its symbol/type source. Its reviewed corpus
+contains fixed Steam-layout RVAs, so a matching version resource alone is not
+accepted. Before generation, the pipeline verifies all 3,269 physical vtables
+and 54,346 expected function pointers against the selected PE, including
+section roles and file-backed spans. This rejects same-version executables
+with a different memory layout. Explicit VA/RVA tags are normalized against
+the 0x00400000 image base. Type extraction runs the same libclang
 AST + record-layout pipeline as the other versions; xNVSE's game types
 live at global scope (no `RE::` namespace) so they land under category
 `/xNVSE/` rather than `/CommonLibSSE/RE/`. Names that xNVSE doesn't expose
@@ -234,7 +293,7 @@ to -- conservatively, only if the function's name is still Ghidra's
 
 ## What gets imported
 
-Each binary receives:
+Subject to target-specific source coverage, each binary receives:
 
 - All enums, structs, and classes from CommonLib headers with exact field
   offsets and sizes (parsed via clang `-ast-dump` and `-fdump-record-layouts`)
@@ -242,21 +301,40 @@ Each binary receives:
 - Virtual function names from vtable address walks
 - Function signatures built from CommonLib type descriptors
 - Address-library symbols (function labels, RTTI, vtable pointers)
-- Fallback symbols from PDB (`SkyrimSE.pdb`) and IDA scripts where available
+- Fallback symbols from an exact CodeView-matching PDB or reviewed IDA-derived
+  evidence where available; OMAP-remapped PDBs use original section headers
 - `Source:` plate comments on named functions showing which symbol table
   provided the name
 
 ### Accuracy
 
-Every emitted struct field and signature parameter uses the **exact** type from
-the source. Anything that can't be pinned to an exact type is left as `void *`
-rather than guessed. In practice ~99.75% of struct fields are fully typed.
+The generator fails on partial clang output or architecture disagreement. It
+preserves record kind (struct/class/union), arrays, pointer width, base offsets,
+and overload signatures. Unresolved storage remains explicit opaque/padding
+data instead of receiving an invented semantic type. Symbols are admitted only
+inside the asserted section and executable entries are created only from PE
+unwind starts, decoded vtable targets, or other source evidence marked as a
+verified entry. Generated scripts preflight the exact target before opening a
+transaction and roll back types and symbols together on any error.
 
-| | F4 AE | Skyrim AE | Skyrim SE |
-| --- | --- | --- | --- |
-| Struct fields | 24,216 | 34,243 | 34,231 |
-| Fully typed | 99.76% | 99.75% | 99.75% |
-| Vtable structs | 1,292 | 2,023 | 2,024 |
+### Sharing synthetic PDBs
+
+Menu option **10** can create a shareable symbol bundle from any enriched
+project. It uses the pinned stable FakePDB 0.3 generator with the exact
+executable, then re-parses the output and requires the GUID, age, machine,
+sections, symbol set, and function/data classification to round-trip exactly
+before installing the PDB. The default PDB includes only `IMPORTED` and
+`USER_DEFINED` reciprocal-unique names; lower-confidence `ANALYSIS` names are
+an explicit opt-in.
+
+The resulting ZIP contains the expected `.pdb` basename, rich
+`.symbols.json`, provenance sidecar, and usage notice. This is useful for
+WinDbg, Visual Studio, IDA, Ghidra, crash symbolication, and collaboration—but
+it is a names-at-RVAs PDB, not a replacement for original compiler debug data.
+Function prototypes remain in JSON because FakePDB does not emit TPI/IPI,
+locals, ranges, or line records. Synthetic PDBs copy the executable's original
+GUID/age for automatic loading, so different revisions collide in debugger
+symbol caches; distribute one curated revision per exact executable SHA-256.
 
 ---
 
@@ -265,10 +343,12 @@ rather than guessed. In practice ~99.75% of struct fields are fully typed.
 CommonLib import gets you exact types where CommonLib has coverage. On top of
 that, the repo ships **binary-derived enrichment drivers** that recover names
 and types straight from the analyzed binary — valuable where CommonLib is thin
-(newer builds, Starfield, FNV) or absent. They run against any analyzed Ghidra
+(newer builds, Starfield, FNV) or absent. They run against an exact-identity
+analyzed Ghidra
 project via `scripts/discover_combined.py` (multi-program sequencer) or
 `scripts/apply_enrichment_to_user_project.py` (one driver, one program), and
-only touch `FUN_*`/undefined slots — never imported or user-set names.
+name mutators preserve analyst/imported symbols unless the selected reviewed
+apply workflow explicitly targets a datatype field or evidence decision.
 
 | Driver | What it recovers |
 |---|---|
@@ -277,6 +357,16 @@ only touch `FUN_*`/undefined slots — never imported or user-set names.
 | `globals_harvest` / `globals_apply` | Types global singletons by the class whose methods consume them |
 | `settings_harvest` | Names + types game-setting value fields (`fXxx`/`bXxx`/`iXxx`) |
 | `console_harvest` / `console_harvest_sf` | Names console-command handlers (`Cmd_*`) — table-based, plus Starfield's code-based registration |
+| `pe_unwind_enrich` | Recovers validated x64 function starts, chained unwind records, handlers, and unwind comments from the PE exception directory |
+| `registration_harvest` | Recovers decoded one-to-one registration/global associations and applies only high-confidence unique names |
+
+Mutation is opt-in by evidence group (`--apply-renames`, `--apply-ctors`,
+`--apply-globals`, `--apply-settings`, `--apply-console`, `--apply-metadata`,
+`--apply-registries`, or `--apply-all-reviewed`). Applied discovery repeats up
+to four passes by default and stops early at a fixed point. Persistent
+constructor/global/registration CSVs carry target SHA-256 and
+content sidecars; an old or edited artifact is refused until it is regenerated
+or explicitly reviewed through the decision file workflow.
 
 ---
 
@@ -291,12 +381,20 @@ pipeline steps (e.g. regenerating only one game, or importing a single target):
 # Generate import scripts only (requires clang)
 python scripts/commonlibsse/parse_commonlib_types.py   # Skyrim SE + AE
 python scripts/commonlibf4/parse_commonlib_types.py    # Fallout 4 AE
+python scripts/commonlibsf/parse_commonlib_types.py    # exact detected SF build
+python scripts/commonlibnvse/parse_commonlib_types.py  # attested FNV layout
 
 # Run headless Ghidra import (requires generated scripts + Ghidra)
 python scripts/run_headless.py                # all targets
 python scripts/run_headless.py skyrim         # all skyrim versions
 python scripts/run_headless.py skyrim ae      # specific target
 python scripts/run_headless.py f4 ae
+
+# Build a clean Starfield layout baseline without applying generated names
+python scripts/run_headless.py starfield sf --import-only
+
+# Compile every script, run static safety checks, then run maintained tests
+python scripts/quality_gate.py
 ```
 
 ### Symbol priority
@@ -327,7 +425,7 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 │   └── commonlibf4/                 Fallout 4 AE pipeline
 ├── ghidrascripts/                   Generated import scripts (output)
 ├── ghidraprojects/                  Ghidra project (output)
-└── tools/                           Ghidra, Steamless, LLVM (auto-downloaded)
+└── tools/                           Ghidra, Steamless, LLVM, FakePDB (auto-downloaded)
 ```
 
 ---

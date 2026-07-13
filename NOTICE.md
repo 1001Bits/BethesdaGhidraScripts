@@ -84,6 +84,79 @@ If you fork or redistribute this bundle, you must:
    the bundle unmodified or with patches included).
 3. Preserve all attribution and license notices in modified files.
 
+### CommonLibVR (`extern/CommonLibVR/`)
+
+- Upstream: <https://github.com/alandtse/CommonLibVR> (branch `ng`)
+- License: **MIT**
+- Copyright (c) alandtse and contributors.
+- See `extern/CommonLibVR/LICENSE` for the full text.  Its own `extern/openvr`
+  submodule (Valve, BSD-3-Clause) supplies the OpenVR headers.
+
+Used by `scripts/commonlibvr/` to extract true Skyrim VR type/vtable layouts.
+Unlike CommonLibSSE -- which approximates VR structs as SE -- CommonLibVR is a
+genuine multi-runtime codebase that models the real VR divergence.
+
+### CommonLibVR enrichment pipeline + core fixes — alandtse
+
+- Upstream: <https://github.com/alandtse/BethesdaGhidraScripts>
+- License: **GPL-3.0** (same as this repository's aggregate)
+- Author: **alandtse**
+
+`scripts/commonlibvr/` (the layout-drift/conflict-aware type enrichment pipeline)
+is ported from alandtse's fork of this project, along with three
+`scripts/core/ghidra_import_gen.py` fixes: namespaced-template struct
+resolution, the degenerate `TEMPLATE_TYPE_MAP` self-alias fall-through, and the
+existing-type reuse guard that stops a re-import from duplicating types.
+
+### xNVSE — New Vegas Script Extender (`extern/xNVSE/`)
+
+- Upstream: <https://github.com/xNVSE/NVSE>
+- License: **No explicit license file in the upstream repository.**
+- Original NVSE by Ian Patterson; xNVSE maintained by korri123 (Kormákur),
+  cnf13, jazzisparis, Demorome, and contributors.
+
+Used by `scripts/commonlibnvse/parse_commonlib_types.py` to parse Fallout
+New Vegas game-type headers under libclang. If you are an xNVSE maintainer
+and would like a specific license declaration applied to this bundle's use,
+please open an issue on
+<https://github.com/1001Bits/BethesdaGhidraScripts>.
+
+### JIP LN NVSE Plugin (FalloutNV name/address data)
+
+- Upstream: <https://github.com/jazzisparis/JIP-LN-NVSE>
+- License: **GPL-3.0**
+- Author: jazzisparis and contributors.
+
+`scripts/commonlibnvse/refs/fnv_pc_symbols.txt` contains ~7.7k `FalloutNV.exe`
+addresses and labels extracted from the xNVSE and JIP LN NVSE source trees;
+the Fallout New Vegas naming pipeline uses them as known-address anchors. The
+plugin source itself is not redistributed here. Because this data derives from
+a GPL-3.0 source, it is one of the components that make the aggregate bundle
+GPL-3.0 (see top-level `LICENSE`).
+
+### Fallout 4 community symbol PDBs — Perchik71
+
+- Author: **Perchik71**
+- The `Fallout4_1_11_221_for_debug.pdb` family of community-reconstructed,
+  public-symbol-only PDBs for Fallout 4.
+
+`scripts/commonlibf4/refs/f4_221_pdb_publics.txt` is a deterministic text
+corpus extracted from these PDBs (38,029 publics for 1.11.221), and is the
+basis for the Fallout 4 naming and cross-version ID-porting pipelines. The raw
+PDB itself is **not** redistributed here — obtain the author's
+permission/license before redistributing it.
+
+### Fallout 4 IDA function-name cross-map — Zzyxzz
+
+- Author: **Zzyxzz**
+- `IDA_Functions_OG_AE.csv` — ~267k demangled Fallout 4 function signatures
+  keyed by both the OG (1.10.163) and AE (1.11.191) RVA.
+
+Consumed by `scripts/commonlibf4/apply_ida_csv_names.py` to name Ghidra
+programs (it is the source of tens of thousands of AE names). The CSV is
+user-supplied and is **not** redistributed in this repository or its release
+bundles.
+
 ### AddressLibraryDatabase (`extern/AddressLibraryDatabase/`)
 
 - Upstream: <https://github.com/meh321/AddressLibraryDatabase>
@@ -138,6 +211,10 @@ data, please open an issue on
 - **Ghidra** (Apache 2.0) — <https://github.com/NationalSecurityAgency/ghidra>
 - **LLVM/Clang** (Apache 2.0 with LLVM Exception) — <https://github.com/llvm/llvm-project>
 - **Steamless** (MIT) — <https://github.com/atom0s/Steamless>
+- **FakePDB** (Apache 2.0) — <https://github.com/Mixaill/FakePDB> — invoked to
+  generate public-symbol PDBs from exported symbols. Pinned by
+  `toolchain.lock.json` (v0.3, commit `2d84f49`). Not redistributed in the
+  source bundle; only its generated PDB output feeds downstream tooling.
 - **JDK 21** (GPL v2 with Classpath Exception, when using OpenJDK
   distributions) — installed by the user manually if not present.
 

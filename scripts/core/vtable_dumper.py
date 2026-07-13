@@ -134,9 +134,10 @@ class _MCPClient:
 # Match Ghidra's class get_info output:
 # "private static vtable vtable VTABLE_<Class> @ <addr> -> vtable[N]->FuncName, vtable[N]->..."
 _VTABLE_HEADER_RE = re.compile(
-    r'VTABLE_([A-Za-z_0-9]+(?:_[0-9]+)?) @ ([0-9a-fA-F]+) -> '
+    r'VTABLE_(.+?) @ (?:0x)?([0-9a-fA-F]+) -> '
 )
-_SLOT_ENTRY_RE = re.compile(r'vtable\[(\d+)\]->([A-Za-z_:][A-Za-z_:0-9]*)')
+_SLOT_ENTRY_RE = re.compile(
+    r'vtable\[(\d+)\]->(.+?)(?=,\s*vtable\[|\r?\n|$)')
 
 
 def _parse_vtable_response(text: str, class_filter: Optional[str] = None
@@ -150,7 +151,8 @@ def _parse_vtable_response(text: str, class_filter: Optional[str] = None
         start = hdr.end()
         end_m = text.find('private static', start)
         body = text[start:end_m if end_m >= 0 else len(text)]
-        slots = [(int(m.group(1)), m.group(2)) for m in _SLOT_ENTRY_RE.finditer(body)]
+        slots = [(int(m.group(1)), m.group(2).strip())
+                 for m in _SLOT_ENTRY_RE.finditer(body)]
         if class_filter and class_filter not in vname:
             continue
         out.append((vname, vaddr, slots))
@@ -163,8 +165,8 @@ def _strip_context(text: str) -> str:
 
 
 def _get_function_signature(client: _MCPClient, addr_or_name: str,
-                              program_name: str) -> Tuple[str, str]:
-    """Return (func_name, fingerprint) for a function, or ('', '') on miss."""
+                              program_name: str) -> Tuple[str, int, str]:
+    """Return (func_name, address, fingerprint), or empty values on miss."""
     text = client.call_tool('get_function_signature', {
         'function_name_or_address': addr_or_name,
         'program_name': program_name,
@@ -173,9 +175,13 @@ def _get_function_signature(client: _MCPClient, addr_or_name: str,
     # Body is JSON like {"name":"X","address":"Y","signature":"48 8B..."}
     try:
         obj = json.loads(text.strip())
-        return obj.get('name', '') or '', obj.get('signature', '') or ''
+        raw_addr = str(obj.get('address', '') or '')
+        match = re.search(r'(?:0x)?([0-9a-fA-F]+)$', raw_addr)
+        func_addr = int(match.group(1), 16) if match else 0
+        return (obj.get('name', '') or '', func_addr,
+                obj.get('signature', '') or '')
     except json.JSONDecodeError:
-        return '', ''
+        return '', 0, ''
 
 
 def dump_binary(program_name: str, label: str,
@@ -240,28 +246,26 @@ def dump_binary(program_name: str, label: str,
         if not groups:
             continue
 
-        # Primary vtable: name == 'VTABLE_<cls>' (no _N suffix)
-        primary = None
-        for vname, vaddr, slots in groups:
-            if vname == 'VTABLE_' + cls:
-                primary = (vname, vaddr, slots)
-                break
-        if primary is None and not only_primary_vtable:
-            primary = groups[0]
-        if primary is None:
-            continue
-        _, vaddr, slot_entries = primary
-
-        cv = layout.upsert(cls, vaddr)
-        for slot, func_name in slot_entries:
-            fp = ''
-            func_addr = 0
-            if fetch_fingerprints and func_name:
-                fn_name, fp = _get_function_signature(client, func_name, program_name)
-                # func_addr is in the JSON too; re-fetch quickly
-                # (we already have it in fp's containing obj, but the signature call returned only name+sig)
-            cv.add(SlotEntry(slot=slot, func_addr=func_addr,
-                              func_name=func_name, fingerprint=fp))
+        primary_name = 'VTABLE_' + cls
+        selected = ([group for group in groups if group[0] == primary_name]
+                    if only_primary_vtable else groups)
+        for vname, vaddr, slot_entries in selected:
+            is_primary = vname == primary_name
+            cv = layout.upsert(
+                cls, vaddr, vtable_id=vname,
+                subobject_offset=0, is_primary=is_primary)
+            for slot, func_name in slot_entries:
+                fp = ''
+                func_addr = 0
+                if func_name:
+                    fn_name, func_addr, fetched_fp = _get_function_signature(
+                        client, func_name, program_name)
+                    if fetch_fingerprints:
+                        fp = fetched_fp
+                    if fn_name:
+                        func_name = fn_name
+                cv.add(SlotEntry(slot=slot, func_addr=func_addr,
+                                 func_name=func_name, fingerprint=fp))
 
     return layout
 

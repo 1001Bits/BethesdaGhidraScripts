@@ -1,0 +1,528 @@
+{
+  "artifact": "bytesig_ported_221.csv",
+  "artifact_sha256": "4faf2a95f3072f0e6bdae9a13dab140782058e4ca8aecf5d3a41201cb8e2bb3f",
+  "row_count": 2028,
+  "schema_version": 1,
+  "sources": {
+    "e555c6c0e7aba3e9e4801c2e5e11e3a76b42ce080683b4b9c1cf074c2030b737": {
+      "anchors": [
+        {
+          "bytes": "8b02448b018901448902c3cc8b02f30f",
+          "rva": 4096,
+          "section": ".text"
+        },
+        {
+          "bytes": "4533c9488d0decea24034533c0488bd7",
+          "rva": 12645882,
+          "section": ".text"
+        },
+        {
+          "bytes": "000f84650900008b0d56ea63024c8d44",
+          "rva": 25287669,
+          "section": ".text"
+        },
+        {
+          "bytes": "488bc444894018555356574154415541",
+          "rva": 37933056,
+          "section": ".interpr"
+        },
+        {
+          "bytes": "4c8b542440440f284dc0eb3f4885c074",
+          "rva": 37947386,
+          "section": ".interpr"
+        },
+        {
+          "bytes": "24504c8b46080f1006c1eb080fb6c38b",
+          "rva": 37961717,
+          "section": ".interpr"
+        },
+        {
+          "bytes": "4f37d9272054d9415231bc412442cc33",
+          "rva": 69246976,
+          "section": ".bind"
+        },
+        {
+          "bytes": "222348bf87d73ec6da912e08ae95e8cc",
+          "rva": 69323794,
+          "section": ".bind"
+        }
+      ],
+      "data_directories": [
+        {
+          "index": 0,
+          "name": "export",
+          "rva": 49046304,
+          "size": 1248
+        },
+        {
+          "index": 1,
+          "name": "import",
+          "rva": 49047552,
+          "size": 720
+        },
+        {
+          "index": 2,
+          "name": "resource",
+          "rva": 68026368,
+          "size": 681888
+        },
+        {
+          "index": 3,
+          "name": "exception",
+          "rva": 65404928,
+          "size": 2614224
+        },
+        {
+          "index": 4,
+          "name": "security",
+          "rva": 55279688,
+          "size": 10592
+        },
+        {
+          "index": 5,
+          "name": "basereloc",
+          "rva": 68710400,
+          "size": 532824
+        },
+        {
+          "index": 6,
+          "name": "debug",
+          "rva": 43144272,
+          "size": 84
+        },
+        {
+          "index": 7,
+          "name": "architecture",
+          "rva": 0,
+          "size": 0
+        },
+        {
+          "index": 8,
+          "name": "globalptr",
+          "rva": 0,
+          "size": 0
+        },
+        {
+          "index": 9,
+          "name": "tls",
+          "rva": 43144624,
+          "size": 40
+        },
+        {
+          "index": 10,
+          "name": "load_config",
+          "rva": 43144368,
+          "size": 256
+        },
+        {
+          "index": 11,
+          "name": "bound_import",
+          "rva": 0,
+          "size": 0
+        },
+        {
+          "index": 12,
+          "name": "iat",
+          "rva": 37978112,
+          "size": 6480
+        },
+        {
+          "index": 13,
+          "name": "delay_import",
+          "rva": 0,
+          "size": 0
+        },
+        {
+          "index": 14,
+          "name": "clr",
+          "rva": 0,
+          "size": 0
+        },
+        {
+          "index": 15,
+          "name": "reserved",
+          "rva": 0,
+          "size": 0
+        }
+      ],
+      "file_name": "Fallout4.exe.unpacked.exe",
+      "file_size": 55290720,
+      "file_version": [
+        1,
+        11,
+        191,
+        0
+      ],
+      "image_base": 5368709120,
+      "image_size": 69480448,
+      "machine": 34404,
+      "machine_name": "amd64",
+      "pointer_size": 8,
+      "schema": 1,
+      "sections": [
+        {
+          "characteristics": 1610612768,
+          "executable": true,
+          "name": ".text",
+          "raw_offset": 1536,
+          "raw_size": 37925376,
+          "readable": true,
+          "rva": 4096,
+          "virtual_size": 37925324,
+          "writable": false
+        },
+        {
+          "characteristics": 1610612768,
+          "executable": true,
+          "name": ".interpr",
+          "raw_offset": 37926912,
+          "raw_size": 43008,
+          "readable": true,
+          "rva": 37933056,
+          "virtual_size": 42704,
+          "writable": false
+        },
+        {
+          "characteristics": 1073741888,
+          "executable": false,
+          "name": ".rdata",
+          "raw_offset": 37969920,
+          "raw_size": 11095040,
+          "readable": true,
+          "rva": 37978112,
+          "virtual_size": 11094850,
+          "writable": false
+        },
+        {
+          "characteristics": 3221225536,
+          "executable": false,
+          "name": ".data",
+          "raw_offset": 49064960,
+          "raw_size": 2150912,
+          "readable": true,
+          "rva": 49074176,
+          "virtual_size": 16327472,
+          "writable": true
+        },
+        {
+          "characteristics": 1073741888,
+          "executable": false,
+          "name": ".pdata",
+          "raw_offset": 51215872,
+          "raw_size": 2614272,
+          "readable": true,
+          "rva": 65404928,
+          "virtual_size": 2614224,
+          "writable": false
+        },
+        {
+          "characteristics": 1073741888,
+          "executable": false,
+          "name": "_RDATA",
+          "raw_offset": 53830144,
+          "raw_size": 4096,
+          "readable": true,
+          "rva": 68022272,
+          "virtual_size": 3616,
+          "writable": false
+        },
+        {
+          "characteristics": 1073741888,
+          "executable": false,
+          "name": ".rsrc",
+          "raw_offset": 53834240,
+          "raw_size": 681984,
+          "readable": true,
+          "rva": 68026368,
+          "virtual_size": 681888,
+          "writable": false
+        },
+        {
+          "characteristics": 1107296320,
+          "executable": false,
+          "name": ".reloc",
+          "raw_offset": 54516224,
+          "raw_size": 532992,
+          "readable": true,
+          "rva": 68710400,
+          "virtual_size": 532824,
+          "writable": false
+        },
+        {
+          "characteristics": 1610612736,
+          "executable": true,
+          "name": ".bind",
+          "raw_offset": 55049216,
+          "raw_size": 230472,
+          "readable": true,
+          "rva": 69246976,
+          "virtual_size": 230472,
+          "writable": false
+        }
+      ],
+      "sha256": "e555c6c0e7aba3e9e4801c2e5e11e3a76b42ce080683b4b9c1cf074c2030b737",
+      "timestamp": 1765415500,
+      "version_string": "1.11.191.0"
+    }
+  },
+  "target": {
+    "anchors": [
+      {
+        "bytes": "8b02448b018901448902c3cc8b02f30f",
+        "rva": 4096,
+        "section": ".text"
+      },
+      {
+        "bytes": "89442430410fb6400288442432418d41",
+        "rva": 12646053,
+        "section": ".text"
+      },
+      {
+        "bytes": "0f2940b8440f2948a8440f295098440f",
+        "rva": 25288010,
+        "section": ".text"
+      },
+      {
+        "bytes": "488bc444894018555356574154415541",
+        "rva": 37933056,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "4c8b542440440f284dc0eb3f4885c074",
+        "rva": 37947386,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "24504c8b46080f1006c1eb080fb6c38b",
+        "rva": 37961717,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "ef068bd880658bbef200eebe84739ecc",
+        "rva": 69246976,
+        "section": ".bind"
+      },
+      {
+        "bytes": "d1f757938d68f77cd3a380bf042695c1",
+        "rva": 69324818,
+        "section": ".bind"
+      }
+    ],
+    "data_directories": [
+      {
+        "index": 0,
+        "name": "export",
+        "rva": 49046464,
+        "size": 1248
+      },
+      {
+        "index": 1,
+        "name": "import",
+        "rva": 49047712,
+        "size": 720
+      },
+      {
+        "index": 2,
+        "name": "resource",
+        "rva": 68026368,
+        "size": 681888
+      },
+      {
+        "index": 3,
+        "name": "exception",
+        "rva": 65404928,
+        "size": 2614272
+      },
+      {
+        "index": 4,
+        "name": "security",
+        "rva": 55283272,
+        "size": 10592
+      },
+      {
+        "index": 5,
+        "name": "basereloc",
+        "rva": 68710400,
+        "size": 532892
+      },
+      {
+        "index": 6,
+        "name": "debug",
+        "rva": 43144272,
+        "size": 84
+      },
+      {
+        "index": 7,
+        "name": "architecture",
+        "rva": 0,
+        "size": 0
+      },
+      {
+        "index": 8,
+        "name": "globalptr",
+        "rva": 0,
+        "size": 0
+      },
+      {
+        "index": 9,
+        "name": "tls",
+        "rva": 43144624,
+        "size": 40
+      },
+      {
+        "index": 10,
+        "name": "load_config",
+        "rva": 43144368,
+        "size": 256
+      },
+      {
+        "index": 11,
+        "name": "bound_import",
+        "rva": 0,
+        "size": 0
+      },
+      {
+        "index": 12,
+        "name": "iat",
+        "rva": 37978112,
+        "size": 6480
+      },
+      {
+        "index": 13,
+        "name": "delay_import",
+        "rva": 0,
+        "size": 0
+      },
+      {
+        "index": 14,
+        "name": "clr",
+        "rva": 0,
+        "size": 0
+      },
+      {
+        "index": 15,
+        "name": "reserved",
+        "rva": 0,
+        "size": 0
+      }
+    ],
+    "file_name": "Fallout4.exe.unpacked.exe",
+    "file_size": 55294304,
+    "file_version": [
+      1,
+      11,
+      221,
+      0
+    ],
+    "image_base": 5368709120,
+    "image_size": 69484544,
+    "machine": 34404,
+    "machine_name": "amd64",
+    "pointer_size": 8,
+    "schema": 1,
+    "sections": [
+      {
+        "characteristics": 1610612768,
+        "executable": true,
+        "name": ".text",
+        "raw_offset": 1536,
+        "raw_size": 37925888,
+        "readable": true,
+        "rva": 4096,
+        "virtual_size": 37925564,
+        "writable": false
+      },
+      {
+        "characteristics": 1610612768,
+        "executable": true,
+        "name": ".interpr",
+        "raw_offset": 37927424,
+        "raw_size": 43008,
+        "readable": true,
+        "rva": 37933056,
+        "virtual_size": 42704,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rdata",
+        "raw_offset": 37970432,
+        "raw_size": 11095040,
+        "readable": true,
+        "rva": 37978112,
+        "virtual_size": 11095010,
+        "writable": false
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".data",
+        "raw_offset": 49065472,
+        "raw_size": 2150912,
+        "readable": true,
+        "rva": 49074176,
+        "virtual_size": 16327600,
+        "writable": true
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".pdata",
+        "raw_offset": 51216384,
+        "raw_size": 2614272,
+        "readable": true,
+        "rva": 65404928,
+        "virtual_size": 2614272,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": "_RDATA",
+        "raw_offset": 53830656,
+        "raw_size": 4096,
+        "readable": true,
+        "rva": 68022272,
+        "virtual_size": 3616,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rsrc",
+        "raw_offset": 53834752,
+        "raw_size": 681984,
+        "readable": true,
+        "rva": 68026368,
+        "virtual_size": 681888,
+        "writable": false
+      },
+      {
+        "characteristics": 1107296320,
+        "executable": false,
+        "name": ".reloc",
+        "raw_offset": 54516736,
+        "raw_size": 532992,
+        "readable": true,
+        "rva": 68710400,
+        "virtual_size": 532892,
+        "writable": false
+      },
+      {
+        "characteristics": 1610612736,
+        "executable": true,
+        "name": ".bind",
+        "raw_offset": 55049728,
+        "raw_size": 233544,
+        "readable": true,
+        "rva": 69246976,
+        "virtual_size": 233544,
+        "writable": false
+      }
+    ],
+    "sha256": "488015e2010308bfa164d3720cb618deea7e1c098b1d61af530d258a6f17d27b",
+    "timestamp": 1776461636,
+    "version_string": "1.11.221.0"
+  }
+}

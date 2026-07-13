@@ -1,0 +1,12 @@
+# Complete runtime dependency lock used by run.py (CPython 3.11-3.14).
+#
+# Install with --no-deps so pip does not re-resolve PyGhidra's JPype1==1.5.2
+# metadata pin over the tested CPython 3.14 bridge below.  run.py does this
+# automatically.  --only-binary=:all: prevents slow, machine-dependent native
+# builds from looking like a frozen setup.
+pyghidra==3.0.2
+JPype1==1.5.2; python_version < '3.14'
+JPype1==1.7.1; python_version >= '3.14' and python_version < '3.15'
+packaging==25.0
+capstone==5.0.6
+numpy==2.4.4

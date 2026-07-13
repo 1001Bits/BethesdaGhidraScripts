@@ -28,7 +28,7 @@ from typing import Dict, List
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
-PC_EXE     = Path(r'D:\FNV Project\FalloutNewVegas\FalloutNV.exe')
+from paths import PC_EXE
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from extract_pc_fnv_string_xrefs import parse_pe_x86

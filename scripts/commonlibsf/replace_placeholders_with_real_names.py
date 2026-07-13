@@ -15,6 +15,9 @@ Output:
 from __future__ import annotations
 
 import csv
+import argparse
+import hashlib
+import json
 import os
 import re
 import sys
@@ -23,16 +26,38 @@ from pathlib import Path
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
 
-PROJECT_DIR  = "C:/GhidraProjects"
-PROJECT_NAME = "Combined"
-PROGRAM_PATH = "/Starfield/Starfield 1.16.236"
-
 SF17_SLOTS = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf17_vtable_slot_names.csv"
 
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_<>$~?@-]")
 _FUNC_N_RE         = re.compile(r"^Func\d+$")
 _LEAF_FUNC_N_RE    = re.compile(r"^Func(\d+)$")
 _CLASS_FUNC_RE     = re.compile(r"(.+)::Func(\d+)$")
+SF17_VERSION = [1, 7, 36, 0]
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_slot_evidence(path):
+    identity_path = str(path) + '.identity.json'
+    with open(identity_path, 'r', encoding='utf-8') as stream:
+        identity = json.load(stream)
+    if identity.get('schema_version') != 1:
+        raise RuntimeError('legacy/unbound SF17 vtable-slot evidence')
+    if identity.get('artifact') != Path(path).name:
+        raise RuntimeError('SF17 slot identity names another artifact')
+    if identity.get('target_version') != SF17_VERSION:
+        raise RuntimeError('SF17 slot evidence came from the wrong version')
+    if identity.get('slot_numbering') != 'one_based_FuncN':
+        raise RuntimeError('SF17 slot evidence has an incompatible slot convention')
+    if identity.get('artifact_sha256') != _sha256(path):
+        raise RuntimeError('SF17 slot evidence changed after identity binding')
+    return identity
 
 
 def sanitize_component(part):
@@ -50,11 +75,23 @@ def split_namespaced(full):
 
 
 def main():
+    raise SystemExit(
+        'DISABLED: identical numeric vtable slots are not valid cross-version '
+        'evidence. Regenerate this workflow around an identity-bound SF 1.7 '
+        'to target physical-layout shift map before enabling mutation.')
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--project-dir', required=True)
+    ap.add_argument('--project-name', required=True)
+    ap.add_argument('--program', required=True)
+    ap.add_argument('--target-sha256', required=True)
+    ap.add_argument('--slots', default=str(SF17_SLOTS))
+    args = ap.parse_args()
     # Step 1: load slot -> real_name map
+    _validate_slot_evidence(args.slots)
     slot_map = {}      # (class_name, slot_idx) -> set of real_name candidates
     n_loaded = 0
     n_placeholder = 0
-    with open(SF17_SLOTS, encoding="utf-8") as f:
+    with open(args.slots, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             cls = row["class"].strip()
             try:
@@ -82,19 +119,24 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(PROJECT_DIR, PROJECT_NAME, create=False) as project:
-        domain_file = project.getProjectData().getFile(PROGRAM_PATH)
+    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+        domain_file = project.getProjectData().getFile(args.program)
         if domain_file is None:
-            print(f"ERROR: program not found: {PROGRAM_PATH}")
+            print(f"ERROR: program not found: {args.program}")
             sys.exit(2)
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, True, False, monitor)
         try:
+            actual_sha256 = (program.getExecutableSHA256() or '').lower()
+            if actual_sha256 != args.target_sha256.lower():
+                raise RuntimeError('target executable SHA-256 mismatch')
             fm = program.getFunctionManager()
             sym = program.getSymbolTable()
             global_ns = program.getGlobalNamespace()
+            memory = program.getMemory()
 
             txid = program.startTransaction("Replace Func{N} placeholders with SF 1.7 real names")
+            commit = False
             try:
                 ns_cache = {}
                 def get_or_create_namespace(path_parts):
@@ -107,7 +149,7 @@ def main():
                     for part in path_parts:
                         sub = sym.getNamespace(part, parent)
                         if sub is None:
-                            sub = sym.createNameSpace(parent, part, SourceType.USER_DEFINED)
+                            sub = sym.createNameSpace(parent, part, SourceType.ANALYSIS)
                         parent = sub
                     ns_cache[key] = parent
                     return parent
@@ -121,10 +163,16 @@ def main():
 
                 # Iterate ALL functions; pick the placeholders
                 for func in fm.getFunctions(True):
+                    block = memory.getBlock(func.getEntryPoint())
+                    if block is None or not block.isExecute():
+                        continue
                     leaf = func.getName()
                     n_total += 1
                     m = _LEAF_FUNC_N_RE.match(leaf)
                     if not m:
+                        continue
+                    if func.getSymbol().getSource() in (
+                            SourceType.USER_DEFINED, SourceType.IMPORTED):
                         continue
                     slot_idx = int(m.group(1))
                     # The class is the parent namespace path
@@ -154,20 +202,23 @@ def main():
                     try:
                         target_ns = get_or_create_namespace(new_ns_path)
                         func.setParentNamespace(target_ns)
-                        func.setName(new_leaf, SourceType.USER_DEFINED)
+                        func.setName(new_leaf, SourceType.ANALYSIS)
                         n_renamed += 1
                     except Exception as e:
                         n_err += 1
-                        if n_err < 10:
-                            print(f"  err renaming {cls_name}::Func{slot_idx} -> {real_name}: {e}")
+                        raise RuntimeError(
+                            f"rename failed for {cls_name}::Func{slot_idx} "
+                            f"-> {real_name}: {e}") from e
 
                     if n_renamed % report_every == 0 and n_renamed > 0:
                         print(f"  renamed={n_renamed}  no_map={n_no_mapping}  ambig={n_ambiguous}", flush=True)
+                commit = True
             finally:
-                program.endTransaction(txid, True)
+                program.endTransaction(txid, commit)
 
-            print(f"\nSaving program ...")
-            program.save("Replace Func{N} placeholders with SF 1.7 real names", monitor)
+            if commit:
+                print(f"\nSaving program ...")
+                program.save("Replace Func{N} placeholders with SF 1.7 real names", monitor)
             print(f"\n=== Summary ===")
             print(f"  total funcs scanned:   {n_total}")
             print(f"  renamed:               {n_renamed}")

@@ -34,12 +34,15 @@ import time
 import urllib.request
 import zipfile
 from html import unescape
+from pathlib import Path
 
-XML_ZIP   = r"C:/Development/Starfield resources/Starfield-RE-Resources-main/ghidraDB/starfield_with_fallout_matched_functions.zip"
+SCRIPT_DIR = Path(__file__).resolve().parent
+XML_ZIP   = os.environ.get("BGS_SF17_XML_ZIP", "")
 XML_NAME  = "starfield_with_fallout_matched_functions.xml"
-MCP_URL   = "http://localhost:8080/mcp"
-PROGRAM   = "Starfield.exe"
-OUT_CSV   = r"C:/Development/Tools/BethesdaGhidraScripts/scripts/commonlibsf/refs/sf17_xml_rename_audit.csv"
+MCP_URL   = os.environ.get("BGS_MCP_URL", "http://localhost:8080/mcp")
+PROGRAM   = os.environ.get("BGS_MCP_PROGRAM", "Starfield.exe")
+OUT_CSV   = os.environ.get(
+    "BGS_SF17_XML_AUDIT", str(SCRIPT_DIR / "refs" / "sf17_xml_rename_audit.csv"))
 BATCH     = 200  # renames per MCP call
 
 FUNCTION_RE = re.compile(
@@ -208,6 +211,11 @@ def parse_batch_text(text: str) -> dict[str, int]:
 
 
 def main():
+    raise SystemExit(
+        "DISABLED: direct XML-address mutation across an approximate "
+        "'1.7-ish' target is not identity-safe and MCP cannot provide "
+        "atomic rollback. Export against the exact source PE and use the "
+        "SHA-bound port_sf17_to_sf116.py pipeline instead.")
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     print(f"MCP {MCP_URL}; target program: {PROGRAM}")
     print(f"XML: {XML_ZIP}")

@@ -1,0 +1,24 @@
+name: correctness
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  safety-and-tests:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --no-deps --only-binary=:all: -r requirements.lock.txt
+      - run: python -m pip install pytest==8.4.2
+      - run: python scripts/quality_gate.py

@@ -38,6 +38,7 @@ sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(os.path.dirname(SCRIPT_DIR), 'core'))
 
 from addresses import collect_all as collect_xnvse_symbols
+from paths import artifact, resolve_pc_target_binding
 
 
 def _make_symbols(funcs, labels):
@@ -56,13 +57,16 @@ def _make_symbols(funcs, labels):
         if key in seen:
             continue
         seen.add(key)
-        symbols.append({
+        entry = {
             'n':   full_name,
             't':   'func',
             'sig': '',
             'fnv': f['rva'],
             'src': f.get('src', 'xNVSE'),
-        })
+        }
+        if f.get('verified_entry') is True:
+            entry['verified_entry'] = True
+        symbols.append(entry)
 
     for l in labels:
         key = (l['name'], 'label', l['rva'])
@@ -108,14 +112,15 @@ def _try_clang_types(verbose=True):
         )
 
         stub_dir   = os.path.join(os.path.dirname(SCRIPT_DIR), 'core', '_clang_stubs')
-        # xNVSE includes things as `nvse/Foo.h`, so the include base is
-        # the directory containing the `nvse/` folder (XNVSE_INCLUDE).
-        parse_args = _setup_include_paths(XNVSE_INCLUDE, stub_dir)
-        # xNVSE targets pre-C++20 with MSVC-isms.  C++17 + permissive
-        # parsing is the closest we can do with clang.
+        parse_args = _setup_include_paths(XNVSE_INCLUDE, stub_dir,
+                                          target_arch='x86')
+        fnv_prelude = os.path.join(SCRIPT_DIR, '_fnv_clang_prelude.h')
         parse_args = ['-std=c++17', '-fms-compatibility',
                       '-fms-extensions', '-Wno-everything',
                       '-DBUILD_NVSE',
+                      '-I' + XNVSE_ROOT,
+                      '-include', fnv_prelude,
+                      '-U_WIN64', '-U_M_X64',
                       '-D_WIN32', '-D_M_IX86'] + parse_args
 
         if verbose:
@@ -125,6 +130,8 @@ def _try_clang_types(verbose=True):
             verbose=verbose,
             root_namespace=None,           # xNVSE doesn't namespace its game types
             category_prefix='/xNVSE',
+            target_arch='x86',
+            allow_partial=False,
         )
 
         if verbose:
@@ -160,6 +167,9 @@ def main():
     print('OUTPUT_DIR      =', OUTPUT_DIR)
     print()
 
+    target_binary, target_lineage = resolve_pc_target_binding()
+    print('TARGET_BINARY   =', target_binary)
+
     if not os.path.isdir(XNVSE_ROOT):
         print('ERROR: {} not found.  Run `git submodule update --init` first.'.format(
             XNVSE_ROOT))
@@ -180,12 +190,9 @@ def main():
     # 2a. PDB-derived enums (3.4k of them; clang produces ~40).  Merge
     # from all 4 PDBs (Debug + Retail + Release-Beta + Release-MemDebug),
     # first-win, WITHOUT clobbering xNVSE enums.
-    pdb_enums_paths = [
-        r'C:\GhidraProjects\scripts\Fallout_Debug_enums.json',
-        r'C:\GhidraProjects\scripts\Fallout_enums.json',
-        r'C:\GhidraProjects\scripts\Fallout_Release_Beta_enums.json',
-        r'C:\GhidraProjects\scripts\Fallout_Release_MemDebug_enums.json',
-    ]
+    pdb_enums_paths = [str(artifact(f'{n}_enums.json')) for n in (
+        'Fallout_Debug', 'Fallout', 'Fallout_Release_Beta',
+        'Fallout_Release_MemDebug')]
     pdb_enums_json = pdb_enums_paths[0]
     try:
         import json as _j
@@ -214,17 +221,14 @@ def main():
     # may expose types that were optimized away in Debug).
     pdb_merge_count = 0  # noqa: F841
 
-    pdb_types_json = r'C:\GhidraProjects\scripts\Fallout_Debug_types.json'
-    pdb_extra_types = [
-        r'C:\GhidraProjects\scripts\Fallout_types.json',
-        r'C:\GhidraProjects\scripts\Fallout_Release_Beta_types.json',
-        r'C:\GhidraProjects\scripts\Fallout_Release_MemDebug_types.json',
-    ]
+    pdb_types_json = str(artifact('Fallout_Debug_types.json'))
+    pdb_extra_types = [str(artifact(f'{n}_types.json')) for n in (
+        'Fallout', 'Fallout_Release_Beta', 'Fallout_Release_MemDebug')]
     if os.path.isfile(pdb_types_json):
         try:
             from pdb_types_to_pipeline import convert_pdb_types
             from pathlib import Path
-            pdb_typedefs_json = r'C:\GhidraProjects\scripts\Fallout_Debug_typedefs.json'
+            pdb_typedefs_json = str(artifact('Fallout_Debug_typedefs.json'))
             pdb_structs, n_skip, n_field = convert_pdb_types(
                 Path(pdb_types_json),
                 Path(pdb_enums_json) if os.path.isfile(pdb_enums_json) else None,
@@ -338,6 +342,8 @@ def main():
         fallback_symbols_json=fallback_symbols_json,
         template_source=template_source,
         project_name='xNVSE',
+        target_manifest=target_lineage,
+        target_binary_path=(None if target_lineage else str(target_binary)),
     )
     print('\nWrote {}'.format(output_path))
     print('  {} enums, {} structs, {} vtable structs, {} symbols'.format(

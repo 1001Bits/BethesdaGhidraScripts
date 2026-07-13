@@ -27,6 +27,10 @@ from pathlib import Path
 REPO_DIR   = Path(__file__).resolve().parent.parent
 GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
 CORE_DIR   = REPO_DIR / "scripts" / "core"
+sys.path.insert(0, str(CORE_DIR))
+from pyghidra_result import end_outer_transaction, require_script_success
+from binary_identity import (inspect_pe, verify_ghidra_program,
+                             _program_executable_path)
 
 DRIVERS = {
     'string_anchored_rename': CORE_DIR / 'string_anchored_rename.py',
@@ -38,6 +42,8 @@ DRIVERS = {
     'console_harvest_sf':     CORE_DIR / 'console_harvest_sf.py',
     'ctor_apply':             CORE_DIR / 'ctor_apply.py',
     'havok_mine':             CORE_DIR / 'havok_mine.py',   # verifier only
+    'pe_unwind_enrich':       CORE_DIR / 'pe_unwind_enrich.py',
+    'registration_harvest':   CORE_DIR / 'registration_harvest.py',
 }
 
 
@@ -93,12 +99,19 @@ def main():
         # drivers simply don't write.
         program = domain_file.getDomainObject(consumer, True, False, monitor)
         try:
+            executable = _program_executable_path(program)
+            verify_ghidra_program(program, [inspect_pe(executable)])
             print(f"Running {args.driver} via pyghidra...")
-            stdout, stderr = pyghidra.ghidra_script(
-                str(driver_path), project, program,
-                echo_stdout=True, echo_stderr=True)
-            if stderr:
-                print("STDERR:", stderr, file=sys.stderr)
+            tx = program.startTransaction("Atomic enrichment " + args.driver)
+            commit = False
+            try:
+                stdout, stderr = pyghidra.ghidra_script(
+                    str(driver_path), project, program,
+                    echo_stdout=True, echo_stderr=True)
+                require_script_success(stderr, args.driver)
+                commit = True
+            finally:
+                end_outer_transaction(program, tx, commit, args.driver)
             if not args.read_only:
                 print("Saving...")
                 program.save(f"enrichment: {args.driver}", monitor)

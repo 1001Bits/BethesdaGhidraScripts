@@ -16,17 +16,23 @@ Args (set via globals before running this script via eval_python):
   DRY_RUN = False
   OUT_CSV = path to write (RVA|name|sim|sig) pairs
 """
+import os
 import re
 from ghidra.features.bsim.query import BSimClientFactory, GenSignatures
 from ghidra.features.bsim.query.protocol import QueryNearest
 from ghidra.program.model.symbol import SourceType
 
 
-DB_URL = "file:/C:/Development/Tools/BethesdaGhidraScripts/bsim/FNV_BSim"
+DB_URL = os.environ.get("BGS_FNV_BSIM_DB", "")
 MIN_SIMILARITY = 0.85
 MIN_SIGNIFICANCE = 25.0
 DRY_RUN = True
-OUT_CSV = r"C:\GhidraProjects\scripts\fnv_bsim_matches.csv"
+# Same-binary nearest-neighbour results are not independent evidence: compiler
+# boilerplate and tiny wrappers frequently match unrelated named functions.
+# Keep this tool quarantined for diagnostics unless an analyst explicitly
+# opts in for a reviewed experiment.  Even then DRY_RUN remains the default.
+ALLOW_UNSAFE_INTRA_BSIM = False
+OUT_CSV = os.environ.get("BGS_FNV_BSIM_OUT", "")
 
 
 NOISE_PREFIXES = ("FUN_", "thunk_FUN_", "sub_", "LAB_")
@@ -60,6 +66,17 @@ def sanitize(name):
 
 
 def main():
+    if not ALLOW_UNSAFE_INTRA_BSIM:
+        print("Intra-binary BSim is quarantined: set "
+              "ALLOW_UNSAFE_INTRA_BSIM=True for diagnostic export only.")
+        return
+    if not DB_URL or not OUT_CSV:
+        print("Set BGS_FNV_BSIM_DB and BGS_FNV_BSIM_OUT explicitly.")
+        return
+    if not DRY_RUN:
+        print("Refusing automatic same-binary BSim renames; use the CSV as a "
+              "review queue and apply independently corroborated matches.")
+        return
     url = BSimClientFactory.deriveBSimURL(DB_URL)
     db = BSimClientFactory.buildClient(url, False)
     if not db.initialize():
@@ -155,10 +172,10 @@ def main():
                     for p in parts[:-1]:
                         sub = sym.getNamespace(p, parent)
                         if sub is None:
-                            sub = sym.createNameSpace(parent, p, SourceType.USER_DEFINED)
+                            sub = sym.createNameSpace(parent, p, SourceType.ANALYSIS)
                         parent = sub
                     local_func.setParentNamespace(parent)
-                    local_func.setName(leaf, SourceType.USER_DEFINED)
+                    local_func.setName(leaf, SourceType.ANALYSIS)
                     n_renamed += 1
                 except Exception:
                     n_err += 1

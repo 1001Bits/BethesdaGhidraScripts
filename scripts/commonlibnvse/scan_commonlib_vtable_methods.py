@@ -24,7 +24,8 @@ from typing import Dict, List
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
-IMAGE_BASE = 0x00400000
+sys.path.insert(0, str(SCRIPT_DIR))
+from addressing import load_vtable_records  # noqa: E402
 
 
 # Match ``class Foo : public Bar`` or ``class Foo`` (capture class name)
@@ -116,26 +117,24 @@ def main():
 
     # Now match against FNV's vtables: for each (class, slot), look up
     # the slot RVA in fnv_pc_vtables.txt + RTTI extras.
-    pc_slots: Dict[str, Dict[int, int]] = {}  # class -> {slot_idx: RVA}
-    hdr_rx = re.compile(r'^VTABLE\|0x([0-9A-Fa-f]+)\|([^|]+)\|(\d+)\s+vfuncs')
-    row_rx = re.compile(r'^\s+VFUNC\|0x([0-9A-Fa-f]+)\|.+?::vf(?:unc_)?(\d+)\s*$')
-    for fname in ('fnv_pc_vtables.txt', 'fnv_pc_vtables_rtti_extra.txt'):
-        p = REFS_DIR / fname
-        if not p.is_file():
+    records = load_vtable_records(
+        [REFS_DIR / 'fnv_pc_vtables.txt',
+         REFS_DIR / 'fnv_pc_vtables_rtti_extra.txt'])
+    tables_by_class = {}
+    for rec in records:
+        tables_by_class.setdefault(rec.class_name, []).append(rec)
+
+    # A source-level Class::slot list describes the primary table.  The
+    # legacy PC corpus does not identify primary vs secondary subobjects, so
+    # applying it to a repeated class would silently cross-wire tables.  Skip
+    # such classes until the RTTI dumper emits explicit subobject identities.
+    pc_slots: Dict[str, Dict[int, int]] = {}
+    ambiguous_classes = set()
+    for cls, tables in tables_by_class.items():
+        if len(tables) != 1:
+            ambiguous_classes.add(cls)
             continue
-        cur = None
-        for ln in p.read_text(encoding='utf-8', errors='replace').splitlines():
-            m_h = hdr_rx.match(ln)
-            if m_h:
-                cur = m_h.group(2).strip()
-                pc_slots.setdefault(cur, {})
-                continue
-            m_r = row_rx.match(ln)
-            if m_r and cur is not None:
-                rva = int(m_r.group(1), 16)
-                slot = int(m_r.group(2))
-                if slot not in pc_slots[cur]:
-                    pc_slots[cur][slot] = rva
+        pc_slots[cls] = dict(tables[0].slots)
 
     # Pair: CommonLib (class, slot, method) -> PC FNV slot RVA
     out_rows = []
@@ -153,11 +152,13 @@ def main():
             n_emitted += 1
 
     print(f'  classes also in FNV vtables: {n_matched_classes:,}')
+    print(f'  ambiguous repeated-table classes skipped: {len(ambiguous_classes):,}')
     print(f'  total method names emittable: {n_emitted:,}')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open('w', encoding='utf-8') as f:
         f.write('# CommonLib-documented vtable methods: 0xRVA|Class::method\n')
+        f.write('# ADDRESS_COORDINATE=RVA\n')
         for rva, name in sorted(set(out_rows)):
             f.write(f'0x{rva:08X}|{name}\n')
     print(f'Wrote {out_path}: {len(set(out_rows)):,} unique entries')

@@ -15,9 +15,17 @@ Dry-run by default; ``--apply`` writes + saves.  Conservative: skips addresses
 that already carry a non-default name unless ``--overwrite`` (so it fills the
 un-named globals without clobbering the names we already applied).
 
+``--apply`` requires an ``<idc_file>.identity.json`` evidence sidecar binding
+the IDC to the exact target executable; produce it with::
+
+  python scripts/core/bind_evidence.py <idc_file> --exe <target_exe> \
+      --kind f4_idc_labels --coordinate VA
+
+(it prints the SHA-256 to pass as ``--target-sha256``).
+
 Usage:
   python apply_idc_labels.py <project_dir> <project_name> <program_path> \
-      <idc_file> [--apply] [--overwrite] [--max N]
+      <idc_file> --target-sha256 <sha> [--apply] [--overwrite] [--max N]
 """
 from __future__ import annotations
 
@@ -28,6 +36,10 @@ import sys
 from pathlib import Path
 
 GHIDRA_DIR = Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"
+CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+from evidence_identity import read_binding, validate_evidence  # noqa: E402
 _GEN = re.compile(r'gen_name\((0x[0-9A-Fa-f]+),"([^"]*)"\)')
 
 
@@ -71,10 +83,19 @@ def main():
     ap.add_argument("project_name")
     ap.add_argument("program_path")
     ap.add_argument("idc_file")
+    ap.add_argument("--target-sha256", required=True,
+                    help="exact analyzed executable SHA-256")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--max", type=int, default=0)
     args = ap.parse_args()
+
+    if args.apply:
+        binding = read_binding(args.idc_file, require_content=True)
+        if binding['target_sha256'].lower() != args.target_sha256.lower():
+            raise RuntimeError('IDC evidence targets another executable')
+        if binding.get('address_coordinate') != 'VA':
+            raise RuntimeError('IDC evidence must use VA coordinates')
 
     labels = parse_idc(args.idc_file)
     if args.max:
@@ -103,6 +124,13 @@ def main():
         consumer = java.lang.Object()
         program = df.getDomainObject(consumer, True, False, monitor)
         try:
+            actual_sha256 = (program.getExecutableSHA256() or '').lower()
+            if actual_sha256 != args.target_sha256.lower():
+                raise RuntimeError('target executable SHA-256 mismatch')
+            if args.apply:
+                validate_evidence(
+                    args.idc_file, program, binding.get('kind'),
+                    require_content=True)
             space = program.getAddressFactory().getDefaultAddressSpace()
             mem = program.getMemory()
             symtab = program.getSymbolTable()
@@ -110,6 +138,7 @@ def main():
                   "skip_named": 0, "oob": 0, "fail": 0}
 
             tx = program.startTransaction("apply IDC labels") if args.apply else None
+            commit = False
             try:
                 for va, name in labels:
                     st["total"] += 1
@@ -139,12 +168,16 @@ def main():
                             symtab.createLabel(a, name, SourceType.IMPORTED)
                             st["data_labeled"] += 1
                     except Exception:  # noqa: BLE001
+                        # e.g. createLabel rejecting characters Ghidra does
+                        # not allow in a label; skip the one bad name rather
+                        # than rolling back the whole run.
                         st["fail"] += 1
+                commit = True
             finally:
                 if tx is not None:
-                    program.endTransaction(tx, True)
+                    program.endTransaction(tx, commit)
             placed = st["func_demangled"] + st["data_labeled"]
-            if args.apply and placed:
+            if args.apply and commit and placed:
                 program.save("apply IDC labels", monitor)
         finally:
             program.release(consumer)

@@ -22,10 +22,13 @@ import re
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
-MCP_URL    = "http://localhost:8080/mcp"
-PROGRAM    = "Starfield.exe"   # the SF 1.7 program in user's main Ghidra
-OUT_CSV    = r"C:/Development/Tools/BethesdaGhidraScripts/scripts/commonlibsf/refs/sf17_named_corpus.csv"
+SCRIPT_DIR = Path(__file__).resolve().parent
+MCP_URL    = os.environ.get("BGS_MCP_URL", "http://localhost:8080/mcp")
+PROGRAM    = os.environ.get("BGS_MCP_PROGRAM", "Starfield.exe")
+OUT_CSV    = os.environ.get(
+    "BGS_SF17_CORPUS", str(SCRIPT_DIR / "refs" / "sf17_named_corpus.csv"))
 PAGE_SIZE  = 200       # functions per get_functions call
 PROLOGUE_N = 48        # bytes per function to capture
 PROGRESS_EVERY = 250   # log every N captured rows
@@ -181,6 +184,10 @@ def fetch_bytes(sid: str, rva: int, n: int) -> bytes | None:
 # ---------------------------------------------------------------------
 
 def main():
+    raise SystemExit(
+        "DISABLED: this disconnected MCP extractor cannot attest the active "
+        "Program SHA-256 and may publish partial evidence. Use an exact "
+        "Ghidra XML/.bytes export with port_sf17_to_sf116.py instead.")
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     print(f"MCP {MCP_URL}; program: {PROGRAM}")
     print(f"PAGE_SIZE={PAGE_SIZE}  PROLOGUE_N={PROLOGUE_N}  MAX={MAX_FUNCS}\n")

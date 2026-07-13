@@ -50,6 +50,8 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+from addressing import AddressError, normalize_address
+
 # FNV's PE image base.  No ASLR on x86, addresses in xNVSE headers are
 # straight VAs that bake this in.
 FNV_IMAGE_BASE = 0x00400000
@@ -158,10 +160,9 @@ def _is_function_like_name(name: str) -> bool:
       - ``s_xxx`` / ``_xxx`` / ``Cmd_xxx_Execute`` / ``Xxx_Method``  funcs
       - bare CamelCase  funcs (the default)
 
-    False-positive funcs are harmless (Ghidra just disassembles); false-
-    positive labels suppress disassembly, which is worse, so we err on
-    the side of marking things as functions unless the name clearly
-    signals data.
+    Raw integer constants do not carry enough type evidence to create a
+    function.  Unknowns therefore remain labels; DEFINE_MEMBER_FN and real
+    function-pointer declarations are handled by their dedicated parsers.
     """
     if name.startswith(_DATA_NAME_PREFIXES):
         return False
@@ -171,7 +172,7 @@ def _is_function_like_name(name: str) -> bool:
         return False
     if any(name.endswith(suf) for suf in _DATA_NAME_SUFFIXES):
         return False
-    return True
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -219,6 +220,9 @@ def _scan_header(path: str) -> List[dict]:
                 'rva':    rva,
                 'kind':   'func',
                 'src':    'xNVSE/DEFINE_MEMBER_FN',
+                # This macro is a typed call through the exact member-procedure
+                # entry address, rather than a hook/return-site breadcrumb.
+                'verified_entry': True,
             })
 
     # Tier 1: typed-constant addresses (whole-text, not line-by-line).
@@ -227,6 +231,9 @@ def _scan_header(path: str) -> List[dict]:
         raw_name, addr_hex = m.groups()
         # Strip leading `*` (pointer-typed declarations -- rare but seen)
         name = raw_name.lstrip('*')
+        if name.startswith(('kFlag', 'kFlags_', 'kEffFlag', 'kFormFlag',
+                            'kNiFlag')):
+            continue
         # Skip names that look like enum members (kEvent_OnX = 0x4) -- the
         # CONST_ADDR_RE already excludes those by requiring const-UInt32
         # qualifier, but be paranoid.
@@ -267,6 +274,8 @@ def _scan_header(path: str) -> List[dict]:
             'rva':    rva,
             'kind':   'func',
             'src':    'xNVSE/fnptrcast',
+            # A typed function-pointer initializer denotes a procedure entry.
+            'verified_entry': True,
         })
 
     return out
@@ -335,15 +344,24 @@ def load_overlay_csv(path: str) -> List[dict]:
                         else int(raw_rva)
                 except ValueError:
                     continue
-                # If the user supplied a VA by mistake, normalize.
-                if rva >= FNV_IMAGE_BASE:
-                    rva = rva - FNV_IMAGE_BASE
+                coordinate = (row.get('coordinate') or 'RVA').strip().upper()
+                try:
+                    rva = normalize_address(rva, coordinate)
+                except AddressError:
+                    continue
                 out.append({
                     'name':   name,
                     'class_': cls,
                     'rva':    rva,
                     'kind':   'func' if kind == 'func' else 'label',
                     'src':    'csv/fnv_names',
+                    # Manual rows must opt in explicitly.  A ``kind=func``
+                    # assertion alone is not enough evidence to create code.
+                    'verified_entry': (
+                        kind == 'func' and
+                        (row.get('verified_entry') or '').strip().lower()
+                        in ('1', 'true', 'yes')
+                    ),
                 })
     except OSError:
         return []

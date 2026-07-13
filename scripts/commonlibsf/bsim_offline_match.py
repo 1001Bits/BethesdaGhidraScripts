@@ -23,9 +23,11 @@ import time
 from collections import defaultdict
 from xml.etree.ElementTree import iterparse
 from html import unescape
+from pathlib import Path
 
-SIGS_DIR = r"C:/Development/Tools/BethesdaGhidraScripts/bsim/sigs"
-OUT_DIR  = r"C:/Development/Tools/BethesdaGhidraScripts/scripts/commonlibsf/refs"
+REPO_DIR = Path(__file__).resolve().parent.parent.parent
+SIGS_DIR = str(REPO_DIR / "bsim" / "sigs")
+OUT_DIR  = str(Path(__file__).resolve().parent / "refs")
 
 # Default: target = SF 1.16.236, sources = everything else.
 TARGET_MD5  = "839927232f7cb161b4c304882ce3e3df"
@@ -37,12 +39,16 @@ SOURCE_MD5S = [
     "a23c24cfaf891c248315d06b6e19c56d",  # F4 VR2
 ]
 
-MIN_SIMILARITY  = 0.4   # cosine: 1.0 = identical; 0.4 ~= "weak match"
-MIN_OVERLAP     = 2     # require at least N shared hashes
-MAX_PER_HASH    = 1000  # skip hashes appearing in >N source functions (too generic)
+MIN_SIMILARITY  = 0.85  # this is an approximation, so accept only strong hits
+MIN_OVERLAP     = 8     # two shared hashes produced pervasive false positives
+MIN_NAME_MARGIN = 0.08  # best qualified name must beat a competing name
+MAX_PER_HASH    = 100   # aggressively suppress generic compiler idioms
+EXACT_SINGLE_SOURCE_SIM = 0.98
+EXACT_SINGLE_SOURCE_OVERLAP = 16
 
 NOISE_PREFIXES = ("FUN_", "thunk_FUN_", "sub_", "SUB_")
 NOISE_SUBSTRINGS = ("_dynamic_initializer_for_", "_lambda_", "API-MS-")
+PLACEHOLDER_METHOD_RE = re.compile(r'(?:^|::)(?:Func|Method|VFunc)\d+$', re.I)
 
 
 def is_noise(name: str) -> bool:
@@ -50,7 +56,9 @@ def is_noise(name: str) -> bool:
         return True
     if any(name.startswith(p) for p in NOISE_PREFIXES):
         return True
-    return any(s in name for s in NOISE_SUBSTRINGS)
+    if any(s in name for s in NOISE_SUBSTRINGS):
+        return True
+    return bool(PLACEHOLDER_METHOD_RE.search(name))
 
 
 def stream_fdesc(xml_path: str):
@@ -82,9 +90,10 @@ def load_target(md5: str):
     t0 = time.time()
     funcs = []
     for addr, name, exe, hashes in stream_fdesc(path):
+        hashes = frozenset(hashes)
         if len(hashes) < MIN_OVERLAP:
             continue
-        funcs.append((addr, name, frozenset(hashes)))
+        funcs.append((addr, name, hashes))
     print(f"  loaded {len(funcs)} target functions in {time.time()-t0:.1f}s")
     return funcs
 
@@ -98,6 +107,7 @@ def load_source(md5: str, hash_index, name_db):
     exe_name = "?"
     for addr, name, exe, hashes in stream_fdesc(path):
         exe_name = exe
+        hashes = frozenset(hashes)
         if len(hashes) < MIN_OVERLAP:
             continue
         if is_noise(name):
@@ -112,7 +122,12 @@ def load_source(md5: str, hash_index, name_db):
 
 
 def best_match(target_hashes, hash_index, name_db):
-    """Return (fid, similarity, overlap) of best match for target_hashes, or None."""
+    """Return a strong, name-unambiguous match or ``None``.
+
+    Offline set overlap is not Ghidra's full BSim scoring model.  Require
+    either agreement from two independent source binaries or a near-exact
+    single-source hit, and reject a close runner-up with a different name.
+    """
     if len(target_hashes) < MIN_OVERLAP:
         return None
     overlap_counter: dict[tuple[str, int], int] = defaultdict(int)
@@ -126,9 +141,7 @@ def best_match(target_hashes, hash_index, name_db):
             overlap_counter[fid] += 1
     if not overlap_counter:
         return None
-    best_fid = None
-    best_sim = -1.0
-    best_overlap = 0
+    scored = []
     target_n = len(target_hashes)
     target_sqn = target_n ** 0.5
     for fid, overlap in overlap_counter.items():
@@ -136,13 +149,26 @@ def best_match(target_hashes, hash_index, name_db):
             continue
         _, src_n, _ = name_db[fid]
         sim = overlap / (target_sqn * (src_n ** 0.5))
-        if sim > best_sim:
-            best_sim = sim
-            best_fid = fid
-            best_overlap = overlap
-    if best_fid is None or best_sim < MIN_SIMILARITY:
+        if sim >= MIN_SIMILARITY:
+            scored.append((sim, overlap, fid))
+    if not scored:
         return None
-    return best_fid, best_sim, best_overlap
+    scored.sort(reverse=True)
+    best_sim, best_overlap, best_fid = scored[0]
+    best_name = name_db[best_fid][0]
+    competing = next((sim for sim, _, fid in scored
+                      if name_db[fid][0] != best_name), None)
+    margin = best_sim - competing if competing is not None else 1.0
+    if margin < MIN_NAME_MARGIN:
+        return None
+    consensus_sources = len({fid[0] for sim, _, fid in scored
+                             if name_db[fid][0] == best_name
+                             and sim >= best_sim - 0.05})
+    near_exact = (best_sim >= EXACT_SINGLE_SOURCE_SIM and
+                  best_overlap >= EXACT_SINGLE_SOURCE_OVERLAP)
+    if consensus_sources < 2 and not near_exact:
+        return None
+    return best_fid, best_sim, best_overlap, margin, consensus_sources
 
 
 def main():
@@ -176,9 +202,10 @@ def main():
         if m is None:
             n_no_match += 1
         else:
-            fid, sim, overlap = m
+            fid, sim, overlap, margin, consensus = m
             src_name, src_n, exe = name_db[fid]
-            rows.append((f"0x{addr:x}", src_name, exe, f"{sim:.4f}", overlap))
+            rows.append((f"0x{addr:x}", src_name, exe, fid[0],
+                         f"{sim:.4f}", overlap, f"{margin:.4f}", consensus))
             n_matched += 1
             if len(sample) < 12:
                 sample.append((addr, src_name, exe, sim, overlap))
@@ -194,7 +221,9 @@ def main():
 
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["target_va", "name", "source_exe", "similarity", "overlap"])
+        w.writerow(["target_va", "name", "source_exe", "source_md5",
+                    "similarity", "overlap", "different_name_margin",
+                    "consensus_sources"])
         w.writerows(rows)
     print(f"  wrote {out_csv}")
 

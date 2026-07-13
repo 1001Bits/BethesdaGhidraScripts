@@ -9,7 +9,7 @@ fallback-symbol RVA we emit is plausible:
     INT3 padding (NOT a real function -- false positive)?
   - For vtable VAs: do the slot pointers in .rdata actually fall in
     .text?
-  - For constructor candidates: does the constructor's first 32 bytes
+  - For constructor candidates: do the constructor's first 256 bytes
     contain a 4-byte LE encoding of the claimed vtable VA?
 
 Output: stdout summary + a JSON sidecar listing every RVA flagged
@@ -27,7 +27,7 @@ from typing import Dict, List
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
-PC_EXE     = Path(r'D:\FNV Project\FalloutNewVegas\FalloutNV.exe')
+from paths import PC_EXE
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from extract_pc_fnv_string_xrefs import parse_pe_x86
@@ -95,7 +95,7 @@ def main():
             counts['ok_prologue'] += 1
 
     # Constructor cross-check: each ctor candidate should reference its
-    # claimed vtable VA within the first 64 bytes of the function.
+    # claimed vtable VA within the first 256 bytes of the function.
     ctor_path = REFS_DIR / 'fnv_constructor_names.csv'
     ctor_fails = 0
     if ctor_path.is_file():

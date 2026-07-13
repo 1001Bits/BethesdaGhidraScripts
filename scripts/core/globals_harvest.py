@@ -28,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import globals_plan as gp  # noqa: E402
+from evidence_identity import bind_evidence  # noqa: E402
 
 SCOPE = os.environ.get('BGS_GLOBALS_SCOPE', 'data').lower()
 MAX_FUNCS = int(os.environ.get('BGS_GLOBALS_MAX_FUNCS', '0') or 0)
@@ -58,32 +59,114 @@ def _param0_class_name(callee):
     return dt.getName()
 
 
-def _ram_addr(vn, mem, addr_space, depth=0):
+def _signed_constant(vn):
+    value = int(vn.getOffset())
+    try:
+        bits = int(vn.getSize()) * 8
+    except Exception:
+        bits = 64
+    if bits > 0:
+        # Java ``long`` may expose a 64-bit Varnode offset as already signed,
+        # while narrower constants arrive zero-extended.  Normalize both
+        # representations before sign extension so -16 is never adjusted a
+        # second time to ``-(2**64)-16``.
+        value &= (1 << bits) - 1
+        if value & (1 << (bits - 1)):
+            value -= 1 << bits
+    return value
+
+
+def _same_space(address, addr_space):
+    try:
+        return bool(address.getAddressSpace().equals(addr_space))
+    except Exception:
+        return address.getAddressSpace() == addr_space
+
+
+def _valid_address(address, mem, addr_space, image_start, image_end):
+    try:
+        offset = int(address.getOffset())
+    except Exception:
+        return False
+    return (_same_space(address, addr_space) and
+            image_start <= offset < image_end and mem.contains(address))
+
+
+def _ram_addr(vn, mem, addr_space, depth=0, pc=None,
+              image_start=0, image_end=(1 << 64)):
     """Back-trace an arg varnode to the global data address it denotes.
     Returns (addr, is_ptr): is_ptr True when the value was LOADed from the
     address (the global is a pointer SLOT holding a ``T *``), False when the
     address is the object itself (an INLINE singleton, type ``T``)."""
-    from ghidra.program.model.pcode import PcodeOp
-    if vn is None or depth > 4:
+    if pc is None:
+        from ghidra.program.model.pcode import PcodeOp as pc
+    if vn is None or depth > 7:
         return (None, False)
     if vn.isConstant():
         try:
             a = addr_space.getAddress(vn.getOffset())
         except Exception:
             return (None, False)
-        return (a, False) if mem.contains(a) else (None, False)
+        return ((a, False) if _valid_address(
+            a, mem, addr_space, image_start, image_end)
+                else (None, False))
     if vn.isAddress():
         a = vn.getAddress()
-        return (a, False) if (a.isMemoryAddress() and mem.contains(a)) else (None, False)
+        return ((a, False) if (a.isMemoryAddress() and
+                               _valid_address(a, mem, addr_space,
+                                              image_start, image_end))
+                else (None, False))
     d = vn.getDef()
     if d is None:
         return (None, False)
     op = d.getOpcode()
-    if op in (PcodeOp.CAST, PcodeOp.COPY, PcodeOp.PTRSUB, PcodeOp.PTRADD,
-              PcodeOp.INT_ADD, PcodeOp.MULTIEQUAL):
-        return _ram_addr(d.getInput(0), mem, addr_space, depth + 1)
-    if op == PcodeOp.LOAD:
-        addr, _ = _ram_addr(d.getInput(1), mem, addr_space, depth + 1)
+    if op in (pc.CAST, pc.COPY):
+        return _ram_addr(d.getInput(0), mem, addr_space, depth + 1, pc,
+                         image_start, image_end)
+    if op in (pc.PTRSUB, pc.INT_ADD):
+        if d.getNumInputs() < 2 or not d.getInput(1).isConstant():
+            return (None, False)
+        addr, is_ptr = _ram_addr(
+            d.getInput(0), mem, addr_space, depth + 1, pc,
+            image_start, image_end)
+        if addr is None:
+            return (None, False)
+        try:
+            result = addr.add(_signed_constant(d.getInput(1)))
+        except Exception:
+            return (None, False)
+        return ((result, is_ptr) if _valid_address(
+            result, mem, addr_space, image_start, image_end)
+                else (None, False))
+    if op == pc.PTRADD:
+        if (d.getNumInputs() < 3 or not d.getInput(1).isConstant() or
+                not d.getInput(2).isConstant()):
+            return (None, False)
+        addr, is_ptr = _ram_addr(
+            d.getInput(0), mem, addr_space, depth + 1, pc,
+            image_start, image_end)
+        if addr is None:
+            return (None, False)
+        delta = (_signed_constant(d.getInput(1)) *
+                 _signed_constant(d.getInput(2)))
+        try:
+            result = addr.add(delta)
+        except Exception:
+            return (None, False)
+        return ((result, is_ptr) if _valid_address(
+            result, mem, addr_space, image_start, image_end)
+                else (None, False))
+    if op == pc.MULTIEQUAL:
+        values = [_ram_addr(iv, mem, addr_space, depth + 1, pc,
+                            image_start, image_end)
+                  for iv in d.getInputs()]
+        return values[0] if values and all(value == values[0] and
+                                           value[0] is not None
+                                           for value in values) else (None, False)
+    if op == pc.LOAD:
+        addr, _ = _ram_addr(
+            d.getInput(1), mem, addr_space, depth + 1, pc,
+            image_start, image_end)
         return (addr, True)
     return (None, False)
 
@@ -93,17 +176,24 @@ def run():
     from ghidra.program.model.pcode import PcodeOp
     from ghidra.program.model.symbol import SymbolType
     cp = currentProgram  # noqa: F821
+    from binary_identity import inspect_pe, verify_ghidra_program
+    backing_manifest = inspect_pe(str(cp.getExecutablePath()))
+    verify_ghidra_program(cp, [backing_manifest])
     fm = cp.getFunctionManager()
     mem = cp.getMemory()
     addr_space = cp.getAddressFactory().getDefaultAddressSpace()
     listing = cp.getListing()
     gns = cp.getGlobalNamespace()
+    image_start = int(backing_manifest['image_base'])
+    image_end = image_start + int(backing_manifest['image_size'])
 
     out_csv = os.environ.get('BGS_GLOBALS_CSV') or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), 'refs',
         'globals_queue_%s.csv' % cp.getName().replace('.', '_'))
 
     def _in_data(addr):
+        if not _valid_address(addr, mem, addr_space, image_start, image_end):
+            return False
         blk = mem.getBlock(addr)
         return blk is not None and not blk.isExecute()
 
@@ -183,7 +273,9 @@ def run():
                 cls = _param0_class_name(callee)
                 if not cls:
                     continue
-                gaddr, is_ptr = _ram_addr(op.getInput(1), mem, addr_space)
+                gaddr, is_ptr = _ram_addr(
+                    op.getInput(1), mem, addr_space,
+                    image_start=image_start, image_end=image_end)
                 if gaddr is None or not _in_data(gaddr):
                     continue
                 if cand_globals is not None and gaddr.getOffset() not in cand_globals:
@@ -213,6 +305,7 @@ def run():
             is_ptr = sum(1 for b in pv if b) > len(pv) / 2.0
             w.writerow(['0x%X' % g, cur, typ, '1' if is_ptr else '0', conf, votes,
                         total, distinct, classes_str, callers, ''])
+    bind_evidence(out_csv, cp, 'globals_evidence', address_coordinate='VA')
 
     high = sum(1 for r in rows if r[2] == 'high')
     med = sum(1 for r in rows if r[2] == 'medium')
@@ -226,4 +319,5 @@ def run():
     print('  -> ' + out_csv)
 
 
-run()
+if 'currentProgram' in globals():
+    run()

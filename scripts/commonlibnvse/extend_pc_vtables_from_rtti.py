@@ -9,7 +9,7 @@ For each new vtable VA (from fnv_rtti_audit.txt):
      This matches Xbox PDB's primary-vftable class encoding exactly.
   2. Scan .rdata starting at the vtable VA, reading 4-byte LE function
      pointers until hitting NULL, a non-.text VA, or another COL slot.
-  3. Emit ``VTABLE|0x<va>|<key>|<N> vfuncs`` + ``VFUNC|0x<rva>|<key>::vfunc_<N>`` lines.
+  3. Emit both table and function addresses as explicitly tagged RVAs.
 
 Output: ``fnv_pc_vtables_rtti_extra.txt`` -- appended to fnv_pc_vtables
 data in the pdb_naming step (or merged on demand).
@@ -28,7 +28,7 @@ from typing import Dict, List, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
 AUDIT      = REFS_DIR / 'fnv_rtti_audit.txt'
-EXE_PATH   = Path(r'D:\FNV Project\FalloutNewVegas\FalloutNV.exe')
+from paths import PC_EXE as EXE_PATH
 OUT_PATH   = REFS_DIR / 'fnv_pc_vtables_rtti_extra.txt'
 
 
@@ -103,6 +103,7 @@ def main():
 
     out_lines = []
     out_lines.append('# RTTI-discovered vtables not in fnv_pc_vtables.txt\n')
+    out_lines.append('# ADDRESS_COORDINATE=RVA\n')
     out_lines.append('# format mirrors fnv_pc_vtables.txt for downstream consumption\n')
 
     import bisect
@@ -135,7 +136,7 @@ def main():
             skipped_no_slots += 1
             continue
 
-        out_lines.append(f'VTABLE|0x{va:08X}|{key}|{len(slots)} vfuncs\n')
+        out_lines.append(f'VTABLE|0x{rva:08X}|{key}|{len(slots)} vfuncs\n')
         for s, slot_rva in enumerate(slots):
             out_lines.append(f'  VFUNC|0x{slot_rva:08X}|{key}::vf{s:03d}\n')
         written_entries += 1

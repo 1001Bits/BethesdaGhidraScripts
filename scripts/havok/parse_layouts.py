@@ -45,6 +45,7 @@ def parse(text):
         m = HDR.match(lines[hi])
         if int(m.group(1)) != 0:
             continue                      # nested/base dump; top-level only
+        kind = m.group(2)
         name = m.group(3).strip()
         fields = []
         has_vtable = False
@@ -82,7 +83,11 @@ def parse(text):
             if len(sp) != 2:
                 continue
             ftype, fname = sp[0].strip(), sp[1].strip()
-            if not re.match(r'^[A-Za-z_]\w*$', fname):
+            am = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', fname)
+            if am:
+                fname = am.group(1)
+                ftype = '%s[%s]' % (ftype, am.group(2))
+            elif not re.match(r'^[A-Za-z_]\w*$', fname):
                 continue
             fields.append({'offset': off, 'type': ftype, 'name': fname})
             skip_deeper = ind             # skip this field's own expansion
@@ -96,7 +101,7 @@ def parse(text):
                 continue
             seen.add(k)
             uniq.append(f)
-        records[name] = {'size': size, 'align': align,
+        records[name] = {'size': size, 'align': align, 'kind': kind,
                          'vtable': has_vtable, 'fields': uniq}
     return records
 

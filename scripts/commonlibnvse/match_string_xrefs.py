@@ -181,13 +181,35 @@ def main():
     edges.sort(reverse=True)
     print(f'Total candidate edges: {len(edges):,}')
 
-    # ----- Tier 1: high-signal pairs (score >= 0.5, votes >= 2) -----
+    # ----- Tier 1: reciprocal-unique high-signal pairs -----
+    # Greedy claiming can assign an edge even when either endpoint has an
+    # equally-good alternative.  Require the same strict top edge in both
+    # directions so table/order accidents cannot force a name.
+    eligible = [e for e in edges if e[0] >= 0.5 and e[1] >= 2]
+    by_pc = defaultdict(list)
+    by_xb = defaultdict(list)
+    for e in eligible:
+        score, votes, pv, xn = e
+        by_pc[pv].append(e)
+        by_xb[xn].append(e)
+
+    def strict_best(items):
+        ranked = sorted(items, reverse=True)
+        if not ranked:
+            return None
+        if len(ranked) > 1 and ranked[0][:2] == ranked[1][:2]:
+            return None
+        return ranked[0]
+
     pc_claimed: Dict[int, Tuple[str, int]] = {}
     xb_claimed: Dict[str, int] = {}
-    for score, votes, pv, xn in edges:
-        if score < 0.5 or votes < 2:
-            break
-        if pv in pc_claimed or xn in xb_claimed:
+    for pv, items in by_pc.items():
+        edge = strict_best(items)
+        if edge is None:
+            continue
+        score, votes, _pv, xn = edge
+        reverse = strict_best(by_xb[xn])
+        if reverse is None or reverse[2] != pv:
             continue
         pc_claimed[pv] = (xn, votes)
         xb_claimed[xn] = pv
@@ -232,8 +254,12 @@ def main():
              if k not in tier1 and k not in tier2 and k not in tier3}
     print(f'Tier 4 (unique 1:1 string, greedy): {len(tier4):,}')
 
-    all_matches = dict(pc_claimed)
-    print(f'Total PC functions named: {len(all_matches):,}')
+    # Tiers 2-4 remain useful as analyst review queues but are quarantined
+    # from the automatic symbol corpus.  Emit only reciprocal Tier 1.
+    all_matches = dict(tier1)
+    print(f'Automatic PC functions named: {len(all_matches):,}')
+    print(f'  quarantined weak candidates: '
+          f'{len(tier2) + len(tier3) + len(tier4):,}')
 
     # Tier source mapping
     pv_to_tier = {pv: 1 for pv in tier1}
@@ -253,6 +279,7 @@ def main():
     written = 0
     with out_path.open('w', encoding='utf-8') as f:
         f.write('# string-xref names: 0x<rva>|<qualified name>|tier|votes|<mangled>\n')
+        f.write('# EVIDENCE=reciprocal-unique;min-signal=0.5;min-votes=2\n')
         IMAGE_BASE = 0x00400000
         for pv in sorted(all_matches):
             xn, votes = all_matches[pv]

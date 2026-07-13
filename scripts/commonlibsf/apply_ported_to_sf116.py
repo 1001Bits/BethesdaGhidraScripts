@@ -26,11 +26,18 @@ from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+CORE_DIR    = REPO_DIR / "scripts" / "core"
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+from evidence_identity import read_binding, validate_evidence  # noqa: E402
+
 PROJECT_DIR = REPO_DIR / "ghidraprojects" / "BethesdaGhidraScripts"
 PROJECT_NAME = "BethesdaGhidraScripts"
 PROGRAM_NAME = "Starfield.exe"
 _DEFAULT_CSV = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf116_ported_names.csv"
 CSV_PATH     = Path(sys.argv[1]) if len(sys.argv) > 1 else _DEFAULT_CSV
+EXPECTED_TARGET_SHA256 = '1d1409ca898ca596a3a605f3ebc5347f72cfd6e47e38020dec158ec9bdd7d351'
+EVIDENCE_KIND = "sf17-to-sf116-bytesig-names"
 
 # Ghidra symbol name policy:
 #   * '::' is the namespace separator -- we want to honor that.
@@ -57,6 +64,36 @@ def split_namespaced(full: str) -> list[str]:
     return [sanitize_component(p) for p in parts]
 
 
+def _load_bound_rows():
+    binding = read_binding(
+        str(CSV_PATH), kind=EVIDENCE_KIND, require_content=True)
+    if binding["target_sha256"].lower() != EXPECTED_TARGET_SHA256:
+        raise RuntimeError("ported-name evidence targets another executable")
+    if binding.get("address_coordinate") != "VA":
+        raise RuntimeError("ported-name evidence must use target VA coordinates")
+    rows = []
+    seen_addresses = set()
+    with open(CSV_PATH, encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        if not reader.fieldnames or not {"target_va", "name"} <= set(reader.fieldnames):
+            raise RuntimeError("ported-name CSV has the wrong schema")
+        for line, row in enumerate(reader, 2):
+            try:
+                address = int(row["target_va"], 16)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"invalid target VA on CSV line {line}") from exc
+            name = (row.get("name") or "").strip()
+            if not name:
+                raise RuntimeError(f"empty name on CSV line {line}")
+            if address in seen_addresses:
+                raise RuntimeError(f"duplicate target VA 0x{address:x} in evidence")
+            seen_addresses.add(address)
+            rows.append((address, name))
+    if not rows:
+        raise RuntimeError("ported-name evidence is empty")
+    return rows
+
+
 def main():
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     import pyghidra
@@ -73,6 +110,7 @@ def main():
     if not CSV_PATH.is_file():
         print("ERROR: CSV missing")
         sys.exit(2)
+    rows = _load_bound_rows()
 
     with pyghidra.open_project(PROJECT_DIR, PROJECT_NAME, create=False) as project:
         root = project.getProjectData().getRootFolder()
@@ -96,14 +134,21 @@ def main():
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, True, False, monitor)
         try:
+            actual_sha256 = (program.getExecutableSHA256() or '').lower()
+            if actual_sha256 != EXPECTED_TARGET_SHA256:
+                raise RuntimeError('SF116 target executable SHA-256 mismatch')
+            validate_evidence(
+                str(CSV_PATH), program, EVIDENCE_KIND, require_content=True)
             fm = program.getFunctionManager()
             sym = program.getSymbolTable()
             global_ns = program.getGlobalNamespace()
             ns_mgr = program.getNamespaceManager()
             addr_factory = program.getAddressFactory()
             default_space = addr_factory.getDefaultAddressSpace()
+            memory = program.getMemory()
 
             txid = program.startTransaction("Apply SF 1.7 -> 1.16.236 ported names")
+            commit = False
             try:
                 # Pre-create namespaces lazily as we encounter them.
                 ns_cache = {}
@@ -118,7 +163,7 @@ def main():
                     for part in path_parts:
                         sub = sym.getNamespace(part, parent)
                         if sub is None:
-                            sub = sym.createNameSpace(parent, part, SourceType.USER_DEFINED)
+                            sub = sym.createNameSpace(parent, part, SourceType.ANALYSIS)
                         parent = sub
                     ns_cache[key] = parent
                     return parent
@@ -131,26 +176,27 @@ def main():
                 n_err = 0
                 report_every = 500
 
-                with open(CSV_PATH, encoding="utf-8") as fh:
-                    reader = csv.DictReader(fh)
-                    for row in reader:
+                for va_int, evidence_name in rows:
                         n_total += 1
-                        try:
-                            va_int = int(row["target_va"], 16)
-                        except (KeyError, ValueError):
-                            n_err += 1
-                            continue
                         addr = default_space.getAddress(va_int)
+                        block = memory.getBlock(addr)
+                        if block is None or not block.isExecute():
+                            n_no_func += 1
+                            continue
                         func = fm.getFunctionAt(addr)
                         if func is None:
                             n_no_func += 1
                             continue
                         cur = func.getName()
+                        source = func.getSymbol().getSource()
+                        if source in (SourceType.USER_DEFINED, SourceType.IMPORTED):
+                            n_already_named += 1
+                            continue
                         if not (cur.startswith("FUN_") or cur.startswith("thunk_FUN_")):
                             n_already_named += 1
                             continue
 
-                        parts = split_namespaced(row["name"])
+                        parts = split_namespaced(evidence_name)
                         if not parts:
                             n_sanitize_fail += 1
                             continue
@@ -159,22 +205,25 @@ def main():
                         try:
                             target_ns = get_or_create_namespace(ns_path) if ns_path else global_ns
                             func.setParentNamespace(target_ns)
-                            func.setName(leaf, SourceType.USER_DEFINED)
+                            func.setName(leaf, SourceType.ANALYSIS)
                             n_renamed += 1
                         except Exception as e:
                             n_err += 1
-                            if n_err < 20:
-                                print(f"  err at 0x{va_int:x} '{row['name'][:60]}': {e}")
+                            raise RuntimeError(
+                                f"rename failed at 0x{va_int:x} "
+                                f"'{evidence_name[:60]}': {e}") from e
 
                         if n_total % report_every == 0:
                             print(f"  {n_total} processed  renamed={n_renamed}  "
                                   f"no_func={n_no_func}  already={n_already_named}  err={n_err}",
                                   flush=True)
+                commit = True
             finally:
-                program.endTransaction(txid, True)
+                program.endTransaction(txid, commit)
 
-            print(f"\nSaving program ...")
-            program.save("SF 1.7 -> 1.16.236 byte-sig port", monitor)
+            if commit:
+                print(f"\nSaving program ...")
+                program.save("SF 1.7 -> 1.16.236 byte-sig port", monitor)
             print(f"\n=== Summary ===")
             print(f"  total CSV rows:    {n_total}")
             print(f"  functions renamed: {n_renamed}")

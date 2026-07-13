@@ -44,10 +44,16 @@ from vtable_layout import BinaryLayout, ClassVtable, SlotEntry
 class ClassShiftMap:
     """How one class's slots map from reference -> target binary."""
     class_name: str
+    vtable_id: str = ''
+    target_vtable_id: str = ''
+    subobject_offset: int = 0
+    is_primary: bool = True
     ref_to_target: Dict[int, int] = field(default_factory=dict)  # ref_slot -> target_slot
     unmatched_ref_slots: List[int] = field(default_factory=list)  # in ref, missing in target
     target_only_slots: List[Tuple[int, SlotEntry]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    match_evidence: Dict[int, dict] = field(default_factory=dict)
+    ambiguous_matches: List[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -56,25 +62,47 @@ class ShiftMap:
     reference_label: str
     target_label: str
     classes: Dict[str, ClassShiftMap] = field(default_factory=dict)
+    vtables: Dict[str, ClassShiftMap] = field(default_factory=dict)
 
     def to_json(self) -> dict:
+        def encode(m):
+            return {
+                'class_name': m.class_name,
+                'vtable_id': m.vtable_id,
+                'target_vtable_id': m.target_vtable_id,
+                'subobject_offset': '0x{:X}'.format(m.subobject_offset),
+                'is_primary': m.is_primary,
+                'reference_slot_count': (len(m.ref_to_target) +
+                                         len(m.unmatched_ref_slots)),
+                'target_slot_count': (len(m.ref_to_target) +
+                                      len(m.target_only_slots)),
+                'matched_ratio': (float(len(m.ref_to_target)) /
+                                  max(1, len(m.ref_to_target) +
+                                      len(m.unmatched_ref_slots))),
+                'ref_to_target': {'0x{:X}'.format(k): '0x{:X}'.format(v)
+                                  for k, v in m.ref_to_target.items()},
+                'unmatched_ref_slots': [
+                    '0x{:X}'.format(s) for s in m.unmatched_ref_slots],
+                'target_only_slots': [
+                    {'slot': '0x{:X}'.format(s), 'func_name': e.func_name,
+                     'func_addr': '0x{:X}'.format(e.func_addr)}
+                    for s, e in m.target_only_slots
+                ],
+                'match_evidence': {
+                    '0x{:X}'.format(k): v
+                    for k, v in sorted(m.match_evidence.items())
+                },
+                'ambiguous_matches': m.ambiguous_matches,
+                'notes': m.notes,
+            }
         return {
+            'schema_version': 2,
             'reference': self.reference_label,
             'target': self.target_label,
-            'classes': {
-                cls: {
-                    'ref_to_target': {'0x{:X}'.format(k): '0x{:X}'.format(v)
-                                       for k, v in m.ref_to_target.items()},
-                    'unmatched_ref_slots': ['0x{:X}'.format(s) for s in m.unmatched_ref_slots],
-                    'target_only_slots': [
-                        {'slot': '0x{:X}'.format(s), 'func_name': e.func_name,
-                         'func_addr': '0x{:X}'.format(e.func_addr)}
-                        for s, e in m.target_only_slots
-                    ],
-                    'notes': m.notes,
-                }
-                for cls, m in sorted(self.classes.items())
-            },
+            # ``classes`` remains the primary-table compatibility view.
+            'classes': {cls: encode(m) for cls, m in sorted(self.classes.items())},
+            'vtables': {identity: encode(m)
+                        for identity, m in sorted(self.vtables.items())},
         }
 
 
@@ -91,18 +119,15 @@ def _normalize_fingerprint(fp: str) -> str:
 
 
 def _fingerprints_match(a: str, b: str,
-                          min_concrete_bytes: int = 6,
-                          prefix_window: int = 24,
-                          max_concrete_mismatches: int = 1) -> bool:
+                          min_concrete_bytes: int = 16,
+                          prefix_window: Optional[int] = None,
+                          max_concrete_mismatches: int = 0) -> bool:
     """True if two function-prologue fingerprints are compatible.
 
-    Bethesda patches sometimes rewrite function bodies (insert calls,
-    change constants) while keeping the MSVC frame-setup prologue
-    identical.  So we only compare the *prefix* of the two fingerprints
-    (where the standard register-save/stack-alloc pattern lives) instead
-    of the whole body, and tolerate up to ``max_concrete_mismatches``
-    differing concrete bytes within that window to handle prologues
-    that differ only in a register pick or an immediate value.
+    Every comparable concrete byte in the captured fingerprints must agree
+    by default.  Comparing only an MSVC frame-setup prefix creates convincing
+    false matches between unrelated functions, so callers must explicitly
+    opt into a shorter window (and the production matcher does not).
 
     Args:
       a, b: normalized fingerprint strings (space-separated hex bytes
@@ -110,10 +135,8 @@ def _fingerprints_match(a: str, b: str,
       min_concrete_bytes:  minimum number of non-wildcard bytes that
             must match between the two prefixes for the pair to be
             considered a hit.  Below this the signal is too weak.
-      prefix_window: only inspect the first N bytes of each fingerprint.
-            ~20-30 bytes covers the MSVC prologue (RBP save, stack
-            sub, parameter spills) without reaching into the function
-            body where patches tend to diverge.
+      prefix_window: optional explicit comparison limit.  ``None`` compares
+            the complete common capture and is the safe production default.
       max_concrete_mismatches: allow this many concrete-vs-concrete
             differences within the prefix before declaring a mismatch.
             Set to 0 for strict, 1 to tolerate a single register/imm
@@ -123,8 +146,15 @@ def _fingerprints_match(a: str, b: str,
         return False
     pa = a.split()
     pb = b.split()
-    # Restrict to the prefix window
-    n = min(len(pa), len(pb), prefix_window)
+    if prefix_window is None and len(pa) != len(pb):
+        # A shorter capture being a prefix of a longer function is not full
+        # fingerprint agreement and can recreate the common-prologue bug.
+        return False
+    n = min(len(pa), len(pb))
+    if prefix_window is not None:
+        if prefix_window <= 0:
+            return False
+        n = min(n, prefix_window)
     if n == 0:
         return False
     concrete_matches = 0
@@ -143,9 +173,19 @@ def _fingerprints_match(a: str, b: str,
 
 
 def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
-    sm = ClassShiftMap(class_name=ref.class_name)
+    sm = ClassShiftMap(
+        class_name=ref.class_name,
+        vtable_id=ref.vtable_id,
+        target_vtable_id=tgt.vtable_id,
+        subobject_offset=ref.subobject_offset,
+        is_primary=ref.is_primary)
 
-    # Stage 1: exact name match
+    # Stage 1: exact name match.  Both sides must be unique: distance is not
+    # evidence that one overload/ICF duplicate owns a target slot.
+    ref_by_name: Dict[str, List[int]] = {}
+    for slot, e in ref.slots.items():
+        if e.func_name:
+            ref_by_name.setdefault(e.func_name, []).append(slot)
     target_by_name: Dict[str, List[int]] = {}
     for slot, e in tgt.slots.items():
         if e.func_name:
@@ -157,53 +197,88 @@ def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
         if not re_.func_name:
             continue
         candidates = target_by_name.get(re_.func_name, [])
-        # Prefer the candidate slot closest to the ref slot when names collide
-        best = None
-        best_dist = 10**9
-        for cand in candidates:
+        if len(ref_by_name.get(re_.func_name, [])) == 1 and len(candidates) == 1:
+            target_slot = candidates[0]
+            sm.ref_to_target[ref_slot] = target_slot
+            sm.match_evidence[ref_slot] = {
+                'target_slot': target_slot, 'method': 'exact_unique_name',
+                'confidence': 'verified', 'provenance': re_.func_name,
+            }
+            used_target_slots.add(target_slot)
+        elif candidates:
+            sm.ambiguous_matches.append({
+                'ref_slot': ref_slot, 'method': 'name',
+                'candidates': sorted(candidates), 'name': re_.func_name,
+            })
+
+    # Stage 2: exact masked fingerprint matching for ref slots not yet
+    # matched.  Candidate uniqueness is evaluated across the *entire physical
+    # table*.  A distance-first pass could hide an equally compatible slot
+    # outside the first radius and incorrectly bless a common prologue.
+    ref_candidates = {}
+    target_candidates = {}
+    target_fingerprints = {
+        slot: _normalize_fingerprint(entry.fingerprint)
+        for slot, entry in tgt.slots.items()
+    }
+    exact_target_by_fingerprint = {}
+    wildcard_target_slots = []
+    for slot, fingerprint in target_fingerprints.items():
+        if not fingerprint:
+            continue
+        if '?' in fingerprint.split():
+            wildcard_target_slots.append(slot)
+        else:
+            exact_target_by_fingerprint.setdefault(fingerprint, []).append(slot)
+    for ref_slot in sorted(ref.slots):
+        if ref_slot in sm.ref_to_target:
+            continue
+        ref_fp = _normalize_fingerprint(ref.slots[ref_slot].fingerprint)
+        if not ref_fp:
+            continue
+        # Raw-byte dumps (the normal cross-version input) are indexed by the
+        # complete capture, making reciprocal matching linear rather than
+        # quadratic for very large physical tables.  Masked fingerprints use
+        # the conservative compatibility scan.
+        if '?' in ref_fp.split():
+            candidate_pool = sorted(target_fingerprints)
+        else:
+            candidate_pool = sorted(set(
+                exact_target_by_fingerprint.get(ref_fp, []) +
+                wildcard_target_slots))
+        candidates = []
+        for cand in candidate_pool:
             if cand in used_target_slots:
                 continue
-            d = abs(cand - ref_slot)
-            if d < best_dist:
-                best_dist = d
-                best = cand
-        if best is not None:
-            sm.ref_to_target[ref_slot] = best
-            used_target_slots.add(best)
+            if _fingerprints_match(
+                    ref_fp, target_fingerprints[cand]):
+                candidates.append(cand)
+                target_candidates.setdefault(cand, []).append(ref_slot)
+        if candidates:
+            ref_candidates[ref_slot] = candidates
 
-    # Stage 2: fingerprint match for ref slots not yet matched.
-    #
-    # Done in TWO passes by distance radius.  Pass A only considers target
-    # slots within a small window of the ref slot (catches the >95% of
-    # real-world cases where a method moved by 0-3 slots between patches).
-    # Pass B widens to a larger window for the rest.  This stops a greedy
-    # large-distance fingerprint collision from stealing a near-perfect
-    # close-distance match -- e.g., AE PC.Resurrect at slot 0xCC must NOT
-    # be consumed by some far-away ref slot whose prologue happens to
-    # share the same MSVC frame-setup bytes.
-    PASS_A_RADIUS = 3      # tight: catches +/- 0-3 slot shifts
-    PASS_B_RADIUS = 32     # wider: catches larger insertions, but only after
-                            #         tight matches have locked in nearby slots
-    for radius in (PASS_A_RADIUS, PASS_B_RADIUS):
-        for ref_slot in sorted(ref.slots):
-            if ref_slot in sm.ref_to_target:
-                continue
-            re_ = ref.slots[ref_slot]
-            ref_fp = _normalize_fingerprint(re_.fingerprint)
-            if not ref_fp:
-                continue
-            candidate_order = sorted(
-                (s for s in tgt.slots
-                 if s not in used_target_slots
-                 and abs(s - ref_slot) <= radius),
-                key=lambda s: abs(s - ref_slot)
-            )
-            for cand in candidate_order:
-                te = tgt.slots[cand]
-                if _fingerprints_match(ref_fp, _normalize_fingerprint(te.fingerprint)):
-                    sm.ref_to_target[ref_slot] = cand
-                    used_target_slots.add(cand)
-                    break
+    # Reciprocal uniqueness: the edge must be the only compatible choice in
+    # both directions.  Slot distance is recorded as context, never evidence.
+    for ref_slot, candidates in sorted(ref_candidates.items()):
+        if len(candidates) != 1:
+            sm.ambiguous_matches.append({
+                'ref_slot': ref_slot, 'method': 'fingerprint',
+                'candidates': candidates,
+            })
+            continue
+        cand = candidates[0]
+        if len(target_candidates.get(cand, [])) != 1:
+            sm.ambiguous_matches.append({
+                'ref_slot': ref_slot, 'method': 'fingerprint_reverse',
+                'candidates': target_candidates.get(cand, []),
+            })
+            continue
+        sm.ref_to_target[ref_slot] = cand
+        sm.match_evidence[ref_slot] = {
+            'target_slot': cand, 'method': 'reciprocal_fingerprint',
+            'confidence': 'high', 'slot_distance': abs(cand - ref_slot),
+        }
+        used_target_slots.add(cand)
 
     # Stage 3: identify what's left
     sm.unmatched_ref_slots = [s for s in sorted(ref.slots) if s not in sm.ref_to_target]
@@ -215,6 +290,8 @@ def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
         sm.notes.append('{} ref slots have no target match'.format(len(sm.unmatched_ref_slots)))
     if sm.target_only_slots:
         sm.notes.append('{} target-only slots'.format(len(sm.target_only_slots)))
+    if sm.ambiguous_matches:
+        sm.notes.append('{} ambiguous candidates rejected'.format(len(sm.ambiguous_matches)))
 
     return sm
 
@@ -222,16 +299,39 @@ def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
 def build_shift_map(ref: BinaryLayout, tgt: BinaryLayout) -> ShiftMap:
     """Compute the full ShiftMap from reference binary -> target binary."""
     out = ShiftMap(reference_label=ref.binary_label, target_label=tgt.binary_label)
-    for class_name, ref_vt in ref.classes.items():
-        tgt_vt = tgt.get(class_name)
+    ref_tables = ref.vtables or {
+        vt.vtable_id or class_name: vt for class_name, vt in ref.classes.items()
+    }
+    tgt_tables = tgt.vtables or {
+        vt.vtable_id or class_name: vt for class_name, vt in tgt.classes.items()
+    }
+    for identity, ref_vt in sorted(ref_tables.items()):
+        semantic_candidates = [
+            table for table in tgt_tables.values()
+            if (table.class_name == ref_vt.class_name and
+                table.is_primary == ref_vt.is_primary and
+                table.subobject_offset == ref_vt.subobject_offset)
+        ]
+        exact = [table for table in semantic_candidates
+                 if table.vtable_id == ref_vt.vtable_id]
+        candidates = exact or semantic_candidates
+        tgt_vt = candidates[0] if len(candidates) == 1 else None
         if tgt_vt is None:
-            # Class absent from target binary entirely
-            cm = ClassShiftMap(class_name=class_name)
+            cm = ClassShiftMap(
+                class_name=ref_vt.class_name,
+                vtable_id=ref_vt.vtable_id or identity,
+                subobject_offset=ref_vt.subobject_offset,
+                is_primary=ref_vt.is_primary)
             cm.unmatched_ref_slots = sorted(ref_vt.slots.keys())
-            cm.notes.append('class missing from target binary')
-            out.classes[class_name] = cm
-            continue
-        out.classes[class_name] = _match_one_class(ref_vt, tgt_vt)
+            cm.notes.append(
+                'vtable missing or ambiguous in target binary ({} candidates)'.format(
+                    len(candidates)))
+        else:
+            cm = _match_one_class(ref_vt, tgt_vt)
+        table_identity = ref_vt.vtable_id or identity
+        out.vtables[table_identity] = cm
+        if ref_vt.is_primary and ref_vt.class_name not in out.classes:
+            out.classes[ref_vt.class_name] = cm
     return out
 
 

@@ -31,7 +31,7 @@ from typing import Dict, List, Set, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
-EXE_PATH   = Path(r'D:\FNV Project\FalloutNewVegas\FalloutNV.exe')
+from paths import PC_EXE as EXE_PATH
 
 
 def parse_pe_x86(path: Path):

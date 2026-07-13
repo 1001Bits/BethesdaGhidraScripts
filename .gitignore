@@ -1,5 +1,6 @@
 /ghidrascripts
 /exes
+/artifacts
 __pycache__
 /ghidraprojects
 /tools
@@ -12,4 +13,5 @@ __pycache__
 
 # Built release bundles (output of scripts/build_release_bundle.ps1)
 /release/
+/symbols/
 build/

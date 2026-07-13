@@ -2,8 +2,10 @@
 """Sequencer: enrich every game/version program inside Combined.gpr.
 
 Runs all currently-supported enrichment passes back-to-back so you
-only have to close Ghidra once.  Each step is a subprocess so a fail
-or skip in one step doesn't cascade.
+only have to close Ghidra once.  Each step is a subprocess.  The default is
+fail-fast because later byte-signature write-back steps depend on names
+created by earlier applies; use ``--keep-going`` only for independent
+research runs.
 
 Default sequence (use --skip to omit, --only to run a subset):
 
@@ -15,10 +17,8 @@ Default sequence (use --skip to omit, --only to run a subset):
   6. commonlibsse/bytesig_port_combined --write-back-script
                                                     # SE -> AE/VR bytesig + merge back into scripts
   7. apply_fnv_to_user_project                      # FNV PC 1.4.0.525
-  8. apply_skyrim_to_user_project --version ae      # SkyrimAE GOG Edition variant
-  9. apply_sf_to_user_project                       # Starfield 1.16.236
- 10. apply_sf_to_user_project                       # StarfieldVR.exe
- 11. core/run_vtable_pipeline (per binary, slow)    # RTTI walk; optional via --rtti
+  8. apply_sf_to_user_project                       # Starfield 1.16.236
+  9. core/run_vtable_pipeline (per binary, slow)    # RTTI walk; optional via --rtti
 
 Defaults assume C:/GhidraProjects/Combined.gpr with the user's typical
 multi-binary layout.  Each step prints full output (no quiet mode) so
@@ -80,14 +80,8 @@ APPLY_STEPS = [
     ("FNV apply",
      "apply_fnv_to_user_project.py",
      ["--program-path", "/FalloutNV/FalloutNV_1_4_0_525.exe"]),
-    # B: SkyrimAE GOG Edition (variant binary).  Uses the relib-re-keyed
-    # GOG script -- the plain AE script carries Steam 1.6.1170 offsets
-    # which land at wrong addresses on GOG builds.
-    ("Skyrim AE apply -> GOG Edition",
-     "apply_skyrim_to_user_project.py",
-     ["--version", "ae",
-      "--script", str(SCRIPTS_DIR.parent / "ghidrascripts" / "CommonLibImport_AE_GOG_1_6_1179.py"),
-      "--program-path", "/Skyrim/SkyrimAE_GOG Edition.exe"]),
+    # B: GOG is intentionally omitted.  A relib-re-keyed database proves
+    # offsets, not target identity; an exact GOG-bound importer is required.
     # C: Starfield (PC only).
     # DO NOT apply the SF script to StarfieldVR.exe: it embeds PC 1.16.x
     # offsets and a previous run wrote 62k labels at wrong addresses into
@@ -127,6 +121,9 @@ def main():
     ap.add_argument('--rtti', action='store_true',
                     help="ALSO run RTTI vtable pipeline on each binary "
                          "(adds ~30 min per binary -- expect 3-5 hours)")
+    ap.add_argument('--keep-going', action='store_true',
+                    help="continue independent research after a failure; "
+                         "unsafe dependent write-back steps may still fail")
     args = ap.parse_args()
     skip = {int(s) for s in args.skip if s.isdigit()}
     only = {int(s) for s in args.only} if args.only else None
@@ -154,8 +151,15 @@ def main():
         status = 'OK' if rc == 0 else f'FAIL (rc={rc})'
         results.append((label, status, elapsed))
         print(f"\n--- STEP {i} {status} ({elapsed:.0f}s) ---")
+        if rc != 0 and not args.keep_going:
+            print("Stopping: later write-back steps depend on successful "
+                  "upstream enrichment. Use --keep-going only when those "
+                  "dependencies are intentionally out of scope.")
+            break
 
-    if args.rtti:
+    failed_apply = any(status.startswith('FAIL')
+                       for _, status, _ in results)
+    if args.rtti and (args.keep_going or not failed_apply):
         rtti_script = SCRIPTS_DIR / "core" / "run_vtable_pipeline.py"
         for prog_path in RTTI_TARGETS:
             label = f"RTTI walk -> {prog_path}"
@@ -175,7 +179,13 @@ def main():
     print(f"\n{'=' * 70}\nSUMMARY ({total:.0f}s total)\n{'=' * 70}")
     for i, (label, status, elapsed) in enumerate(results, 1):
         print(f"  {i:>2}. {status:<14}  {elapsed:>6.0f}s  {label}")
+    failures = [label for label, status, _ in results
+                if status.startswith('FAIL')]
+    if failures:
+        print(f"\nFAILED: {len(failures)} required enrichment step(s).")
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

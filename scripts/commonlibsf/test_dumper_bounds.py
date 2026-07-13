@@ -25,7 +25,6 @@ from typing import Callable, Dict, List
 # Pure-python mimic of _read_slot_pointers from dump_vtable_layouts.py
 # ---------------------------------------------------------------------------
 
-MAX_SLOTS_PER_VTABLE = 384
 IMAGE_LO = 0x140000000
 IMAGE_HI = 0x200000000
 
@@ -35,8 +34,7 @@ def slot_walk(vaddr: int, end_addr: int,
               is_executable: Callable[[int], bool]) -> List[int]:
     out: List[int] = []
     cur = vaddr
-    max_end = min(end_addr, vaddr + MAX_SLOTS_PER_VTABLE * 8)
-    while cur + 8 <= max_end:
+    while cur + 8 <= end_addr:
         ptr = read_qword(cur)
         if ptr == 0:
             break
@@ -93,7 +91,7 @@ end_current = VTABLE_ACTOR + 16
 end_next_va = VTABLE_NEXT_LBL
 
 # (3) "block": let the slot's .text check terminate; only the .rdata
-#     block boundary acts as an upper bound, capped by MAX_SLOTS
+#     block boundary acts as an upper bound
 end_block = RDATA_END
 
 
@@ -103,13 +101,13 @@ end_block = RDATA_END
 
 def main() -> int:
     print('Synthetic: Actor-shaped vtable, real slot count = {}'.format(ACTOR_REAL_SLOTS))
-    print('Cap = {} slots'.format(MAX_SLOTS_PER_VTABLE))
+    print('No fixed slot cap; terminate on mapped/executable pointer validity')
     print()
 
     cases = [
         ('current  (typed_len=16 from Ghidra)', end_current, 2),
         ('next_va  (next VTABLE_* @ +24)',      end_next_va, 3),
-        ('block    (rely on .text check)',      end_block, MAX_SLOTS_PER_VTABLE),
+        ('block    (rely on .text check)',      end_block, ACTOR_REAL_SLOTS),
     ]
     failures = 0
     for label, end, expected in cases:
@@ -125,8 +123,13 @@ def main() -> int:
         print('FAILED: {} test(s) did not match expected'.format(failures))
         return 1
     print('All three bounds produce the predicted slot counts.')
-    print('Conclusion: drop typed_len AND next_va, use .text check + cap only.')
+    print('Conclusion: use the memory-block bound plus executable-pointer terminator.')
     return 0
+
+
+def test_block_bound_does_not_truncate_large_vtable():
+    got = slot_walk(VTABLE_ACTOR, end_block, read_qword, is_executable)
+    assert len(got) == ACTOR_REAL_SLOTS
 
 
 if __name__ == '__main__':

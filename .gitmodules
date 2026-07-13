@@ -16,3 +16,7 @@
 [submodule "extern/xNVSE"]
 	path = extern/xNVSE
 	url = https://github.com/xNVSE/NVSE
+[submodule "extern/CommonLibVR"]
+	path = extern/CommonLibVR
+	url = https://github.com/alandtse/CommonLibVR.git
+	branch = ng

@@ -66,14 +66,16 @@ def main():
             mgr = AutoAnalysisManager.getAnalysisManager(program)
             print("Scheduling full re-analysis over all initialized memory ...")
             tx = program.startTransaction("auto-analysis")
+            success = False
             try:
                 mgr.initializeOptions()
                 # reAnalyzeAll(null) schedules every analyzer over all memory;
                 # startAnalysis blocks until the queue drains.
                 mgr.reAnalyzeAll(None)
                 mgr.startAnalysis(monitor)
+                success = True
             finally:
-                program.endTransaction(tx, True)
+                program.endTransaction(tx, success)
 
             # Flip the Analyzed flag so the program reports as analyzed.
             try:

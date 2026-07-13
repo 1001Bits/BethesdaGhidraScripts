@@ -27,7 +27,7 @@ Project-agnostic: root namespace and category prefix are configurable, and
 
 Public API:
   collect_types()         - run all passes and return (enums, structs, template_source)
-  find_clang_binary()     - locate clang.exe on Windows (registry, common paths, PATH)
+  find_clang_binary()     - locate clang (explicit override, PATH, Windows fallbacks)
   _setup_include_paths()  - build clang include args from CommonLib + stub dirs
 """
 
@@ -36,6 +36,12 @@ import sys
 import re
 import shutil
 import subprocess
+import tempfile
+
+
+# Keep generated include overlays alive for every Clang pass in this process.
+# TemporaryDirectory removes them when the interpreter exits.
+_RUNTIME_STUB_DIRS = []
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +49,27 @@ import subprocess
 # ---------------------------------------------------------------------------
 
 def find_clang_binary():
+    """Locate Clang without bypassing a caller-prepended toolchain on PATH.
+
+    ``BGS_CLANG_BINARY`` is an optional exact executable override.  A bad
+    override is an error rather than permission to silently select a different
+    compiler, which keeps generated layouts reproducible.
+    """
+    explicit = os.environ.get('BGS_CLANG_BINARY')
+    if explicit:
+        candidate = os.path.abspath(os.path.expanduser(
+            os.path.expandvars(explicit.strip().strip('"'))))
+        if not os.path.isfile(candidate):
+            raise FileNotFoundError(
+                'BGS_CLANG_BINARY does not name a file: {}'.format(candidate))
+        return candidate
+
+    # run.py prepends the repository-pinned LLVM directory to PATH.  Honor it
+    # before registry/global-install probes, which may point at another LLVM.
+    candidate = shutil.which('clang')
+    if candidate:
+        return candidate
+
     try:
         import winreg
         for hive, key in [
@@ -65,7 +92,7 @@ def find_clang_binary():
     ]:
         if os.path.isfile(path):
             return path
-    return shutil.which('clang')
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +124,10 @@ _CLANG_TYPE_MAP = {
     'std::int16_t': 'i16', 'int16_t': 'i16',
     'std::int32_t': 'i32', 'int32_t': 'i32',
     'std::int64_t': 'i64', 'int64_t': 'i64',
-    'std::size_t': 'u64', 'size_t': 'u64',
-    'std::ptrdiff_t': 'i64', 'ptrdiff_t': 'i64',
-    'std::uintptr_t': 'u64', 'uintptr_t': 'u64',
-    'std::intptr_t': 'i64', 'intptr_t': 'i64',
+    'std::size_t': 'usize', 'size_t': 'usize',
+    'std::ptrdiff_t': 'isize', 'ptrdiff_t': 'isize',
+    'std::uintptr_t': 'usize', 'uintptr_t': 'usize',
+    'std::intptr_t': 'isize', 'intptr_t': 'isize',
 }
 
 _KW_STRIP_RE = re.compile(r'\b(?:class|struct|union|enum)\s+')
@@ -315,12 +342,69 @@ def _record_type_to_pipeline(raw, root_ns='RE'):
 # Include path and stub generation
 # ---------------------------------------------------------------------------
 
-def _setup_include_paths(commonlib_include, clang_stub_dir):
+def _target_abi(target_arch='x64'):
+    arch = str(target_arch).lower()
+    if arch in ('x86', 'i386', 'i686', '32'):
+        return {
+            'arch': 'x86', 'pointer_size': 4,
+            'triple': 'i686-pc-windows-msvc',
+            'vcpkg_triplets': ('x86-windows-static', 'x86-windows'),
+            'defines': ('-DWIN32', '-D_WIN32', '-D_M_IX86'),
+            'undefines': ('-U_WIN64', '-U_M_X64', '-U_AMD64_'),
+        }
+    if arch in ('x64', 'amd64', 'x86_64', '64'):
+        return {
+            'arch': 'x64', 'pointer_size': 8,
+            'triple': 'x86_64-pc-windows-msvc',
+            'vcpkg_triplets': ('x64-windows-static', 'x64-windows'),
+            'defines': ('-DWIN32', '-D_WIN32', '-D_WIN64', '-D_M_X64'),
+            'undefines': ('-U_M_IX86',),
+        }
+    raise ValueError('unsupported target architecture: {}'.format(target_arch))
+
+
+def _normalize_abi_args(parse_args, target_arch=None):
+    """Return (clang_args, abi), removing contradictory legacy macros."""
+    if target_arch is None:
+        lowered = [str(arg).lower() for arg in parse_args]
+        # Only a *definition* of _M_IX86 selects the 32-bit ABI.  The x64
+        # setup intentionally contains ``-U_M_IX86``; substring matching that
+        # token used to turn every default x64 parse back into i686.
+        defines_ix86 = any(
+            arg == '-d_m_ix86' or arg.startswith('-d_m_ix86=')
+            for arg in lowered)
+        targets_i386 = any(
+            arg.startswith('--target=') and
+            arg.split('=', 1)[1].startswith(
+                ('i386-', 'i486-', 'i586-', 'i686-'))
+            for arg in lowered)
+        target_arch = 'x86' if (defines_ix86 or targets_i386) else 'x64'
+    abi = _target_abi(target_arch)
+    filtered = []
+    skip_next = False
+    contradictory = {
+        '-d_win64', '-d_m_x64', '-d_m_ix86', '-u_win64', '-u_m_x64', '-u_m_ix86',
+    }
+    for arg in parse_args:
+        low = arg.lower()
+        if low.startswith('--target=') or low in contradictory:
+            continue
+        filtered.append(arg)
+    normalized = ['--target=' + abi['triple']]
+    normalized.extend(abi['undefines'])
+    normalized.extend(abi['defines'])
+    normalized.extend(filtered)
+    return normalized, abi
+
+
+def _setup_include_paths(commonlib_include, clang_stub_dir, target_arch='x64'):
+
+    abi = _target_abi(target_arch)
 
     _vcpkg_include = None
     _vcpkg_root = os.environ.get('VCPKG_ROOT', '')
     if _vcpkg_root:
-        for _triplet in ('x64-windows-static', 'x64-windows'):
+        for _triplet in abi['vcpkg_triplets']:
             _candidate = os.path.join(_vcpkg_root, 'installed', _triplet, 'include')
             if (os.path.isfile(os.path.join(_candidate, 'binary_io', 'file_stream.hpp'))
                     and os.path.isfile(os.path.join(_candidate, 'spdlog', 'spdlog.h'))):
@@ -345,8 +429,16 @@ def _setup_include_paths(commonlib_include, clang_stub_dir):
 
         third_party = clang_stub_dir
 
-    # Shadow spdlog/details/windows_include.h to undef REX::W32 macro conflicts
-    win_stub_dir = clang_stub_dir
+    # Shadow spdlog/details/windows_include.h to undef REX::W32 macro conflicts.
+    # The undef list is game/header-tree specific, so never write it into the
+    # shared tracked stub tree.  Copy that tiny static tree to a process-lifetime
+    # overlay to preserve its existing include precedence, then customize only
+    # the temporary copy.
+    runtime_stubs = tempfile.TemporaryDirectory(prefix='bgs-clang-stubs-')
+    _RUNTIME_STUB_DIRS.append(runtime_stubs)
+    win_stub_dir = runtime_stubs.name
+    if os.path.isdir(clang_stub_dir):
+        shutil.copytree(clang_stub_dir, win_stub_dir, dirs_exist_ok=True)
     os.makedirs(os.path.join(win_stub_dir, 'spdlog', 'details'), exist_ok=True)
     os.makedirs(os.path.join(win_stub_dir, 'spdlog', 'sinks'), exist_ok=True)
 
@@ -381,11 +473,12 @@ def _setup_include_paths(commonlib_include, clang_stub_dir):
         )
 
     parse_args = [
+        '--target=' + abi['triple'],
         '-x', 'c++',
         '-std=c++23',
         '-fms-compatibility',
         '-fms-extensions',
-        '-DWIN32', '-D_WIN64',
+    ] + list(abi['undefines']) + list(abi['defines']) + [
         '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH',
         '-D_CRT_USE_BUILTIN_OFFSETOF',
         '-DSPDLOG_COMPILED_LIB',
@@ -592,9 +685,10 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
 
         # CXXRecordDecl (class/struct definition)
         if content.startswith('CXXRecordDecl ') and content.endswith('definition'):
-            m = re.search(r'(?:class|struct)\s+(\w+)\s+definition', content)
+            m = re.search(r'(class|struct|union)\s+(\w+)\s+definition', content)
             if m:
-                class_name = m.group(1)
+                record_kind = m.group(1)
+                class_name = m.group(2)
                 in_re = _is_re() or _src_is_re(content)
                 prefix = _qual_prefix()
                 full_name = prefix + '::' + class_name if prefix else class_name
@@ -603,6 +697,7 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                     ast_classes[full_name] = {
                         'name': class_name,
                         'full_name': full_name,
+                        'record_kind': record_kind,
                         'bases': [],
                         'has_vtable': False,
                         'vmethods': {},
@@ -694,6 +789,7 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                     ast_classes[fn] = {
                         'name': short_name,
                         'full_name': fn,
+                        'record_kind': 'namespace',
                         'bases': [],
                         'has_vtable': False,
                         'vmethods': {},
@@ -752,7 +848,7 @@ def _parse_method_sig(sig, root_ns='RE'):
 # Record layout parser
 # ---------------------------------------------------------------------------
 
-def _parse_layouts_with_bases(text, root_ns='RE'):
+def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
     """Parse -fdump-record-layouts-complete output.
 
     Returns:
@@ -767,6 +863,7 @@ def _parse_layouts_with_bases(text, root_ns='RE'):
         sizeof_bytes = int(m_sz.group(1))
 
         type_name = ''
+        record_kind = 'struct'
         fields = []
         bases = []
         has_vtable = False
@@ -795,10 +892,11 @@ def _parse_layouts_with_bases(text, root_ns='RE'):
 
             # Record header
             if not first_seen and indent == 1:
-                m_rec = re.match(r'(?:class|struct|union)\s+(.+?)\s*$', content)
+                m_rec = re.match(r'(class|struct|union)\s+(.+?)\s*$', content)
                 if m_rec:
                     first_seen = True
-                    raw_name = _KW_STRIP_RE.sub('', m_rec.group(1)).strip()
+                    record_kind = m_rec.group(1)
+                    raw_name = _KW_STRIP_RE.sub('', m_rec.group(2)).strip()
                     raw_name = re.sub(r'\s*\(empty\)\s*$', '', raw_name)
                     type_name = _qualify_type(raw_name, root_ns)
                 continue
@@ -875,7 +973,8 @@ def _parse_layouts_with_bases(text, root_ns='RE'):
 
         if type_name:
             non_bf_fields = [f for f in fields if '_bf_bit_offset' not in f]
-            _backfill_sizes(non_bf_fields, sizeof_bytes)
+            _backfill_sizes(non_bf_fields, sizeof_bytes,
+                            record_kind=record_kind, pointer_size=pointer_size)
             for f in fields:
                 if '_bf_bit_offset' in f:
                     f['type'] = 'bf:{}:{}'.format(f.pop('_bf_bit_offset'), f.pop('_bf_width'))
@@ -885,21 +984,26 @@ def _parse_layouts_with_bases(text, root_ns='RE'):
                 'fields': fields,
                 'bases': bases,
                 'has_vtable': has_vtable,
+                'record_kind': record_kind,
             }
 
     return results
 
 
 
-def _backfill_sizes(fields, total_size):
+def _backfill_sizes(fields, total_size, record_kind='struct', pointer_size=8):
     _NATURAL = {
         'bool': 1, 'i8': 1, 'u8': 1,
         'i16': 2, 'u16': 2,
         'i32': 4, 'u32': 4, 'f32': 4,
         'i64': 8, 'u64': 8, 'f64': 8,
-        'ptr': 8,
+        'ptr': pointer_size, 'usize': pointer_size, 'isize': pointer_size,
     }
     for i, f in enumerate(fields):
+        if record_kind == 'union':
+            natural = _NATURAL.get(f.get('type', ''), 0)
+            f['size'] = natural or total_size
+            continue
         next_off = fields[i + 1]['offset'] if i + 1 < len(fields) else total_size
         computed = max(next_off - f['offset'], 0)
         natural = _NATURAL.get(f.get('type', ''), 0)
@@ -971,9 +1075,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
         if not layout and ns_prefix:
             layout = layouts.get(ns_prefix + full_name)
         if not layout:
-            for lname, ldata in layouts_by_short.get(ast['name'], []):
-                layout = ldata
-                break
+            short_candidates = layouts_by_short.get(ast['name'], [])
+            if len(short_candidates) == 1:
+                layout = short_candidates[0][1]
 
         key = full_name
 
@@ -985,6 +1089,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
             structs[key] = {
                 'name': ast['name'],
                 'full_name': key,
+                'record_kind': layout.get('record_kind', ast.get('record_kind', 'struct')),
                 'size': layout['size'],
                 'category': ast['category'],
                 'fields': layout['fields'],
@@ -999,6 +1104,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
             structs[key] = {
                 'name': ast['name'],
                 'full_name': key,
+                'record_kind': ast.get('record_kind', 'struct'),
                 'size': 0,
                 'category': ast['category'],
                 'fields': [],
@@ -1044,6 +1150,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
         structs[lname] = {
             'name': short,
             'full_name': lname,
+            'record_kind': ldata.get('record_kind', 'struct'),
             'size': ldata['size'],
             'category': category,
             'fields': ldata['fields'],
@@ -1610,8 +1717,7 @@ def _dump_vtable_layouts(structs, header_path, parse_args, clang_binary,
         # Stage 1: dry-run with -fsyntax-only to identify bad declarations
         with open(spath_dry, 'w', encoding='utf-8') as f:
             f.write(_emit(candidates))
-        cmd_dry = [clang_binary, '--target=x86_64-pc-windows-msvc',
-                   '-fsyntax-only', '-ferror-limit=0'] + parse_args + [spath_dry]
+        cmd_dry = [clang_binary, '-fsyntax-only', '-ferror-limit=0'] + parse_args + [spath_dry]
         if verbose:
             print('Pass 4: dry-run vtable dump candidates ({} classes)...'.format(len(candidates)))
         r_dry = subprocess.run(cmd_dry, capture_output=True, text=True,
@@ -1633,15 +1739,18 @@ def _dump_vtable_layouts(structs, header_path, parse_args, clang_binary,
         # Stage 2: emit-llvm with vtable layout dump
         with open(spath_clean, 'w', encoding='utf-8') as f:
             f.write(_emit(cleaned))
-        cmd = [clang_binary, '--target=x86_64-pc-windows-msvc',
-               '-S', '-emit-llvm', '-o', os.devnull,
+        cmd = [clang_binary, '-S', '-emit-llvm', '-o', os.devnull,
                '-Xclang', '-fdump-vtable-layouts',
                '-ferror-limit=0'] + parse_args + [spath_clean]
         r = subprocess.run(cmd, capture_output=True, text=True,
                            encoding='utf-8', errors='replace')
-        if r.returncode != 0 and not r.stdout:
+        # -ferror-limit=0 codegen: residual instantiation errors do not
+        # invalidate the vtable layouts clang did emit; gate on empty output
+        # rather than exit status.
+        if r.returncode != 0 and not r.stdout.strip():
             if verbose:
-                print('  clang vtable codegen failed; skipping enrichment')
+                print('  clang vtable codegen produced no output '
+                      '(exit {}); skipping'.format(r.returncode))
             return {}, {}
     finally:
         for p in (spath_dry, spath_clean):
@@ -1896,6 +2005,7 @@ def _add_opaque_for_forward_decls(structs, enums, root_ns, category_prefix, verb
         structs[name] = {
             'name':       name.split('::')[-1],
             'full_name':  name,
+            'record_kind': 'struct',
             'size':       0,
             'category':   category,
             'fields':     [],
@@ -1933,7 +2043,7 @@ def _store_vtable_secondaries(structs, secondary_layouts, verbose=False):
 
 
 def _force_template_layouts(structs, header_path, parse_args, clang_binary,
-                            root_ns, verbose):
+                            root_ns, verbose, pointer_size=8):
     """Force clang to emit record layouts for empty template placeholders.
 
     For each placeholder ``T<...>`` whose layout is unknown, emit a synthetic
@@ -1995,9 +2105,25 @@ def _force_template_layouts(structs, header_path, parse_args, clang_binary,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace')
-        layouts = _parse_layouts_with_bases(result.stdout, root_ns=root_ns)
+        # This pass compiles with -ferror-limit=0 precisely because the
+        # candidate set always contains un-instantiable names, so clang
+        # always exits nonzero.  Every layout clang *did* dump comes from a
+        # record it completed, so partial output is safe -- gate only on
+        # producing nothing at all.
+        layouts = _parse_layouts_with_bases(
+            result.stdout, root_ns=root_ns, pointer_size=pointer_size)
+        if result.returncode != 0 and not layouts:
+            if verbose:
+                print('  forced-layout clang pass produced no layouts '
+                      '(exit {}); skipping'.format(result.returncode))
+            return 0
         if verbose:
-            print('  Forced layout dump: {} new layouts'.format(len(layouts)))
+            if result.returncode != 0:
+                print('  Forced layout dump: {} new layouts ({} '
+                      'un-instantiable candidates tolerated)'.format(
+                          len(layouts), result.stderr.count(': error:')))
+            else:
+                print('  Forced layout dump: {} new layouts'.format(len(layouts)))
     finally:
         try:
             os.unlink(tmp_path)
@@ -2019,6 +2145,7 @@ def _force_template_layouts(structs, header_path, parse_args, clang_binary,
         st['bases']      = [bname for bname, _ in ldata['bases']]
         st['pdb_bases']  = ldata['bases']
         st['has_vtable'] = ldata['has_vtable']
+        st['record_kind'] = ldata.get('record_kind', st.get('record_kind', 'struct'))
         filled += 1
     return filled
 
@@ -2143,7 +2270,8 @@ def _args_substitutable(donor_args, recipient_args):
 def collect_types(header_path, include_path, parse_args,
                   verbose=False, clang_binary=None,
                   root_namespace='RE', category_prefix='/CommonLibSSE',
-                  extra_scope_paths=None):
+                  extra_scope_paths=None, target_arch=None,
+                  allow_partial=False):
     """Parse C++ headers via clang.exe and collect type definitions.
 
     Two-pass approach:
@@ -2185,6 +2313,11 @@ def collect_types(header_path, include_path, parse_args,
     if verbose:
         print('Using clang: {}'.format(clang_binary))
 
+    parse_args, abi = _normalize_abi_args(parse_args, target_arch)
+    if verbose:
+        print('Target ABI: {} ({}-byte pointers, {})'.format(
+            abi['arch'], abi['pointer_size'], abi['triple']))
+
     header_fwd = header_path.replace('\\', '/')
 
     # --- Pass 1: AST dump for enums and virtual methods ---
@@ -2196,6 +2329,9 @@ def collect_types(header_path, include_path, parse_args,
         header_fwd,
     ]
     result_ast = subprocess.run(cmd_ast, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    if result_ast.returncode != 0 and not allow_partial:
+        raise RuntimeError('clang AST extraction failed (exit {}):\n{}'.format(
+            result_ast.returncode, result_ast.stderr[-8000:]))
     ast_text = result_ast.stdout
     if verbose:
         print('  AST dump: {} lines'.format(ast_text.count('\n')))
@@ -2218,11 +2354,15 @@ def collect_types(header_path, include_path, parse_args,
         header_fwd,
     ]
     result_layout = subprocess.run(cmd_layout, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    if result_layout.returncode != 0 and not allow_partial:
+        raise RuntimeError('clang record-layout extraction failed (exit {}):\n{}'.format(
+            result_layout.returncode, result_layout.stderr[-8000:]))
     layout_text = result_layout.stdout
     if verbose:
         print('  Layout dump: {} lines'.format(layout_text.count('\n')))
 
-    layouts = _parse_layouts_with_bases(layout_text, root_ns=root_namespace)
+    layouts = _parse_layouts_with_bases(
+        layout_text, root_ns=root_namespace, pointer_size=abi['pointer_size'])
     if verbose:
         if root_namespace:
             ns_prefix = root_namespace + '::'
@@ -2277,6 +2417,7 @@ def collect_types(header_path, include_path, parse_args,
             if _display not in structs and _display not in enums:
                 structs[_display] = {
                     'name': _display, 'full_name': _display, 'size': 0,
+                    'record_kind': 'struct',
                     'category': tmpl_category, 'fields': [], 'bases': [],
                     'has_vtable': False,
                 }
@@ -2292,7 +2433,8 @@ def collect_types(header_path, include_path, parse_args,
 
         _forced = _force_template_layouts(
             structs, header_path, parse_args, clang_binary,
-            root_ns=root_namespace, verbose=verbose)
+            root_ns=root_namespace, verbose=verbose,
+            pointer_size=abi['pointer_size'])
         if _forced:
             print('Forced layout for {} template instantiations via synthesis pass'.format(_forced))
     except ImportError:
@@ -2321,5 +2463,8 @@ def collect_types(header_path, include_path, parse_args,
     _add_opaque_for_forward_decls(
         structs, enums, root_ns=root_namespace,
         category_prefix=category_prefix, verbose=verbose)
+
+    for st in structs.values():
+        st['pointer_size'] = abi['pointer_size']
 
     return enums, structs, template_source

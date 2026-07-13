@@ -31,7 +31,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-LLVM_UNDNAME = r"C:\Program Files\LLVM\bin\llvm-undname.exe"
+from paths import executable
+LLVM_UNDNAME = str(executable('BGS_LLVM_UNDNAME', 'llvm-undname',
+                              'tools/llvm/bin/llvm-undname.exe'))
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +165,10 @@ def demangle_batch(mangled_list, batch=100):
         except Exception:
             for m in chunk: out[m] = m
             continue
+        if r.returncode != 0:
+            for m in chunk:
+                out[m] = m
+            continue
         # llvm-undname echoes "<mangled>\n<demangled>\n"
         lines = r.stdout.splitlines()
         for j in range(0, len(lines) - 1, 2):
@@ -177,7 +183,7 @@ def demangle_batch(mangled_list, batch=100):
 # ---------------------------------------------------------------------------
 
 def load_pc_vtable_sizes(path: Path) -> dict:
-    """Parse `fnv_pc_vtables.txt` (`VTABLE|VA|class|N vfuncs` headers)."""
+    """Parse all physical PC table sizes without last-wins class collapse."""
     out = {}
     if not path.is_file():
         return out
@@ -189,7 +195,7 @@ def load_pc_vtable_sizes(path: Path) -> dict:
             cls = parts[2].strip()
             n = parts[3].strip().split()[0]
             try:
-                out[cls] = int(n)
+                out.setdefault(cls, []).append(int(n))
             except ValueError:
                 pass
     return out
@@ -235,11 +241,9 @@ def main():
             cls = vftable_class_name(mangled)
             base = vftable_base_name(mangled)
             if cls and base:
-                # Composite key encodes "Class's view of Base" --
-                # downstream matching can pair against PC FNV vtables
-                # via the same composite (we'll emit them with the
-                # ``Class::Base`` joined key).
-                secondary_vts.append((rva, f'{cls}::{base}', mangled))
+                # V2 keeps class and base-subobject in separate fields; never
+                # collapse identity into a class-keyed JSON property.
+                secondary_vts.append((rva, cls, mangled))
     primary_vts.sort()
     secondary_vts.sort()
     all_vt_rvas.sort()
@@ -269,8 +273,11 @@ def main():
         max_slots = min((next_vt[rva] - rva) // ptr_size, 256)
         # Cap to PC FNV vtable count when known -- avoids over-reading past
         # the real vtable into adjacent non-symbolic data.
-        if cls in pc_sizes:
-            max_slots = min(max_slots, pc_sizes[cls])
+        # A class can own multiple primary/secondary tables.  The legacy PC
+        # text lacks a subobject tag, so only use its size as a cap when the
+        # class has exactly one physical table.
+        if cls in pc_sizes and len(pc_sizes[cls]) == 1:
+            max_slots = min(max_slots, pc_sizes[cls][0])
         slots = []
         for s in range(max_slots):
             entry = data[off + s * ptr_size: off + s * ptr_size + ptr_size]
@@ -286,11 +293,18 @@ def main():
             # names to slots that happen to land between unrelated functions
             # (a vtable slot pointer should be exactly the function entry).
             name = publics.get(target_rva)
-            slots.append(name or f'__unnamed_{target_rva:08x}')
+            slots.append({'m': name or f'__unnamed_{target_rva:08x}',
+                          'rva': target_rva})
             if not name:
                 n_unnamed_slots += 1
         if slots:
-            layouts[cls] = slots
+            # A list, not a class-keyed dict: duplicate physical tables are
+            # semantically distinct and must never overwrite one another.
+            layouts.setdefault(cls, []).append({
+                'rva': rva,
+                'mangled': mangled,
+                'slots': slots,
+            })
             n_classes_named += 1
             n_total_slots += len(slots)
 
@@ -299,15 +313,37 @@ def main():
 
     # Demangle method names for human readability + downstream matching
     print('Demangling method names via llvm-undname...')
-    all_mangled = sorted({m for slots in layouts.values() for m in slots
-                          if m.startswith('?')})
+    all_mangled = sorted({s['m'] for tables in layouts.values()
+                          for table in tables for s in table['slots']
+                          if s['m'].startswith('?')})
     demangled = demangle_batch(all_mangled, batch=200)
     print(f'  demangled {len(demangled)} unique names')
 
     # Final output: per-class, slot-ordered list of {mangled, demangled}
-    output = {}
-    for cls, slots in layouts.items():
-        output[cls] = [{'m': m, 'd': demangled.get(m, m)} for m in slots]
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from vtable_schema import make_document
+    output_tables = []
+    for cls, tables in layouts.items():
+        for table in tables:
+            mangled = table['mangled']
+            subobject = vftable_base_name(mangled)
+            slots = []
+            for slot in table['slots']:
+                m = slot['m']
+                slots.append({'m': m, 'd': demangled.get(m, m),
+                              'rva': slot['rva']})
+            output_tables.append({
+                'id': 'xbox:0x%08X:%s:%s' %
+                      (table['rva'], cls, subobject or 'primary'),
+                'class': cls,
+                'subobject': subobject,
+                'rva': table['rva'],
+                'mangled': mangled,
+                'slots': slots,
+            })
+    output = make_document(output_tables, address_coordinate='RVA',
+                           image_base=image_base, machine=machine,
+                           pointer_size=ptr_size)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open('w', encoding='utf-8') as f:

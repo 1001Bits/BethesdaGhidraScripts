@@ -29,6 +29,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import ctypes
 from pathlib import Path
@@ -37,7 +38,7 @@ import comtypes
 import comtypes.client
 
 
-DIA_DLL = r"C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\bin\amd64\msdia140.dll"
+DIA_DLL = os.environ.get('BGS_DIA_DLL', '')
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,8 @@ DIA_DLL = r"C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\bin\
 # ---------------------------------------------------------------------------
 
 def _make_dia_source():
+    if not DIA_DLL or not Path(DIA_DLL).is_file():
+        raise FileNotFoundError('set BGS_DIA_DLL to msdia140.dll')
     tlb = comtypes.client.GetModule(DIA_DLL)
     DiaSource_CLSID = comtypes.GUID("{E6756135-1E65-4D17-8576-610761398C3C}")
     IClassFactory_IID = comtypes.GUID("{00000001-0000-0000-C000-000000000046}")
@@ -177,7 +180,7 @@ def main():
     n_total = enum_fn.Count
     print(f'  function symbols: {n_total:,}')
 
-    out = {}
+    entries = []
     n_with_locals = 0
     n_locals_total = 0
     n_params_total = 0
@@ -217,23 +220,36 @@ def main():
             elif dk == 1:     # Local
                 locals_.append(entry)
         if params or locals_:
-            # Keep first occurrence per unique name; overloads collapse
-            if name not in out:
-                out[name] = {
-                    'rva':    rva,
-                    'len':    fn_len,
-                    'params': params,
-                    'locals': locals_,
-                }
-                n_with_locals += 1
-                n_params_total += len(params)
-                n_locals_total += len(locals_)
+            # Preserve every overload/local scope.  ``name`` alone is not a
+            # function identity; the PDB RVA and DIA symbol id are stable
+            # disambiguators within this PDB.
+            try:
+                sym_id = int(f.symIndexId)
+            except Exception:
+                sym_id = 0
+            try:
+                decorated = f.undecoratedName or ''
+            except Exception:
+                decorated = ''
+            entries.append({
+                'name': name,
+                'rva': rva,
+                'len': fn_len,
+                'sym_id': sym_id,
+                'identity': decorated,
+                'params': params,
+                'locals': locals_,
+            })
+            n_with_locals += 1
+            n_params_total += len(params)
+            n_locals_total += len(locals_)
 
     print(f'  functions with params/locals: {n_with_locals:,}')
     print(f'  total params:                 {n_params_total:,}')
     print(f'  total locals:                 {n_locals_total:,}')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    out = {'schema': 'fnv-dia-locals-v2', 'entries': entries}
     out_path.write_text(json.dumps(out), encoding='utf-8')
     print(f'Wrote {out_path}: {out_path.stat().st_size:,} bytes')
 

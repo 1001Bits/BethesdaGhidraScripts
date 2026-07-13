@@ -51,7 +51,7 @@ def build_prefix_index(text_bytes, k=6):
     """Dict[bytes] -> list[int]: positions of each k-byte prefix in .text."""
     idx = {}
     n = len(text_bytes) - k
-    for i in range(n):
+    for i in range(n + 1):
         p = bytes(text_bytes[i:i + k])
         lst = idx.get(p)
         if lst is None:
@@ -79,27 +79,28 @@ def _unique_match(src_bytes, window, tgt_text, tgt_idx, prefix_k=6):
     return found if found >= 0 else None
 
 
-_CS = None
+_CS = {}
 
 
-def _get_cs():
-    global _CS
-    if _CS is None:
+def _get_cs(pointer_size=8):
+    key = int(pointer_size)
+    if key not in _CS:
         import capstone
-        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+        mode = capstone.CS_MODE_32 if key == 4 else capstone.CS_MODE_64
+        md = capstone.Cs(capstone.CS_ARCH_X86, mode)
         md.detail = True
-        _CS = md
-    return _CS
+        _CS[key] = md
+    return _CS[key]
 
 
-def compute_masked_sig(text, offset, window=48):
+def compute_masked_sig(text, offset, window=48, pointer_size=8):
     """Return (sig_bytes, mask_bytes) of length `window`, mask=0 for wildcards.
 
     Wildcards rel32 operands in call/jmp/Jcc and rip-relative mem disp32 —
     those bytes drift between different builds even for identical functions.
     """
     import capstone
-    cs = _get_cs()
+    cs = _get_cs(pointer_size)
     # Disassemble a bit extra so we never truncate mid-instruction inside the window.
     extra = 16
     data = bytes(text[offset:offset + window + extra])
@@ -109,27 +110,30 @@ def compute_masked_sig(text, offset, window=48):
         if ins.address >= window:
             break
         end = ins.address + ins.size
-        # rel32 immediate for control-flow ops (call/jmp/jcc) → last 4 bytes of ins.
-        is_cf_rel32 = False
-        if ins.size >= 5:
-            mnem = ins.mnemonic
-            if mnem in ('call', 'jmp') or (mnem.startswith('j') and ins.size == 6):
-                is_cf_rel32 = True
-        if is_cf_rel32:
-            for k in range(4):
-                p = end - 4 + k
+        # Use Capstone's exact encoding offsets.  Displacements/immediates are
+        # not necessarily the final four bytes once prefixes/SIB/imm operands
+        # are involved.
+        mnem = ins.mnemonic
+        is_relative_cf = mnem in ('call', 'jmp') or mnem.startswith('j')
+        imm_off = getattr(ins, 'imm_offset', 0)
+        imm_size = getattr(ins, 'imm_size', 0)
+        if is_relative_cf and imm_off and imm_size:
+            for k in range(imm_size):
+                p = ins.address + imm_off + k
                 if 0 <= p < window:
                     sig[p] = 0
                     mask[p] = 0
-        # rip-relative memory displacement → last 4 bytes of ins.
+        # RIP-relative memory displacement, again using exact encoding data.
         try:
             ops = ins.operands
         except Exception:
             ops = []
         for op in ops:
             if op.type == capstone.x86.X86_OP_MEM and op.mem.base == capstone.x86.X86_REG_RIP:
-                for k in range(4):
-                    p = end - 4 + k
+                disp_off = getattr(ins, 'disp_offset', 0)
+                disp_size = getattr(ins, 'disp_size', 0)
+                for k in range(disp_size):
+                    p = ins.address + disp_off + k
                     if 0 <= p < window:
                         sig[p] = 0
                         mask[p] = 0
@@ -146,6 +150,8 @@ def _unique_match_masked(src_sig, src_mask, window, tgt_text, tgt_idx, prefix_k=
     OG↔NG cross-build masked pairs with 180 K source RVAs).
     """
     import numpy as np
+    if sum(1 for b in src_mask[:window] if b) < max(12, window // 2):
+        return None
     if any(b == 0 for b in src_mask[:prefix_k]):
         return None
     prefix = bytes(src_sig[:prefix_k])
@@ -174,7 +180,8 @@ def _unique_match_masked(src_sig, src_mask, window, tgt_text, tgt_idx, prefix_k=
 def port_symbols(src_rvas, src_text_rva, src_text,
                  tgt_text_rva, tgt_text, tgt_idx,
                  window=32, prefix_k=6, masked=False, progress_every=0,
-                 src_sig_cache=None):
+                 src_sig_cache=None, pointer_size=8,
+                 src_function_sizes=None, target_function_starts=None):
     """Port list of (name, src_rva) → list of (name, tgt_rva).
 
     src_rva / tgt_rva are PE RVAs (not absolute VAs).  Skips symbols that
@@ -188,8 +195,10 @@ def port_symbols(src_rvas, src_text_rva, src_text,
     repeated per target, doubling the runtime when going 1->N).
     Populated in place when ``masked=True``.
     """
-    ported = []
-    stats = {'ok': 0, 'missing_src': 0, 'no_prefix': 0, 'ambiguous_or_zero': 0}
+    proposals = []
+    stats = {'ok': 0, 'missing_src': 0, 'no_prefix': 0,
+             'ambiguous_or_zero': 0, 'not_function_boundary': 0,
+             'crosses_function_boundary': 0, 'target_conflict': 0}
     src_text_len = len(src_text)
     processed = 0
     total = len(src_rvas)
@@ -203,12 +212,21 @@ def port_symbols(src_rvas, src_text_rva, src_text,
         if off < 0 or off + window > src_text_len:
             stats['missing_src'] += 1
             continue
+        if src_function_sizes is not None:
+            size = src_function_sizes.get(rva)
+            if size is None:
+                stats['not_function_boundary'] += 1
+                continue
+            if int(size) < window:
+                stats['crosses_function_boundary'] += 1
+                continue
         if masked:
             cache_hit = src_sig_cache is not None and rva in src_sig_cache
             if cache_hit:
                 src_sig, src_mask = src_sig_cache[rva]
             else:
-                src_sig, src_mask = compute_masked_sig(src_text, off, window=window)
+                src_sig, src_mask = compute_masked_sig(
+                    src_text, off, window=window, pointer_size=pointer_size)
                 if src_sig_cache is not None:
                     src_sig_cache[rva] = (src_sig, src_mask)
             tgt_off = _unique_match_masked(src_sig, src_mask, window, tgt_text, tgt_idx, prefix_k)
@@ -229,6 +247,24 @@ def port_symbols(src_rvas, src_text_rva, src_text,
                 else:
                     stats['ambiguous_or_zero'] += 1
                 continue
-        ported.append((name, tgt_off + tgt_text_rva))
+        target_rva = tgt_off + tgt_text_rva
+        if target_function_starts is not None and target_rva not in target_function_starts:
+            stats['not_function_boundary'] += 1
+            continue
+        proposals.append((name, target_rva, rva))
+
+    # Reciprocal ownership: different source functions/names may not silently
+    # collapse onto the same target entry.  Preserve only unambiguous targets.
+    by_target = {}
+    for name, target_rva, source_rva in proposals:
+        by_target.setdefault(target_rva, []).append((name, source_rva))
+    ported = []
+    for target_rva, claims in sorted(by_target.items()):
+        unique_sources = set(source for _name, source in claims)
+        unique_names = set(name for name, _source in claims)
+        if len(unique_sources) != 1 or len(unique_names) != 1:
+            stats['target_conflict'] += len(claims)
+            continue
+        ported.append((next(iter(unique_names)), target_rva))
         stats['ok'] += 1
     return ported, stats

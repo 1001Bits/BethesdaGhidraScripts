@@ -9,7 +9,8 @@ Pipeline:
   Types:        clang_types.py  (clang.exe AST dump + record layouts)
   Templates:    template_types.py  (template instantiation name discovery)
   Relocations:  reloc_parser.py  (regex-based, single-pass SE+AE from raw source)
-  PDB symbols:  pdb_symbols.py  (SkyrimSE.pdb public function names via pdbparse)
+  PDB symbols:  pdb_symbols.py  (identity-bound SkyrimSE.pdb public names via
+                the repository's strict MSF 7 reader)
   AE names:     skyrimae.rename  (AE address ID → name mapping, fallback)
   Script gen:   ghidra_import_gen.py  (Ghidra Jython script emitter)
 
@@ -19,11 +20,15 @@ Generates two scripts: CommonLibImport_SE.py and CommonLibImport_AE.py.
 import os
 import sys
 import re
+import hashlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'core'))
 
-from address_library import AddressLibrary, get_pe_version
-from pdb_symbols import load_pdb_names as load_se_pdb_names
+from address_library import AddressLibrary, get_pe_version, unique_reverse_ids
+from pdb_symbols import (
+    load_pdb_names as load_se_pdb_names,
+    unique_public_merge_target,
+)
 from ghidra_import_gen import (
     build_vtable_structs as _build_vtable_structs,
     inject_vtable_fields as _inject_vtable_fields,
@@ -41,10 +46,102 @@ from vtable_patcher import patch_vtable_structs as _patch_vtable_structs
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+sys.path.append(os.path.join(os.path.dirname(SCRIPT_DIR), 'commonlibsf'))
+from pe_layout import PELayout, attach_section, x64_runtime_function_starts
+from bytesig_evidence import load_validated as _load_bytesig_evidence
+from vtable_policy import allow_vtable_emission as _allow_vtable_emission
+
 COMMONLIB_INCLUDE = os.path.join(PROJECT_DIR, 'extern', 'CommonLibSSE', 'include')
 SKYRIM_H = os.path.join(COMMONLIB_INCLUDE, 'RE', 'Skyrim.h')
 RE_INCLUDE = os.path.join(COMMONLIB_INCLUDE, 'RE')
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'ghidrascripts')
+
+_TARGET_DIRS = {'se': 'se', 'ae': 'ae', 'svr': 'vr'}
+_TARGET_KEYS = {'se': 's', 'ae': 'a', 'svr': 'v'}
+_EXPECTED_VERSIONS = {
+    'se': (1, 5, 97, 0), 'ae': (1, 6, 1170, 0),
+    'svr': (1, 4, 15, 0),
+}
+SE_PDB_SHA256 = 'c7c168e9d7bbe481418bbca6749064687ede714f3b3e2468081f10ac59bbf252'
+SE_PDB_DERIVED_HASHES = {
+    'skyrimse_pdb_func_sigs.json': '1a03e991b7683b0a759826a831cdf2681d1a17efd161b419f60fb82ff16e5cff',
+    'skyrimse_pdb_types.json': 'cbd938907fe95524ce420a38736afb849ffa4a7db441a4f69e332d2653b4542e',
+    'skyrimse_pdb_enums.json': 'a38155d72fecade9e6272dfa6e4100a862e9c63f0ee71ca34c7157b52f0f77d9',
+}
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _trusted_pdb_derived(path, pdb_identity_valid):
+    expected = SE_PDB_DERIVED_HASHES.get(os.path.basename(path))
+    return bool(pdb_identity_valid and expected and os.path.isfile(path) and
+                _file_sha256(path) == expected)
+
+
+def _target_binding(version):
+    from binary_identity import artifact_is_fresh, inspect_pe, read_manifest
+    directory = os.path.join(PROJECT_DIR, 'exes', 'skyrim',
+                             _TARGET_DIRS[version])
+    if not os.path.isdir(directory):
+        return None, None
+    sources = [os.path.join(directory, n) for n in sorted(os.listdir(directory))
+               if n.lower().endswith('.exe') and 'unpacked' not in n.lower()]
+    if len(sources) != 1:
+        return None, None
+    source = sources[0]
+    stem = os.path.splitext(os.path.basename(source))[0]
+    artifacts = [os.path.join(directory, n) for n in sorted(os.listdir(directory))
+                 if 'unpacked' in n.lower() and n.lower().startswith(stem.lower())
+                 and not n.lower().endswith('.identity.json')]
+    fresh = [p for p in artifacts if artifact_is_fresh(source, p)]
+    if len(fresh) > 1:
+        raise RuntimeError('multiple fresh Steamless artifacts for {}'.format(source))
+    if fresh:
+        binding = read_manifest(fresh[0] + '.identity.json')
+        analyzed = fresh[0]
+    else:
+        binding = inspect_pe(source)
+        analyzed = source
+    source_manifest = binding.get('source', binding)
+    actual = tuple(source_manifest.get('file_version') or ())
+    actual = (actual + (0, 0, 0, 0))[:4]
+    if actual != _EXPECTED_VERSIONS[version]:
+        raise RuntimeError('Skyrim {} executable version {} != expected {}'.format(
+            version, actual, _EXPECTED_VERSIONS[version]))
+    return binding, analyzed
+
+
+def _load_target_layouts():
+    out = {}
+    for version, key in _TARGET_KEYS.items():
+        _, analyzed = _target_binding(version)
+        if analyzed is None:
+            continue
+        layout = PELayout.read(analyzed)
+        if layout.pointer_size != 8 or layout.machine != 0x8664:
+            raise RuntimeError('Skyrim {} target is not AMD64'.format(version))
+        out[key] = layout
+    return out
+
+
+def _validate_symbol_offsets(symbol, declared_kind, layouts):
+    for key in ('s', 'a', 'v'):
+        layout = layouts.get(key)
+        if key not in symbol or layout is None:
+            continue
+        actual, section = layout.classify_rva(symbol[key])
+        if actual == 'unmapped' or actual != declared_kind:
+            symbol.setdefault('rejected_offsets', {})[key] = actual
+            del symbol[key]
+            continue
+        symbol.setdefault('sections', {})[key] = section
+        symbol.setdefault('target_sha256', {})[key] = layout.sha256
 
 # ---------------------------------------------------------------------------
 # AE rename database
@@ -94,7 +191,6 @@ VERSIONS = {
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_VR.py'),
     },
 }
-
 
 
 # A descriptor that ends in a single-letter uppercase qualified path is an
@@ -164,7 +260,7 @@ def _enrich_symbols_with_sigs(symbols_json, structs):
 
 def run_version(version, symbols_json, fallback_symbols_json='[]',
                 address_lib_map=None, pdb_structs=None, pdb_enums=None,
-                gog_variants=None):
+                gog_variants=None, target_manifest=None):
     from clang_types import collect_types, _setup_include_paths
 
     cfg = VERSIONS[version]
@@ -240,29 +336,39 @@ def run_version(version, symbols_json, fallback_symbols_json='[]',
 
     symbols_json = _enrich_symbols_with_sigs(symbols_json, structs)
 
-    vtable_structs = _build_vtable_structs(structs)
-    _inject_vtable_fields(structs, vtable_structs)
+    shift_map_path = os.path.join(
+        SCRIPT_DIR, 'refs', 'shift_{}.json'.format(version))
+    anchors_csv = os.path.join(
+        SCRIPT_DIR, 'anchors', '{}.csv'.format(version))
+    emit_vtables, vtable_reason = _allow_vtable_emission(
+        version, anchors_csv, shift_map_path)
+    vtable_structs = _build_vtable_structs(structs) if emit_vtables else {}
+    if emit_vtables:
+        _inject_vtable_fields(structs, vtable_structs)
+    else:
+        print('VTABLES DISABLED: {}'.format(vtable_reason))
     _flatten_structs(structs)
     _apply_secondary_vtable_typing(structs)
 
-    # Apply per-version shift map (if one exists) to remap vtable struct
-    # slot offsets onto this binary's actual layout.  Missing shift map ->
-    # fall back to header-shaped layout; the anchor verifier below will
-    # catch any silent drift the missing map would have corrected.
-    shift_map_path = os.path.join(SCRIPT_DIR, 'refs', 'shift_{}.json'.format(version))
-    shift_map = _load_shift_map_json(shift_map_path)
-    if shift_map:
-        print('Applying per-version vtable shift map: {}'.format(shift_map_path))
-        _patch_vtable_structs(vtable_structs, shift_map, version)
-
-    # Verify hand-checked vtable slot anchors for this runtime before emitting
-    # the script.  Catches silent layout drift (e.g. VR insertion points) that
-    # the shared-header AST parse cannot otherwise see.  Fatal on mismatch.
-    anchors_csv = os.path.join(SCRIPT_DIR, 'anchors', '{}.csv'.format(version))
-    _verify_anchors_or_exit(version, vtable_structs, anchors_csv)
+    if emit_vtables:
+        # No legacy map is accepted on the correctness path.  This branch is
+        # retained for a future identity-bound map schema.
+        shift_map = _load_shift_map_json(shift_map_path)
+        if shift_map:
+            raise RuntimeError('unvalidated shift map reached vtable emitter')
+        if not os.path.isfile(anchors_csv):
+            raise RuntimeError(
+                'required vtable anchors are missing: {}'.format(anchors_csv))
+        _verify_anchors_or_exit(version, vtable_structs, anchors_csv)
 
     print('Generating Ghidra script...')
-    n_enums, n_structs = generate_script(enums, structs, vtable_structs, output_path, version, symbols_json, fallback_symbols_json, template_source, address_lib_map=address_lib_map)
+    if target_manifest is None:
+        raise RuntimeError('refusing to emit unbound Skyrim importer {}'.format(version))
+    n_enums, n_structs = generate_script(
+        enums, structs, vtable_structs, output_path, version, symbols_json,
+        fallback_symbols_json, template_source,
+        address_lib_map=address_lib_map,
+        target_manifest=target_manifest)
     print('Output: {} ({} enums, {} structs)'.format(output_path, n_enums, n_structs))
 
     # --- GOG / extra-AE-build variants ---
@@ -286,15 +392,23 @@ def run_version(version, symbols_json, fallback_symbols_json='[]',
                 ns = dict(s)
                 ns['a'] = build_db[ai]
                 ns['ai'] = ai
+                # Section/hash evidence described the 1.6.1170 source RVA and
+                # must never be carried onto a re-keyed GOG address.
+                ns.pop('sections', None)
+                ns.pop('target_sha256', None)
+                ns.pop('kind_mismatch', None)
+                ns['address_library_variant'] = label
                 out.append(ns)
                 kept += 1
             return _json.dumps(out, separators=(',', ':')), kept, dropped
         sym_blob, k1, d1 = _rekey(symbols_json)
         fb_blob, k2, d2 = _rekey(fallback_symbols_json)
         variant_path = output_path.replace('.py', '_{}.py'.format(label))
-        generate_script(enums, structs, vtable_structs, variant_path,
-                        version, sym_blob, fb_blob, template_source,
-                        address_lib_map=address_lib_map)
+        # A re-keyed database is not target identity.  Do not emit a GOG
+        # importer without the exact GOG executable/artifact manifest.
+        print('SKIP {}: exact target executable is required to bind this variant'.format(
+            variant_path))
+        continue
         print('Output: {} (re-keyed {} symbols + {} fallbacks; '
               'dropped {}+{} without a {} mapping)'.format(
                   variant_path, k1, k2, d1, d2, label))
@@ -309,36 +423,76 @@ def _detect_exe_versions():
         ver_dir = os.path.join(exes_root, ver_name)
         if not os.path.isdir(ver_dir):
             continue
-        for fname in os.listdir(ver_dir):
-            if fname.lower().endswith('.exe') and 'unpacked' not in fname.lower():
-                exe_path = os.path.join(ver_dir, fname)
-                v = get_pe_version(exe_path)
-                if v:
-                    print('  Detected {} exe version: {}'.format(
-                        ver_name.upper(), '.'.join(str(x) for x in v)))
-                    if attr == 'se_ver':
-                        se_ver = v
-                    else:
-                        ae_ver = v
-                    break
+        candidates = [
+            os.path.join(ver_dir, fname)
+            for fname in sorted(os.listdir(ver_dir))
+            if (fname.lower().endswith('.exe') and
+                'unpacked' not in fname.lower() and
+                os.path.isfile(os.path.join(ver_dir, fname)))
+        ]
+        if len(candidates) > 1:
+            raise RuntimeError(
+                'ambiguous {} executables: {}'.format(
+                    ver_name.upper(), ', '.join(
+                        os.path.basename(path) for path in candidates)))
+        if not candidates:
+            continue
+        v = get_pe_version(candidates[0])
+        if not v:
+            raise RuntimeError(
+                'cannot read {} executable version: {}'.format(
+                    ver_name.upper(), candidates[0]))
+        print('  Detected {} exe version: {}'.format(
+            ver_name.upper(), '.'.join(str(x) for x in v)))
+        if attr == 'se_ver':
+            se_ver = v
+        else:
+            ae_ver = v
 
     return se_ver, ae_ver
 
 
 def main():
+    import argparse as _argparse
     import json as _json
+
+    ap = _argparse.ArgumentParser(description='Generate CommonLibSSE importers.')
+    ap.add_argument('--only', action='append', metavar='VERSION',
+                    help='generate just this runtime (se, ae, svr/vr; '
+                         'repeatable).  Default: every Skyrim runtime.')
+    cli = ap.parse_args()
+    selected = None
+    if cli.only:
+        alias = {'vr': 'svr'}
+        selected = {alias.get(v.lower(), v.lower()) for v in cli.only}
+        unknown = selected - {'se', 'ae', 'svr'}
+        if unknown:
+            ap.error('unknown runtime(s): {} (known: se, ae, vr)'.format(
+                ', '.join(sorted(unknown))))
 
     # Detect exe versions for address library selection
     print('=== Detecting exe versions ===')
     se_ver, ae_ver = _detect_exe_versions()
+    norm_se = (tuple(se_ver) + (0, 0, 0, 0))[:4] if se_ver else None
+    norm_ae = (tuple(ae_ver) + (0, 0, 0, 0))[:4] if ae_ver else None
+    if norm_se and norm_se != (1, 5, 97, 0):
+        raise RuntimeError(
+            'Local Skyrim SE is {}, but CommonLibImport_SE.py is bound to '
+            '1.5.97.0.  Refusing to substitute that address database.'.format(
+                '.'.join(str(x) for x in se_ver)))
+    if norm_ae and norm_ae != (1, 6, 1170, 0):
+        raise RuntimeError(
+            'Local Skyrim AE is {}, but the primary AE script is bound to '
+            'Steam 1.6.1170.0.  Generate/select an exact relib-backed variant '
+            'instead of applying 1170 RVAs.'.format('.'.join(str(x) for x in ae_ver)))
 
     # Load address databases (AddressLibrary picks fixed versions:
     # SE 1.5.97, AE 1.6.1170, VR 1.4.15 -- detected exe versions are
     # logged for diagnostics but don't currently feed the loader).
-    _ = (se_ver, ae_ver)  # noqa: F841 -- kept for future per-version selection
     addr_lib = AddressLibrary()
     addr_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'))
     print('SE entries: {}, AE entries: {}'.format(len(addr_lib.se_db), len(addr_lib.ae_db)))
+    target_layouts = _load_target_layouts()
 
     print('\n=== Collecting symbols via regex relocation parser ===')
     import reloc_parser as _rp
@@ -402,6 +556,7 @@ def main():
         if fs['se_off']: sym['s'] = fs['se_off']; sym_seen_se.add(fs['se_off'])
         if fs['ae_off']: sym['a'] = fs['ae_off']; sym_seen_ae.add(fs['ae_off'])
         if fs.get('vr_off'): sym['v'] = fs['vr_off']
+        _validate_symbol_offsets(sym, 'func', target_layouts)
         symbols.append(sym)
 
     # RTTI/VTABLE labels
@@ -410,62 +565,107 @@ def main():
         if lbl['se_off']: sym['s'] = lbl['se_off']; sym_seen_se.add(lbl['se_off'])
         if lbl['ae_off']: sym['a'] = lbl['ae_off']; sym_seen_ae.add(lbl['ae_off'])
         if lbl.get('vr_off'): sym['v'] = lbl['vr_off']
+        _validate_symbol_offsets(sym, 'label', target_layouts)
         symbols.append(sym)
 
-    name_to_sym = {s['n']: s for s in symbols}
+    name_to_syms = {}
+    for symbol in symbols:
+        name_to_syms.setdefault(symbol['n'], []).append(symbol)
 
     # AE rename database fallback
     rename_db = os.path.join(PROJECT_DIR, 'extern', 'AddressLibraryDatabase', 'skyrimae.rename')
     ae_rename = load_ae_rename_db(rename_db, addr_lib.ae_db)
+    ae_name_counts = {}
+    for rename_name in ae_rename.values():
+        ae_name_counts[rename_name] = ae_name_counts.get(rename_name, 0) + 1
     rename_added = rename_merged = 0
     for ae_off, name in ae_rename.items():
         if ae_off in sym_seen_ae:
             continue
-        if name in name_to_sym:
-            existing = name_to_sym[name]
+        candidates = name_to_syms.get(name, [])
+        if len(candidates) == 1 and ae_name_counts.get(name) == 1:
+            existing = candidates[0]
             if not existing.get('a'):
                 existing['a'] = ae_off
+                _validate_symbol_offsets(existing, existing['t'], target_layouts)
+                if not existing.get('a'):
+                    continue
                 sym_seen_ae.add(ae_off)
                 rename_merged += 1
             continue
-        sym_seen_ae.add(ae_off)
         sym = {'n': name, 't': 'func', 'sig': '', 'a': ae_off, 'src': 'skyrimae.rename'}
+        ae_layout = target_layouts.get('a')
+        if ae_layout is not None:
+            if not attach_section(sym, 'a', ae_layout, declared_kind='func'):
+                continue
+            sym.setdefault('target_sha256', {})['a'] = ae_layout.sha256
+        sym_seen_ae.add(ae_off)
         symbols.append(sym)
-        name_to_sym[name] = sym
+        name_to_syms.setdefault(name, []).append(sym)
         rename_added += 1
     print('Added {} new symbols from AE rename, merged AE offset into {} existing'.format(
         rename_added, rename_merged))
 
-    # SE PDB public symbols fallback.  Prefer the pdbparse-backed loader
-    # (rich, parses S_PUB32 records directly) but fall back to the
-    # llvm-pdbutil pretty --externals dump when pdbparse isn't available
-    # (e.g. Python 3.12+ where the ``construct`` dep won't install).
+    # SE PDB public symbols.  The loader verifies the target PE CodeView
+    # GUID/age and applies OMAP_FROM_SRC.  A detached pretty-text dump is not
+    # accepted because it cannot prove which executable its RVAs describe.
     se_pdb_path = os.path.join(PROJECT_DIR, 'extras', 'SkyrimSE.pdb')
-    se_pdb_names = load_se_pdb_names(se_pdb_path)
+    _se_binding, se_target_pe = _target_binding('se')
+    pdb_file_valid = (os.path.isfile(se_pdb_path) and
+                      _file_sha256(se_pdb_path) == SE_PDB_SHA256)
+    # GUID/age are not cryptographic integrity: a modified PDB can retain
+    # them.  Verify the pinned full-file hash before allowing its names into
+    # the symbol pool, not merely before consuming derived JSON later.
+    se_pdb_names = (load_se_pdb_names(se_pdb_path, pe_path=se_target_pe)
+                    if se_target_pe and pdb_file_valid else {})
+    pdb_identity_valid = bool(se_pdb_names and pdb_file_valid)
     if not se_pdb_names:
-        from pdb_publics_skyrim import load_pdb_names as _load_via_pretty
-        se_pdb_names = _load_via_pretty()
-        if se_pdb_names:
-            print('  Using llvm-pdbutil pretty fallback: {} publics'.format(
-                len(se_pdb_names)))
+        print('  SkyrimSE PDB names unavailable or PE CodeView GUID/age did not match; '
+              'unbound pretty-dump fallback is intentionally disabled.')
     pdb_added = pdb_merged = 0
-    for se_off, name in se_pdb_names.items():
+    pdb_quarantined = 0
+    for se_off, public in se_pdb_names.items():
+        name = public.name
         if se_off in sym_seen_se:
             continue
-        if name in name_to_sym:
-            existing = name_to_sym[name]
-            if not existing.get('s'):
-                existing['s'] = se_off
+        existing = unique_public_merge_target(
+            public, name_to_syms.get(name, []))
+        if (existing is not None and existing.get('t') == 'func' and
+                not existing.get('s')):
+            existing['s'] = se_off
+            _validate_symbol_offsets(existing, existing['t'], target_layouts)
+            if existing.get('s') == se_off:
                 sym_seen_se.add(se_off)
                 pdb_merged += 1
-            continue
+                continue
+        # A same-name candidate already bound to another SE RVA is evidence of
+        # a collision, not a reason to discard this exact PDB public.
+        # Ambiguous overload/name-only records remain attached solely to the
+        # exact SE RVA.  Decorated identity is retained as provenance, but no
+        # AE/VR coordinate can be inherited through a display-name collision.
+        sym = {
+            'n': name, 't': 'func', 'sig': '', 's': se_off,
+            'src': 'SkyrimSE.pdb',
+            'pdb_decorated_name': public.decorated_name,
+            'pdb_aliases': list(public.aliases),
+            'pdb_merge_safe': public.merge_safe,
+        }
+        se_layout = target_layouts.get('s')
+        if se_layout is not None:
+            if not attach_section(sym, 's', se_layout, declared_kind='func'):
+                continue
+            sym.setdefault('target_sha256', {})['s'] = se_layout.sha256
         sym_seen_se.add(se_off)
-        sym = {'n': name, 't': 'func', 'sig': '', 's': se_off, 'src': 'SkyrimSE.pdb'}
         symbols.append(sym)
-        name_to_sym[name] = sym
+        name_to_syms.setdefault(name, []).append(sym)
+        if not public.merge_safe or len(name_to_syms[name]) > 1:
+            pdb_quarantined += 1
         pdb_added += 1
     print('Added {} new symbols from SE PDB, merged SE offset into {} existing'.format(
         pdb_added, pdb_merged))
+    if pdb_quarantined:
+        print('  Kept {} ambiguous PDB overload/alias records SE-only'.format(
+            pdb_quarantined))
 
     # --- Structured signatures from SkyrimSE.pdb --globals ---
     # The globals stream is the only part of this PDB carrying full
@@ -473,7 +673,7 @@ def main():
     # descriptors to every SE-keyed symbol so the generated scripts apply
     # typed signatures (mirrors FNV's Xbox-PDB sig pipeline).
     sigs_path = os.path.join(SCRIPT_DIR, 'refs', 'skyrimse_pdb_func_sigs.json')
-    if os.path.isfile(sigs_path):
+    if _trusted_pdb_derived(sigs_path, pdb_identity_valid):
         import json as _j
         sys.path.insert(0, os.path.join(PROJECT_DIR, 'scripts', 'commonlibnvse'))
         try:
@@ -483,9 +683,9 @@ def main():
             enums_known = set()
             tp = os.path.join(SCRIPT_DIR, 'refs', 'skyrimse_pdb_types.json')
             ep = os.path.join(SCRIPT_DIR, 'refs', 'skyrimse_pdb_enums.json')
-            if os.path.isfile(tp):
+            if _trusted_pdb_derived(tp, pdb_identity_valid):
                 types_known = set(_j.loads(open(tp, encoding='utf-8').read()))
-            if os.path.isfile(ep):
+            if _trusted_pdb_derived(ep, pdb_identity_valid):
                 for cls in _j.loads(open(ep, encoding='utf-8').read()):
                     enums_known.add(cls)
                     enums_known.add(cls.replace('::', '_'))
@@ -514,14 +714,17 @@ def main():
             print('  WARNING: sig parser unavailable ({}); skipping '
                   'globals-sig attach'.format(e))
 
-    # Normalize __ → :: in all names
-    for s in symbols:
-        if '__' in s['n']:
-            s['n'] = re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
+    # Preserve literal ``__``.  skyrimae.rename uses it for encoded template
+    # arguments and inheritance paths; replacing every occurrence with ``::``
+    # fabricated namespaces.  Parser/PDB names already carry genuine ``::``.
 
     # Attach address-library IDs to every symbol via reverse lookup
-    se_rva_to_id = {v: k for k, v in addr_lib.se_db.items()}
-    ae_rva_to_id = {v: k for k, v in addr_lib.ae_db.items()}
+    se_rva_to_id, ambiguous_se_rvas = unique_reverse_ids(addr_lib.se_db)
+    ae_rva_to_id, ambiguous_ae_rvas = unique_reverse_ids(addr_lib.ae_db)
+    if ambiguous_se_rvas or ambiguous_ae_rvas:
+        print('Rejected ambiguous address-library reverse mappings: '
+              'SE={} AE={}'.format(
+                  len(ambiguous_se_rvas), len(ambiguous_ae_rvas)))
     id_count = 0
     for s in symbols:
         se_id = se_rva_to_id.get(s.get('s'))
@@ -575,28 +778,52 @@ def main():
         csv_path = os.path.join(SCRIPT_DIR, 'refs', csv_name)
         if not os.path.isfile(csv_path):
             return fb_json
+        layout = target_layouts.get(rva_key)
+        if layout is None:
+            print('  rejecting persisted bytesig evidence without exact target PE: {}'.format(
+                csv_name))
+            return fb_json
+        target_manifest = {
+            'sha256': layout.sha256, 'path': layout.path,
+            'machine': layout.machine, 'pointer_size': layout.pointer_size,
+            'image_base': layout.image_base, 'image_size': layout.image_size,
+        }
+        try:
+            evidence_rows, _identity = _load_bytesig_evidence(
+                csv_path, target_manifest)
+            target_starts = x64_runtime_function_starts(layout.path)
+        except (OSError, ValueError) as exc:
+            print('  rejecting stale/unbound persisted bytesig evidence {}: {}'.format(
+                csv_name, exc))
+            return fb_json
         existing = _json.loads(fb_json)
         used = {s.get(rva_key) for s in existing if s.get(rva_key)}
         n_added = 0
-        with open(csv_path, encoding='utf-8') as f:
-            for ln in f:
-                ln = ln.strip()
-                if not ln or ln.startswith('#'):
-                    continue
-                parts = ln.split(',', 2)
-                if len(parts) < 2:
-                    continue
-                try:
-                    rva = int(parts[0], 16)
-                except ValueError:
-                    continue
-                if rva in used:
-                    continue
-                used.add(rva)
-                existing.append({'n': parts[1], 't': 'func', 'sig': '',
-                                 rva_key: rva,
-                                 'src': parts[2] if len(parts) > 2 else 'bytesig-port'})
-                n_added += 1
+        seen_pairs = set()
+        for row in evidence_rows:
+            rva = row['target_rva']
+            pair = (row['name'], rva)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            if rva not in target_starts:
+                continue
+            probe = {'t': 'func', rva_key: rva}
+            if (not attach_section(probe, rva_key, layout,
+                                   declared_kind='func') or
+                    probe['t'] != 'func'):
+                continue
+            if rva in used:
+                continue
+            used.add(rva)
+            existing.append({
+                'n': row['name'], 't': 'func', 'sig': '',
+                rva_key: rva,
+                'src': row.get('source_tag') or 'bytesig-port',
+                'sections': probe.get('sections', {}),
+                'target_sha256': {rva_key: layout.sha256},
+            })
+            n_added += 1
         if n_added:
             print('  merged {} persisted bytesig names from {}'.format(
                 n_added, csv_name))
@@ -613,7 +840,7 @@ def main():
     # to a real layout for Ghidra (same FNV gained from Fallout_Debug PDB).
     pdb_structs = {}
     pdb_types_json = os.path.join(SCRIPT_DIR, 'refs', 'skyrimse_pdb_types.json')
-    if os.path.isfile(pdb_types_json):
+    if _trusted_pdb_derived(pdb_types_json, pdb_identity_valid):
         from pathlib import Path as _Path
         # Reuse the FNV converter -- pointer-size-agnostic, output 'ptr' is
         # resolved by Ghidra against the loaded program's pointer width.
@@ -630,14 +857,17 @@ def main():
                 type(e).__name__, e))
             pdb_structs = {}
     else:
-        print('\nNo SkyrimSE.pdb types JSON at {} -- run '
-              'scripts/commonlibnvse/parse_pdb_pretty.py against the PDB '
-              'pretty dump first to populate it.'.format(pdb_types_json))
+        if not pdb_identity_valid:
+            print('\nSkipping SkyrimSE PDB type JSON: PDB/PE identity was not validated.')
+        else:
+            print('\nNo SkyrimSE.pdb types JSON at {} -- run '
+                  'scripts/commonlibnvse/parse_pdb_pretty.py against the PDB '
+                  'pretty dump first to populate it.'.format(pdb_types_json))
 
     # --- SkyrimSE.pdb-derived enums (Bethesda internal enums beyond CommonLibSSE) ---
     pdb_enums = {}
     pdb_enums_json = os.path.join(SCRIPT_DIR, 'refs', 'skyrimse_pdb_enums.json')
-    if os.path.isfile(pdb_enums_json):
+    if _trusted_pdb_derived(pdb_enums_json, pdb_identity_valid):
         try:
             with open(pdb_enums_json, encoding='utf-8') as f:
                 pdb_enums = _json.load(f)
@@ -658,20 +888,36 @@ def main():
     relib_path = os.path.join(PROJECT_DIR, 'extern',
                               'AddressLibraryDatabase', 'skyrimae.relib')
     if os.path.isfile(relib_path):
-        from address_library import load_relib_version
-        rev_1170 = {rva: i for i, rva in addr_lib.ae_db.items()}
-        for label, build in (('GOG_1_6_1179', (1, 6, 1179, 0)),
-                             ('GOG_1_6_1170', (1, 6, 1170, 0, 1))):
-            db = load_relib_version(relib_path, build)
+        from address_library import load_relib_versions
+        rev_1170, ambiguous_1170 = unique_reverse_ids(addr_lib.ae_db)
+        if ambiguous_1170:
+            print('Rejected {} ambiguous AE 1.6.1170 reverse RVAs'.format(
+                len(ambiguous_1170)))
+        requested_gog = (
+            ('GOG_1_6_1179', (1, 6, 1179, 0)),
+            ('GOG_1_6_1170', (1, 6, 1170, 0, 1)),
+        )
+        relib_databases = load_relib_versions(
+            relib_path, [build for _label, build in requested_gog])
+        for label, build in requested_gog:
+            db = relib_databases.get(build, {})
             if db:
                 gog_variants.append((label, db, rev_1170))
                 print('Loaded relib build {}: {:,} entries'.format(
                     '.'.join(str(x) for x in build), len(db)))
 
     for version in ('se', 'ae', 'svr'):
+        if selected is not None and version not in selected:
+            continue
+        binding, _artifact = _target_binding(version)
+        if binding is None:
+            print('\nSKIP {}: no single exact executable; refusing to emit an unbound importer'.format(
+                version.upper()))
+            continue
         run_version(version, symbols_json, fb_for[version],
                     pdb_structs=pdb_structs, pdb_enums=pdb_enums,
-                    gog_variants=gog_variants if version == 'ae' else None)
+                    gog_variants=gog_variants if version == 'ae' else None,
+                    target_manifest=binding)
 
 
 if __name__ == '__main__':

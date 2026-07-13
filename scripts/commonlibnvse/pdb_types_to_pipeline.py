@@ -424,8 +424,9 @@ def convert_pdb_types(json_path: Path, enums_json_path: Path = None,
 
 if __name__ == '__main__':
     import sys
+    from paths import artifact
     p = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-        Path(r'C:\GhidraProjects\scripts\Fallout_Debug_types.json')
+        artifact('Fallout_Debug_types.json')
     structs, skipped, n_fields = convert_pdb_types(p)
     print(f'  Converted PDB structs: {len(structs):,}')
     print(f'  Total fields:          {n_fields:,}')

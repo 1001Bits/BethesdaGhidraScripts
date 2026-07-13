@@ -2,7 +2,7 @@
 """Source-file-anchored positional name lift.
 
 PC FNV strings contain ~160 ``__FILE__`` source-path literals like
-``D:\\_Fallout3\\Platforms\\Common\\Code\\Fallout Shared\\BaseExtraList.cpp``.
+``<source-root>\\Fallout Shared\\BaseExtraList.cpp``.
 
 Every function whose source lives in BaseExtraList.cpp embeds an xref
 to that path string (from an ``assert``/``LOG`` macro using __FILE__).
@@ -33,10 +33,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REFS_DIR   = SCRIPT_DIR / 'refs'
 IMAGE_BASE = 0x00400000
 
-PC_STRINGS         = Path(r'C:\GhidraProjects\scripts\fnv_pc_strings.txt')
-PC_STRING_XREFS    = Path(r'C:\GhidraProjects\scripts\fnv_pc_string_xrefs.txt')
-PDB_PUBLICS        = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_publics.txt')
-PDB_FUNCS_JSON     = Path(r'C:\GhidraProjects\scripts\Fallout_Debug_funcs.json')
+from paths import artifact
+PC_STRINGS         = artifact('fnv_pc_strings.txt')
+PC_STRING_XREFS    = artifact('fnv_pc_string_xrefs.txt')
+PDB_PUBLICS        = artifact('Fallout_Debug_publics.txt')
+PDB_FUNCS_JSON     = artifact('Fallout_Debug_funcs.json')
 
 sys.path.insert(0, str(SCRIPT_DIR.parent / 'core'))
 from pdb_symbols import undecorate  # noqa: E402
