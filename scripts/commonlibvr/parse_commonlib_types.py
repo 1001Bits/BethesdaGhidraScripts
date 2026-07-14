@@ -33,29 +33,55 @@ import parse_commonlib_types as base  # noqa: E402
 
 CLVR_INCLUDE = os.path.join(PROJECT_DIR, 'extern', 'CommonLibVR', 'include')
 OPENVR_INC = os.path.join(PROJECT_DIR, 'extern', 'CommonLibVR', 'extern', 'openvr', 'headers')
-# DirectXMath / directxtk headers.  There is no in-repo copy, so this stays
-# env-only: point BGS_VCPKG_INCLUDE at a vcpkg 'include' dir to supply them.
+# DirectXTK's SimpleMath.h (and the DirectXMath it is built on) are vendored as
+# pinned submodules rather than taken from a machine-local vcpkg: RE/State.h
+# holds SimpleMath Vector4/Matrix *by value*, so their real sizes decide real
+# struct offsets.  A missing or hand-stubbed header does not degrade gracefully
+# -- it silently shifts every field after it.  BGS_VCPKG_INCLUDE still overrides.
+DXTK_INC = os.path.join(PROJECT_DIR, 'extern', 'DirectXTK', 'Inc')
+DXMATH_INC = os.path.join(PROJECT_DIR, 'extern', 'DirectXMath', 'Inc')
 VCPKG_INC = os.environ.get('BGS_VCPKG_INCLUDE', '')
 
 # Extra include dirs the powerof3 path never needed:
 #   - openvr: BSVRInterface.h pulls <openvr.h> under ENABLE_SKYRIM_VR
-#   - DirectXMath + directxtk/SimpleMath.h: RE/State.h members (Vector4/Matrix)
+#   - DirectXMath + DirectXTK/SimpleMath.h: RE/State.h members (Vector4/Matrix)
 # Appended AFTER the base include args so the stub dir (spdlog/binary_io shadows) keeps
 # priority over vcpkg's real spdlog/fmt (a raw vcpkg include otherwise breaks the PCH).
 _EXTRA_INCLUDES = []
-_INCLUDE_CANDIDATES = [OPENVR_INC]
 if VCPKG_INC:
-    _INCLUDE_CANDIDATES += [os.path.join(VCPKG_INC, 'directxtk'), VCPKG_INC]
+    _INCLUDE_CANDIDATES = [OPENVR_INC,
+                           os.path.join(VCPKG_INC, 'directxtk'), VCPKG_INC]
 else:
-    print('NOTE: BGS_VCPKG_INCLUDE is unset -- DirectXMath/directxtk headers are '
-          'unavailable, so RE/State.h members may be incomplete.')
+    _INCLUDE_CANDIDATES = [OPENVR_INC, DXTK_INC, DXMATH_INC]
 for _p in _INCLUDE_CANDIDATES:
     if os.path.isdir(_p):
         _EXTRA_INCLUDES += ['-I', _p]
     else:
-        print('WARNING: missing include dir (layouts may be wrong/incomplete): {}'.format(_p))
+        raise SystemExit(
+            'missing include dir: {}\n'
+            'RE/State.h needs the openvr and DirectXTK/DirectXMath headers to lay '
+            'out its members correctly; parsing without them would emit wrong '
+            'struct offsets.  Run: git submodule update --init --recursive'.format(_p))
 
 # --- additive overrides on the imported base parser (powerof3 files untouched on disk) ---
+# Vtable policy: the powerof3 parse must refuse VR (it compiles VR with the SE
+# define set, so its header vtables are SE's).  This parse compiles VR with
+# ENABLE_SKYRIM_VR, so the AST *is* the VR layout -- emission is allowed, but
+# still gated on the hand-verified anchors CSV, which anchor_verifier checks
+# fail-closed.  See vtable_policy.py in this directory.
+# Loaded by explicit path, not by name: importing `base` above already put
+# commonlibsse's vtable_policy in sys.modules, so `import vtable_policy` here
+# would silently hand back the SE/AE-only policy and this override would be a
+# no-op that looks like it worked.
+import importlib.util  # noqa: E402
+
+_policy_spec = importlib.util.spec_from_file_location(
+    'clvr_vtable_policy', os.path.join(SCRIPT_DIR, 'vtable_policy.py'))
+_clvr_policy = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(_clvr_policy)
+
+base._allow_vtable_emission = _clvr_policy.allow_vtable_emission
+
 base.COMMONLIB_INCLUDE = CLVR_INCLUDE
 base.SKYRIM_H = os.path.join(CLVR_INCLUDE, 'RE', 'Skyrim.h')
 base.RE_INCLUDE = os.path.join(CLVR_INCLUDE, 'RE')
@@ -202,8 +228,24 @@ def main():
         addr_lib = _build_address_library()
         symbols_json = _build_symbols(addr_lib)
 
+    # Identity binding: alandtse's fork emits importers that name no target, but
+    # this repo refuses to apply one (a CommonLib import stamps build-specific
+    # addresses).  Reuse the powerof3 path's staging logic so a CLVR importer is
+    # bound to the same exact executable under exes/skyrim/<runtime>/.
+    emitted = 0
     for v in versions:
-        base.run_version(v, symbols_json)
+        binding, _artifact = base._target_binding(v)
+        if binding is None:
+            print('SKIP {}: no single exact executable staged under exes/skyrim/{}/; '
+                  'refusing to emit an unbound importer'.format(
+                      v, base._TARGET_DIRS.get(v, v)))
+            continue
+        base.run_version(v, symbols_json, target_manifest=binding)
+        emitted += 1
+    if not emitted:
+        raise SystemExit(
+            'No CLVR importer was generated: stage the exact executable for each '
+            'runtime under exes/skyrim/ and re-run.')
 
 
 if __name__ == '__main__':

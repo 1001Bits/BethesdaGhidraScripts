@@ -1660,7 +1660,7 @@ def _parse_vtable_dump(text, root_ns):
 
 def _dump_vtable_layouts(structs, header_path, parse_args, clang_binary,
                         root_ns, verbose=False):
-    """Generic clang ``-fdump-vtable-layouts`` enrichment pass.
+    """Generic clang ``-fdump-vtable-layouts`` improvement pass.
 
     For every polymorphic class in ``structs`` (root namespace only), pick any
     virtual method from AST data and emit ``auto u<N> = &Class::Method;`` in a
@@ -2385,7 +2385,7 @@ def collect_types(header_path, include_path, parse_args,
     if ast_aliases:
         _apply_aliases_to_structs(structs, ast_aliases, verbose=verbose)
 
-    # --- Enrich vfuncs with clang -fdump-vtable-layouts (when available) ---
+    # --- Improve vfuncs with clang -fdump-vtable-layouts (when available) ---
     try:
         _vt_primary, _vt_secondary = _dump_vtable_layouts(
             structs, header_path, parse_args, clang_binary,

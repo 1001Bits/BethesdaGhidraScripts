@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Type-discovery sequencer: run the binary-derived enrichment drivers
+"""Type-discovery sequencer: run the binary-derived improvement drivers
 across every x64 program in a combined Ghidra project.
 
 Drivers (scripts/core/, ported from alandtse's CommonLibVR fork):
@@ -53,7 +53,7 @@ DRIVER_PATHS = {
     'console_harvest_sf':     CORE_DIR / 'console_harvest_sf.py',
     'pe_unwind_enrich':       CORE_DIR / 'pe_unwind_enrich.py',
     'registration_harvest':   CORE_DIR / 'registration_harvest.py',
-    # havok_mine is a verifier, not an enrichment step -- retail builds ship
+    # havok_mine is a verifier, not an improvement step -- retail builds ship
     # no offset-bearing havok reflection (proven; see havok_mine docstring).
     # Run it explicitly only to test a suspected debug/editor binary.
 }
@@ -204,7 +204,7 @@ def main():
     ap.add_argument('--apply-all-reviewed', action='store_true',
                     help="enable all mutation groups (still confidence-gated)")
     ap.add_argument('--max-passes', type=int, default=4,
-                    help="repeat applied enrichment until stable (default 4, max 8)")
+                    help="repeat applied improvement until stable (default 4, max 8)")
     ap.add_argument('--allow-missing', action='store_true',
                     help="do not fail when an explicitly listed program is absent")
     ap.add_argument('--ctor-max-classes', type=int, default=0)

@@ -178,7 +178,11 @@ try {
         'extern/CommonLibSSE/LICENSE',
         'extern/CommonLibF4/LICENSE',
         'extern/CommonLibSF/COPYING',
-        'extern/CommonLibSF/EXCEPTIONS'
+        'extern/CommonLibSF/EXCEPTIONS',
+        'extern/CommonLibVR/LICENSE',
+        'extern/CommonLibF4VR/LICENSE',
+        'extern/DirectXMath/LICENSE',
+        'extern/DirectXTK/LICENSE'
     )
     $missing = @()
     foreach ($l in $expectedLicenses) {

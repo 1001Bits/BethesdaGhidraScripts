@@ -225,7 +225,7 @@ def _enrich_symbols_with_sigs(symbols_json, structs):
             suffix = '::'.join(parts[i:])
             if suffix not in structs_by_suffix:
                 structs_by_suffix[suffix] = val
-    enriched = 0
+    improved = 0
     skipped = 0
     for sym in symbols:
         if sym['t'] != 'func' or sym.get('sd'):
@@ -250,9 +250,9 @@ def _enrich_symbols_with_sigs(symbols_json, structs):
             skipped += 1
             continue
         sym['sd'] = [ret, params, 1 if is_static else 0]
-        enriched += 1
-    if enriched:
-        print('Enriched {} symbols with AST method signatures'.format(enriched))
+        improved += 1
+    if improved:
+        print('Improved {} symbols with AST method signatures'.format(improved))
     if skipped:
         print('Skipped {} symbols with uninstantiated template params in signature'.format(skipped))
     return _json.dumps(symbols, separators=(',', ':'))

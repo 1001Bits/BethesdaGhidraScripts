@@ -180,7 +180,7 @@ def _enrich_symbols(symbols_list, structs):
             suffix = '::'.join(parts[i:])
             if suffix not in structs_by_suffix:
                 structs_by_suffix[suffix] = val
-    enriched = 0
+    improved = 0
     skipped = 0
     for sym in symbols_list:
         if sym['t'] != 'func' or sym.get('sd'):
@@ -204,9 +204,9 @@ def _enrich_symbols(symbols_list, structs):
                 skipped += 1
                 continue
             sym['sd'] = [ret, params, 1 if is_static else 0]
-            enriched += 1
-    if enriched:
-        print(f'Enriched {enriched} symbols with AST method signatures')
+            improved += 1
+    if improved:
+        print(f'Improved {improved} symbols with AST method signatures')
     if skipped:
         print(f'Skipped {skipped} symbols with uninstantiated template params in signature')
 
@@ -363,18 +363,28 @@ def main():
 
     stub_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'core', '_clang_stubs')
     base_parse_args = _setup_include_paths(COMMONLIB_INCLUDE, stub_dir)
-    # commonlib-shared provides REL/ and REX/ headers
-    shared_include = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4', 'lib', 'commonlib-shared', 'include')
-    if os.path.isdir(shared_include):
+    # powerof3's CommonLibF4 keeps REL/ and REX/ in a commonlib-shared submodule,
+    # so those headers must be added for it.  A fork may instead vendor REL/ and
+    # REX/ inside its own include tree (CommonLibF4VR does) -- prepending
+    # powerof3's copies there would mix two versions of the same library into one
+    # parse, which does not fail cleanly: it yields thousands of redefinition and
+    # deprecated-rename errors.  Only reach for the shared headers when the
+    # selected CommonLib does not carry its own.
+    shared_include = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4',
+                                  'lib', 'commonlib-shared', 'include')
+    self_contained = all(
+        os.path.isdir(os.path.join(COMMONLIB_INCLUDE, sub))
+        for sub in ('REL', 'REX'))
+    use_shared = not self_contained and os.path.isdir(shared_include)
+    if use_shared:
         base_parse_args = ['-I' + shared_include] + base_parse_args
 
     # Capture types from REL/, REX/, F4SE/ as well as RE/ — they're sibling
     # namespaces under CommonLibF4 whose AST methods would otherwise be skipped.
-    extra_scopes = [
-        COMMONLIB_INCLUDE,                                   # F4SE/ + RE/
-        os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4',
-                     'lib', 'commonlib-shared', 'include'),  # REL/ + REX/
-    ]
+    # When the library is self-contained they already live under COMMONLIB_INCLUDE.
+    extra_scopes = [COMMONLIB_INCLUDE]                       # F4SE/ + RE/ (+ REL/ REX/)
+    if use_shared:
+        extra_scopes.append(shared_include)                  # REL/ + REX/
 
     # --- IDAImportNames_1.11.191.0.py fallback symbols (AE only) ---
     print('\n=== Loading IDAImportNames_1.11.191.0.py fallback symbols ===')
@@ -580,7 +590,7 @@ def main():
         print(f'  found {len(enums)} enums, {len(structs)} structs/classes')
 
         _enrich_symbols(symbols, structs)
-        # Serialize AFTER enrichment: _enrich_symbols mutates 'sd'
+        # Serialize AFTER improvement: _enrich_symbols mutates 'sd'
         # (structured signature) fields onto the symbol dicts.  A
         # pre-loop dump silently dropped every signature from the
         # generated scripts ("Signatures applied: 0" at apply time).

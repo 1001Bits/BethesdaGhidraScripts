@@ -118,9 +118,9 @@ function naming are unaffected (they go through the `VTABLE_*` symbols/addresses
 only the vptr field's *type* shows root methods. `CLVR_EMBED=0` (flatten) types the vptr to the
 most-derived vtable instead, at the cost of no base composition. Pick per preference.
 
-### 5. Enrich phases (`CLVR_PHASE`) — run order for a full import
+### 5. Improve phases (`CLVR_PHASE`) — run order for a full import
 `apply_enrich.py` dispatches on the `CLVR_PHASE` env var. Run it inside Ghidra (exec the file,
-or via the MCP eval) against the target program **in this order**; each is enrich-safe and
+or via the MCP eval) against the target program **in this order**; each is improve-safe and
 idempotent, and each is **dry-run by default** with its own `*=go` flag to write:
 
 | order | `CLVR_PHASE` | what it does | apply flag |
@@ -200,7 +200,7 @@ to reason from. `commonlib_discover.py` drives Ghidra's decompiler dataflow infe
 offsets CommonLib still marks `unkNN`:
 
 - For each `/types.h` struct with unknown pointer-sized fields, it samples functions whose param-0 is
-  that type (i.e. anything enrichment gave a typed `this` -- not just CommonLib's id-bound symbols,
+  that type (i.e. anything improvement gave a typed `this` -- not just CommonLib's id-bound symbols,
   which is what scales the yield), runs read-only structure inference, and records the inferred type
   at each `unk` offset. `discover_plan` ranks them (a named type beats a size-only `ulonglong`;
   consensus across functions raises confidence).
@@ -438,7 +438,7 @@ multiple-inheritance subobjects by COL offset. Export back to `Offsets_VTABLE.h`
 - [x] Inheritance embedding (`embed_structs`, default on; trimmed variants for tail-padding reuse;
       per-struct flatten fallback). `CLVR_EMBED=0` to flatten.
 - [x] Apply for real — all four phases applied to SkyrimVR.exe (`types`/`symbols`/`sigconflict`/
-      `classes`). Enrich phases documented above; pure logic unit-tested.
+      `classes`). Improve phases documented above; pure logic unit-tested.
 - [x] `this`-seeder (`seed_this.py`) applied + verified across SE/AE/VR (`__thiscall` 174→9908 VR,
       →10237 AE, →10978 SE; 0 anomalies/errors). Root-caused + fixed the nested-transaction
       rollback poison (never `commit=False` under the MCP outer transaction).

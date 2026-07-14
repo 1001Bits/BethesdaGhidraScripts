@@ -643,7 +643,7 @@ _created_by_leaf = {}  # leaf -> [DataType]; ambiguous leaves never auto-resolve
 def _find_existing_elsewhere(name, category):
     """A same-named data type already living in a DIFFERENT category.
 
-    Re-running this generator against an already-enriched program otherwise
+    Re-running this generator against an already-improved program otherwise
     re-creates a second, competing copy of a common type (BSFixedString,
     TESForm, ...) under THIS run's category instead of reusing the one already
     registered by a prior /types.h import, a PDB-derived type, or a Demangler

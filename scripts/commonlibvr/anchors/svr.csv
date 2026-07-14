@@ -1,0 +1,11 @@
+class,method,slot,note
+Actor,KillDying,0xAC,SkyrimVR 1.4.15 +2 shift from SE/AE; Ghidra VR PlayerCharacter vtable byte-dump
+Actor,Resurrect,0xAD,+2
+Actor,PutActorOnMountQuick,0xAE,+2
+Actor,Update,0xAF,+2; verified by decompiling 0x1406BEC10 calling Actor::Update at 0x1405DF5E0
+Actor,UpdateNoAI,0xB0,+2
+Actor,UpdateCharacterControllerSimulationSettings,0xB1,+2
+Actor,PotentiallyFixRagdollState,0xB2,+2
+Actor,UpdateNonRenderSafe,0xB3,+2; PDB-named in VR (0x1405E1E50)
+PlayerCharacter,Update,0xAF,inherited slot at +2 vs SE
+PlayerCharacter,Resurrect,0xAD,inherited slot

@@ -37,6 +37,7 @@ import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
+from ghidra_project import open_user_project
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
@@ -841,7 +842,7 @@ def apply_naming(program, slot_pairs, monitor, dry_run=False,
             committed = bool(program.endTransaction(txid, commit))
             if commit and not had_parent_transaction and not committed:
                 raise RuntimeError(
-                    "RTTI enrichment outer transaction did not commit")
+                    "RTTI improvement outer transaction did not commit")
 
     if already_named_samples:
         print("  sample of preserved (already-named) targets:")
@@ -890,11 +891,14 @@ def main():
     print(f"Program:  {program_path}")
     print(f"Dry run:  {dry_run}")
 
-    with pyghidra.open_project(project_dir, project_name, create=False) as project:
+    with open_user_project(project_dir, project_name) as project:
         df = project.getProjectData().getFile(program_path)
         if df is None:
             print(f"ERROR: program not found: {program_path}")
-            sys.exit(2)
+            # Not 2: that code is reserved for "the project was locked", which
+            # the caller answers by retrying.  A missing program never becomes
+            # present on a retry.
+            sys.exit(4)
         consumer = java.lang.Object()
         program = df.getDomainObject(consumer, not dry_run, False, monitor)
         try:

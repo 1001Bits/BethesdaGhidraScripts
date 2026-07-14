@@ -1,4 +1,4 @@
-"""Pure (Ghidra-free) planning logic for the CommonLibVR enrich apply.
+"""Pure (Ghidra-free) planning logic for the CommonLibVR improve apply.
 
 Kept separate from apply_enrich.py (which imports Ghidra) so the decision logic is
 unit-testable without a Ghidra session. apply_enrich imports ACTION and

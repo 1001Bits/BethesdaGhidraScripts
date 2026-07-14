@@ -1,4 +1,4 @@
-"""Unit tests for the pure enrichment planners (ctor_plan, globals_plan,
+"""Unit tests for the pure improvement planners (ctor_plan, globals_plan,
 string_anchor_match).  No Ghidra required -- run with::
 
     python scripts/core/test_enrichment_plans.py

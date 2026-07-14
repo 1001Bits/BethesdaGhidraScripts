@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for apply_plan.select_fill_targets (CommonLibVR enrich apply planning).
+"""Unit tests for apply_plan.select_fill_targets (CommonLibVR improve apply planning).
 
 Regression coverage for the enum/struct name-collision crash: the apply once
 re-derived its fill targets from the shared `created` name->dt map, which the enum

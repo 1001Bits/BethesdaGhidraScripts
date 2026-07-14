@@ -1,0 +1,7 @@
+class,method,slot,note
+PlayerCharacter,Resurrect,0xCC,F4VR PDB-named PC override at slot 204; no shift here
+PlayerCharacter,PutActorInChairBedQuick,0xCD,F4VR PC slot 205 (inherited from Actor); no shift
+PlayerCharacter,Update,0xCF,F4VR PC slot 207 = PC::Update override; no shift before this point
+PlayerCharacter,UpdateMotionDrivenState,0xD2,F4VR PC slot 210 (+1 vs CommonLibF4 header 0xD1) -- VR-only vfunc inserted at 0xD1
+PlayerCharacter,UpdateNonRenderSafe,0xD5,F4VR PC slot 213 (+1 vs CommonLibF4 header 0xD4)
+PlayerCharacter,ShouldHandleEquipNow,0xD6,F4VR PC slot 214 (+1 vs CommonLibF4 header 0xD5)

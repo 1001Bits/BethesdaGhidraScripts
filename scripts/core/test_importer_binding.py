@@ -31,7 +31,34 @@ def test_rejects_legacy_unbound_importer(tmp_path):
     path = tmp_path / "legacy.py"
     path.write_text("print('mutating old importer')\n", encoding="utf-8")
     with pytest.raises(importer_binding.ImporterBindingError,
-                       match="legacy/unbound"):
+                       match="does not record which game build"):
+        importer_binding.extract_target_manifests(path)
+
+
+def test_unbound_importer_names_its_staging_directory(tmp_path):
+    """A known importer's error must name the exact .exe folder, not <game>."""
+    path = tmp_path / "CommonLibImport_VR.py"
+    path.write_text("pass\n", encoding="utf-8")
+    with pytest.raises(importer_binding.ImporterBindingError) as exc:
+        importer_binding.extract_target_manifests(path)
+    assert "exes/skyrim/vr/" in str(exc.value)
+    assert "Skyrim VR 1.4.15" in str(exc.value)
+
+
+def test_unknown_importer_falls_back_to_generic_staging_hint(tmp_path):
+    path = tmp_path / "CommonLibImport_Nonesuch.py"
+    path.write_text("pass\n", encoding="utf-8")
+    with pytest.raises(importer_binding.ImporterBindingError,
+                       match=r"exes/<game>/<version>/"):
+        importer_binding.extract_target_manifests(path)
+
+
+def test_rejects_ambiguous_duplicate_assignment(tmp_path):
+    path = tmp_path / "importer.py"
+    payload = "{!r}".format([_manifest()])
+    path.write_text("TARGET_MANIFESTS = {0}\nTARGET_MANIFESTS = {0}\n".format(payload),
+                    encoding="utf-8")
+    with pytest.raises(importer_binding.ImporterBindingError, match="ambiguous"):
         importer_binding.extract_target_manifests(path)
 
 

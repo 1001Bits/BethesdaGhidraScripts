@@ -1,4 +1,4 @@
-"""Target-identity sidecars for persistent enrichment evidence."""
+"""Target-identity sidecars for persistent improvement evidence."""
 
 from __future__ import annotations
 

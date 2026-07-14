@@ -21,6 +21,7 @@ CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
 from importer_binding import ImporterBindingError, verify_importer_for_program
 from pyghidra_result import end_outer_transaction, require_script_success
+from ghidra_project import open_user_project
 
 PROJECT_DIR  = Path(r"C:/GhidraProjects/Starfield")
 PROJECT_NAME = "StarfieldProject"
@@ -56,7 +57,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(project_dir, project_name, create=False) as project:
+    with open_user_project(project_dir, project_name) as project:
         root = project.getProjectData().getRootFolder()
 
         # Walk for the program domain file (recursive in case it sits under
@@ -91,7 +92,7 @@ def main():
             try:
                 verify_importer_for_program(script_path, program)
             except (ImporterBindingError, OSError, ValueError) as exc:
-                print(f"ERROR: refusing unsafe importer: {exc}")
+                print(f"\nERROR: refusing to run this import script.\n\n{exc}\n")
                 sys.exit(1)
             print(f"Running {script_path.name} via pyghidra...")
             tx = program.startTransaction("Atomic " + script_path.name)

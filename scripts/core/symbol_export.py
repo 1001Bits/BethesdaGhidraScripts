@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export an enriched Ghidra program's symbols to distributable formats.
+"""Export an improved Ghidra program's symbols to distributable formats.
 
 Produces, for a program that this pipeline (or any analysis) has already
 named/typed, three baseline sibling files in ``out_dir``:
@@ -37,6 +37,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from ghidra_project import open_user_project
 
 REPO_DIR   = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
@@ -595,7 +596,7 @@ def main():
         pname = pname.rsplit("/", 1)[1]
 
     fpj = pdb_output = pdb_identity = bundle = None
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         df = _resolve_program(project, args.program_path, monitor)
         if df is None:
             print("ERROR: program not found: %s" % args.program_path)

@@ -88,25 +88,66 @@ If you fork or redistribute this bundle, you must:
 
 - Upstream: <https://github.com/alandtse/CommonLibVR> (branch `ng`)
 - License: **MIT**
-- Copyright (c) alandtse and contributors.
+- Copyright (c) 2018 Ryan-rsm-McKenzie; alandtse and contributors.
 - See `extern/CommonLibVR/LICENSE` for the full text.  Its own `extern/openvr`
   submodule (Valve, BSD-3-Clause) supplies the OpenVR headers.
+- Credit chain: original CommonLibSSE by
+  [Ryan-rsm-McKenzie](https://github.com/Ryan-rsm-McKenzie); the multi-runtime
+  (NG) fork by [CharmedBaryon](https://github.com/CharmedBaryon); VR support and
+  the `ng` branch by [alandtse](https://github.com/alandtse).
 
 Used by `scripts/commonlibvr/` to extract true Skyrim VR type/vtable layouts.
 Unlike CommonLibSSE -- which approximates VR structs as SE -- CommonLibVR is a
 genuine multi-runtime codebase that models the real VR divergence.
 
-### CommonLibVR enrichment pipeline + core fixes — alandtse
+### CommonLibF4VR (`extern/CommonLibF4VR/`)
+
+- Upstream: <https://github.com/ArthurHub/CommonLibF4VR> (a fork of
+  <https://github.com/alandtse/CommonLibF4>)
+- License: **MIT**
+- Copyright (c) 2019 Ryan-rsm-McKenzie; ArthurHub, alandtse and contributors.
+- See `extern/CommonLibF4VR/LICENSE` for the full text.
+- Credit chain, per the fork's own README: original CommonLibF4 by
+  [Ryan-rsm-McKenzie](https://github.com/Ryan-rsm-McKenzie); the F4 fork and its
+  VR support by [alandtse](https://github.com/alandtse); the multi-runtime (NG)
+  design it builds on by [CharmedBaryon](https://github.com/CharmedBaryon)
+  (CommonLibSSE-NG); the VR split maintained by
+  [ArthurHub](https://github.com/ArthurHub).
+
+Used by `scripts/commonlibf4vr/` to extract true Fallout 4 VR (1.2.72) type and
+vtable layouts.  CommonLibF4 models flatscreen Fallout 4, so VR structs come out
+OG-shaped and VR vtables are (correctly) refused by its vtable policy; this fork
+carries VR-exclusive members pinned by `static_assert`s against `Fallout4VR.exe`.
+It does not yet model VR's inserted virtual at Actor slot `0xD1`, so this
+repository supplies that one slot itself as a parse-time overlay, verified
+against `scripts/commonlibf4vr/anchors/vr.csv`.
+
+### CommonLibVR improvement pipeline + core fixes — alandtse
 
 - Upstream: <https://github.com/alandtse/BethesdaGhidraScripts>
 - License: **GPL-3.0** (same as this repository's aggregate)
 - Author: **alandtse**
 
-`scripts/commonlibvr/` (the layout-drift/conflict-aware type enrichment pipeline)
+`scripts/commonlibvr/` (the layout-drift/conflict-aware type improvement pipeline)
 is ported from alandtse's fork of this project, along with three
 `scripts/core/ghidra_import_gen.py` fixes: namespaced-template struct
 resolution, the degenerate `TEMPLATE_TYPE_MAP` self-alias fall-through, and the
 existing-type reuse guard that stops a re-import from duplicating types.
+
+### DirectXMath (`extern/DirectXMath/`) and DirectXTK (`extern/DirectXTK/`)
+
+- Upstream: <https://github.com/microsoft/DirectXMath> and
+  <https://github.com/microsoft/DirectXTK>
+- License: **MIT**
+- Copyright (c) Microsoft Corporation.
+- See each submodule's `LICENSE` for the full text.
+
+Headers only, and only at parse time.  CommonLibVR's `RE/S/State.h` holds
+DirectXTK `SimpleMath::Vector4` / `Matrix` members *by value*, so their real
+sizes determine real struct offsets -- `scripts/commonlibvr/` parses against
+the genuine headers rather than a stub, because a wrong size there would
+silently shift every field that follows it.  No Microsoft code is compiled
+into, or redistributed by, anything this repository produces.
 
 ### xNVSE — New Vegas Script Extender (`extern/xNVSE/`)
 

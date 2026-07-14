@@ -1,6 +1,6 @@
 """Reproducible identity and layout metadata for PE inputs.
 
-The enrichment pipeline passes addresses between several independent tools.
+The improvement pipeline passes addresses between several independent tools.
 Those artifacts are unsafe unless they are tied to the exact executable they
 were derived from.  This module deliberately uses only the Python standard
 library so it can be shared by the command-line runners and generators without

@@ -163,11 +163,13 @@ def _enrichment_stage_action(stage: str, script_sha: str,
     if not stage:
         raise RuntimeError(
             "existing program has no pipeline-stage provenance; it may "
-            "contain prior enrichment. Clean/reimport it before applying an "
+            "contain prior improvement. Clean/reimport it before applying an "
             "importer.")
+    # "enriched" is the on-disk stage stamp (PIPELINE_STAGE_ENRICHED), not the
+    # word we now use for it -- programs already carry it, so it stays.
     if stage.startswith("enriched"):
         raise RuntimeError(
-            "project was enriched by a different or legacy importer "
+            "project was improved by a different or legacy importer "
             "({}); clean/reimport it before applying {}".format(
                 stage, script_sha))
     raise RuntimeError(
@@ -492,12 +494,12 @@ def _run_one(project, game, version, binary, script_path, monitor,
             if not newly_imported and not stage:
                 raise RuntimeError(
                     "existing program has no pipeline-stage provenance; it may "
-                    "contain prior enrichment. Refusing to use it as a clean "
+                    "contain prior improvement. Refusing to use it as a clean "
                     "Starfield shift preflight. Run `python run.py clean`.")
-            if stage.startswith("enriched"):
+            if stage.startswith("enriched"):   # the on-disk stamp; see above
                 raise RuntimeError(
                     "shift preflight requires a clean generic import, but this "
-                    "program is already enriched. Clean/reimport before deriving "
+                    "program is already improved. Clean/reimport before deriving "
                     "a new shift map.")
             stage_tx = program.startTransaction("Record clean generic stage")
             stage_commit = False
@@ -508,13 +510,13 @@ def _run_one(project, game, version, binary, script_path, monitor,
                 end_outer_transaction(
                     program, stage_tx, stage_commit, "generic stage binding")
             program.save("identity-bound generic import", monitor)
-            print("Generic import ready; no enrichment script was applied.")
+            print("Generic import ready; no improvement script was applied.")
             return True
         try:
             _importer_accepts_manifest(script_path, manifest)
         except ImporterBindingError as exc:
             raise RuntimeError(
-                "refusing legacy/unbound or wrong-target importer: {}".format(exc))
+                "refusing to run this import script.\n\n{}".format(exc))
         from ghidra.program.model.listing import Program
         import hashlib
         script_sha = hashlib.sha256(script_path.read_bytes()).hexdigest()
@@ -522,7 +524,7 @@ def _run_one(project, game, version, binary, script_path, monitor,
         stage = info.getString("BGS Pipeline Stage", "") or ""
         if newly_imported and not stage:
             baseline_tx = program.startTransaction(
-                "Record clean pre-enrichment baseline")
+                "Record clean pre-improvement baseline")
             baseline_commit = False
             try:
                 info.setString("BGS Pipeline Stage", PIPELINE_STAGE_GENERIC)
@@ -573,7 +575,7 @@ def main():
     ap.add_argument('game', nargs='?')
     ap.add_argument('version', nargs='?')
     ap.add_argument('--import-only', action='store_true',
-                    help='identity-bind and save a generic import; do not enrich')
+                    help='identity-bind and save a generic import; do not improve')
     args = ap.parse_args()
     fg = args.game
     fv = args.version

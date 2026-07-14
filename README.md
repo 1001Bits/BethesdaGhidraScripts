@@ -29,7 +29,7 @@ exes/fnv/og/FalloutNV.exe         Fallout NV   (1.4.0.525, x86) — xNVSE-source
 
 Fallout New Vegas now flows through the same pipeline as the other versions
 (symbol source: xNVSE headers + optional `scripts/commonlibnvse/refs/fnv_names.csv`
-overlay). Menu option 9 (enrich-existing) still works against any other FNV
+overlay). Menu option 9 (improve-existing) still works against any other FNV
 project you have lying around, but option 7 (full rebuild) handles FNV
 end-to-end like Skyrim / F4 / Starfield.
 
@@ -71,8 +71,8 @@ This opens an interactive menu:
   6) Open Ghidra
   7) Full rebuild (generate + import all)
   8) Clean Ghidra project (start fresh)
-  9) Enrich an existing Ghidra project (RTTI vtable pipeline)
- 10) Export symbols from an enriched project (JSON / .map / x64dbg / PDB)
+  9) Improve an existing Ghidra project (RTTI vtable pipeline)
+ 10) Export symbols from an improved project (JSON / .map / x64dbg / PDB)
   q) Quit
 ----------------------------------------
 ```
@@ -90,10 +90,10 @@ The status panel at the top shows what's installed and detected. Menu options:
 | **7** | Runs options 4 + 5 back-to-back. Use this after updating submodules or replacing an executable. |
 | **8** | Deletes the Ghidra project and state file so the next import starts from scratch. |
 | **9** | Picks an existing Ghidra project (yours, not the BGS one) and runs the generic RTTI-walk vtable-naming pipeline against it. Works on any MSVC PE that Ghidra has finished auto-analyzing (x64 or x86), including binaries this repo has no CommonLib for -- Fallout New Vegas, modded engine builds, etc. Only renames functions whose name is still Ghidra's default `FUN_*` placeholder; never overwrites imported or user-set symbols. When an exact CommonLib importer is identifiable, the guided flow reuses that importer automatically for safe stale-slot reconciliation; it never asks the user to choose another version or perform a redundant dry run, and skips reconciliation when no AST slot map exists. |
-| **10** | Exports symbols from an enriched project as JSON, map, or x64dbg-compatible data. It can also build, round-trip validate, and package an exact-executable synthetic public-symbol PDB. |
+| **10** | Exports symbols from an improved project as JSON, map, or x64dbg-compatible data. It can also build, round-trip validate, and package an exact-executable synthetic public-symbol PDB. |
 
 **First-time setup:** run **1**, then **2**, then **7**. After that, **6** opens Ghidra with everything
-imported. Option **9** is still available as an enrich-only pass against any
+imported. Option **9** is still available as an improve-only pass against any
 externally-prepared Ghidra project (handy when you already have a heavily-
 annotated FNV / modded-engine project somewhere else).
 
@@ -140,7 +140,7 @@ The launcher deliberately uses binary wheels and selects the newest installed
 supported CPython instead of blindly using the newest Python on the machine.
 It verifies and, when necessary, installs the locked runtime into that selected
 interpreter before displaying the menu, so a newly selected Python cannot reach
-an enrichment action without PyGhidra being present.
+an improvement action without PyGhidra being present.
 For CPython 3.14 it installs PyGhidra 3.0.2 without dependency re-resolution and
 uses the tested JPype 1.7.1 bridge; PyGhidra's older JPype 1.5.2 pin has no
 CPython 3.14 wheel. Consequently, `pip check` on 3.14 reports PyGhidra's stale
@@ -319,7 +319,7 @@ transaction and roll back types and symbols together on any error.
 
 ### Sharing synthetic PDBs
 
-Menu option **10** can create a shareable symbol bundle from any enriched
+Menu option **10** can create a shareable symbol bundle from any improved
 project. It uses the pinned stable FakePDB 0.3 generator with the exact
 executable, then re-parses the output and requires the GUID, age, machine,
 sections, symbol set, and function/data classification to round-trip exactly
@@ -338,10 +338,10 @@ symbol caches; distribute one curated revision per exact executable SHA-256.
 
 ---
 
-## Enrichment drivers (beyond CommonLib import)
+## Improvement drivers (beyond CommonLib import)
 
 CommonLib import gets you exact types where CommonLib has coverage. On top of
-that, the repo ships **binary-derived enrichment drivers** that recover names
+that, the repo ships **binary-derived improvement drivers** that recover names
 and types straight from the analyzed binary — valuable where CommonLib is thin
 (newer builds, Starfield, FNV) or absent. They run against an exact-identity
 analyzed Ghidra

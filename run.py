@@ -151,23 +151,26 @@ from fakepdb_tool import (  # noqa: E402
     validate_fakepdb_install,
     write_fakepdb_receipt,
 )
+from importer_binding import (  # noqa: E402
+    ImporterBindingError,
+    extract_target_manifests,
+)
+from ghidra_project import (  # noqa: E402
+    PROJECT_LOCKED_EXIT,
+    is_lock_error,
+    lock_files,
+    lock_message,
+)
 
 
-# Supported runtime versions.  Entries marked "fork" are added by this fork
-# on top of doodlum's upstream (which ships SE/AE + F4 AE only).
+# Supported runtime versions -- defined in scripts/core/version_catalog.py so the
+# importer-identity check can name the exact staging directory in its errors.
 # Each tuple: (key, game, version_label, exe_subdir, script_name, source)
-VERSION_CATALOG = [
-    ("se",    "skyrim",    "Skyrim SE 1.5.97",     "skyrim/se",    "CommonLibImport_SE.py",    "upstream"),
-    ("ae",    "skyrim",    "Skyrim AE 1.6.1170",   "skyrim/ae",    "CommonLibImport_AE.py",    "upstream"),
-    ("svr",   "skyrim",    "Skyrim VR 1.4.15",     "skyrim/vr",    "CommonLibImport_VR.py",    "fork"),
-    ("f4og",  "f4",        "Fallout 4 OG 1.10.163","f4/og",        "CommonLibImport_F4_OG.py", "fork"),
-    ("f4ng",  "f4",        "Fallout 4 NG 1.10.984","f4/ng",        "CommonLibImport_F4_NG.py", "fork"),
-    ("f4ae",  "f4",        "Fallout 4 AE 1.11.191","f4/ae",        "CommonLibImport_F4_AE.py", "upstream"),
-    ("f4221", "f4",        "Fallout 4 1.11.221",   "f4/221",       "CommonLibImport_F4_221.py","fork"),
-    ("f4vr",  "f4",        "Fallout 4 VR 1.2.72",  "f4/vr",        "CommonLibImport_F4_VR.py", "fork"),
-    ("fnv",   "fnv",       "Fallout NV 1.4.0.525", "fnv/og",       "CommonLibImport_FNV.py",   "fork"),
-    ("sf",    "starfield", "Starfield 1.16.236 / 1.16.242 / 1.16.244", "starfield/sf", "CommonLibImport_SF.py",    "fork"),
-]
+from version_catalog import (  # noqa: E402
+    VERSION_CATALOG,
+    entry_for_importer,
+    generation_target,
+)
 
 API_HEADERS = {
     "Accept": "application/vnd.github.v3+json",
@@ -808,6 +811,46 @@ def _download_llvm():
     print("  LLVM installed (binary receipt verified)")
 
 
+def _generate_true_vr_scripts(only_version):
+    """Emit the CommonLibVR (true-VR-layout) Skyrim VR importer, if VR is staged.
+
+    Skipped rather than failed when no VR executable is present: the powerof3
+    Skyrim scripts must still generate for whichever runtimes the user does have.
+    """
+    if only_version not in (None, "vr", "svr"):
+        return
+    svr = entry_for_importer("CommonLibImport_VR.py")
+    if not svr or not _version_status(svr)[0]:
+        print("  Skyrim VR (CommonLibVR true-VR layouts) ... skipped "
+              "(no Skyrim VR executable staged under exes/skyrim/vr/)")
+        return
+    print("  Skyrim VR (CommonLibVR true-VR layouts) ...")
+    subprocess.run(
+        [sys.executable,
+         str(SCRIPTS_DIR / "commonlibvr" / "parse_commonlib_types.py"), "svr"],
+        cwd=str(REPO_DIR), check=True)
+
+
+def _generate_true_f4vr_scripts(only_version):
+    """Emit the CommonLibF4VR (true-VR-layout) Fallout 4 VR importer, if staged.
+
+    Skipped rather than failed when no F4VR executable is present, so the
+    CommonLibF4 scripts still generate for the runtimes the user does have.
+    """
+    if only_version not in (None, "vr"):
+        return
+    f4vr = entry_for_importer("CommonLibImport_F4_VR.py")
+    if not f4vr or not _version_status(f4vr)[0]:
+        print("  Fallout 4 VR (CommonLibF4VR true-VR layouts) ... skipped "
+              "(no Fallout 4 VR executable staged under exes/f4/vr/)")
+        return
+    print("  Fallout 4 VR (CommonLibF4VR true-VR layouts) ...")
+    subprocess.run(
+        [sys.executable,
+         str(SCRIPTS_DIR / "commonlibf4vr" / "parse_commonlib_types.py")],
+        cwd=str(REPO_DIR), check=True)
+
+
 def generate_scripts(games=None, only_version=None):
     """Generate import scripts.
 
@@ -844,6 +887,11 @@ def generate_scripts(games=None, only_version=None):
              str(SCRIPTS_DIR / "commonlibsse" / "parse_commonlib_types.py"),
              *only],
             cwd=str(REPO_DIR), check=True)
+        # CommonLibVR: compiles each runtime with its own ENABLE_SKYRIM_* define.
+        # Only VR diverges from the powerof3 result, and only VR has anchors to
+        # verify the layout against, so that is the one runtime emitted here --
+        # it is the only source of true VR structs and vtable slots.
+        _generate_true_vr_scripts(only_version)
     if "f4" in games:
         print("  Fallout 4 {} ...".format(only_version.upper() if only_version
                                           else "OG / NG / AE / VR"))
@@ -865,6 +913,8 @@ def generate_scripts(games=None, only_version=None):
             subprocess.run(
                 [sys.executable, str(bytesig_port)],
                 cwd=str(REPO_DIR), check=True)
+        # CommonLibF4VR: the only source of true F4VR struct + vtable layouts.
+        _generate_true_f4vr_scripts(only_version)
     if "starfield" in games:
         print("  Starfield (auto-detect 1.16.x) ...")
         subprocess.run(
@@ -1099,14 +1149,14 @@ MENU_ITEMS = [
     ("6", "Open Ghidra"),
     ("7", "Full rebuild (generate + import all)"),
     ("8", "Clean Ghidra project (start fresh)"),
-    ("9", "Enrich an existing Ghidra project (RTTI vtable pipeline)"),
+    ("9", "Improve an existing Ghidra project (RTTI vtable pipeline)"),
     ("10", "Export symbols (JSON / .map / x64dbg / validated PDB)"),
     ("q", "Quit"),
 ]
 
 
 # =====================================================================
-#  Ghidra project discovery + RTTI vtable enrichment menu
+#  Ghidra project discovery + RTTI vtable improvement menu
 # =====================================================================
 
 EXTERNAL_GHIDRA_ROOTS = [
@@ -1152,31 +1202,19 @@ def _discover_ghidra_projects():
 
 
 def _project_lock_files(project_dir, project_name):
-    """Return a list of any present Ghidra lock files for the project.
-
-    Ghidra writes <project>.lock (and sometimes <project>.lock~) into the
-    project directory whenever the project is opened, whether by the GUI
-    or a headless/pyghidra session.  Presence of either indicates the
-    project is currently held by another JVM.
-    """
-    base = Path(project_dir) / project_name
-    return [p for p in (base.with_suffix(".lock"),
-                        Path(str(base) + ".lock~"))
-            if p.exists()]
-
-
-_LOCK_HINTS = ("LockException", "Unable to lock", "already locked",
-               "already opened", "is in use", "lock is held")
+    """Any Ghidra lock files present for the project (see scripts/core/ghidra_project.py)."""
+    return lock_files(project_dir, project_name)
 
 
 def _wait_for_unlock(project_dir, project_name, step_label):
-    """Block until the project lock is released (or the user skips).
+    """Block until no lock *file* is present (or the user skips).
 
-    pyghidra subprocesses sometimes don't release their JVM lock cleanly,
-    so a subsequent step run back-to-back hits a LockException.  Rather
-    than crash, prompt the user to close any open Ghidra session and
-    retry.  Returns True if the project is unlocked (proceed), False if
-    the user skipped this step.
+    This is the cheap pre-flight check: it catches the common case (a Ghidra
+    window is open) before spending 30 seconds starting a JVM.  It cannot catch
+    a lock held by a JVM that is still shutting down -- that one is only visible
+    when the open actually fails, and ``_run_project_step`` handles it.
+
+    Returns True to proceed, False if the user skipped the step.
     """
     while True:
         locks = _project_lock_files(project_dir, project_name)
@@ -1184,11 +1222,10 @@ def _wait_for_unlock(project_dir, project_name, step_label):
             return True
         print()
         print("=" * 60)
-        print(f"  Project {project_name!r} is locked -- cannot run {step_label}.")
-        print("  Close any open Ghidra GUI / pyghidra session, then retry.")
+        print(f"  Cannot run {step_label}:")
         print()
-        for p in locks:
-            print(f"  Lock file: {p}")
+        for line in lock_message(project_dir, project_name).splitlines():
+            print(f"  {line}" if line else "")
         print("=" * 60)
         print()
         try:
@@ -1200,13 +1237,39 @@ def _wait_for_unlock(project_dir, project_name, step_label):
             return False
 
 
+def _run_project_step(cmd, project_dir, project_name, step_label, **kwargs):
+    """Run a pyghidra subprocess, offering a retry when the project was locked.
+
+    The child exits with ``PROJECT_LOCKED_EXIT`` after printing what holds the
+    lock and what to do about it.  The usual holder is the *previous* step's JVM,
+    which is still exiting -- no lock file exists by the time we look, so the
+    file check in ``_wait_for_unlock`` sees nothing and lets the step run
+    straight into the race.  Retrying a few seconds later just works, so offer
+    exactly that instead of reporting the step as failed.
+
+    Returns the child's exit code (``PROJECT_LOCKED_EXIT`` if the user gave up).
+    """
+    kwargs.setdefault("check", False)
+    while True:
+        result = subprocess.run(cmd, **kwargs)
+        if result.returncode != PROJECT_LOCKED_EXIT:
+            return result.returncode
+        print()
+        try:
+            ans = input(f"  Retry {step_label}? [Y/n] > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return PROJECT_LOCKED_EXIT
+        if ans and ans != "y":
+            return PROJECT_LOCKED_EXIT
+
+
 def _list_programs_in_project(project_dir, project_name):
     """Return list of (program_path, ...) tuples, or {"locked": "<reason>"}
     on lock detection, or None on any other failure.
     """
-    locks = _project_lock_files(project_dir, project_name)
-    if locks:
-        return {"locked": f"lock file(s) present: {', '.join(str(p) for p in locks)}"}
+    if _project_lock_files(project_dir, project_name):
+        return {"locked": lock_message(project_dir, project_name)}
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     try:
@@ -1230,9 +1293,8 @@ def _list_programs_in_project(project_dir, project_name):
                     walk(sub, prefix + "/" + sub.getName())
             walk(root_folder, "")
     except Exception as e:
-        msg = str(e)
-        if any(h in msg for h in _LOCK_HINTS):
-            return {"locked": msg.splitlines()[0][:200]}
+        if is_lock_error(e):
+            return {"locked": lock_message(project_dir, project_name)}
         print(f"  ERROR opening project: {e}")
         return None
     return programs
@@ -1253,7 +1315,7 @@ def _enrich_menu():
 
     print()
     print("-" * 60)
-    print("  Enrich existing Ghidra project — RTTI vtable pipeline")
+    print("  Improve existing Ghidra project — RTTI vtable pipeline")
     print("-" * 60)
     print("  Discovered Ghidra projects:")
     for i, (label, _, _) in enumerate(projects, 1):
@@ -1278,11 +1340,8 @@ def _enrich_menu():
     if isinstance(result, dict) and result.get("locked"):
         print()
         print("=" * 60)
-        print(f"  Project {label!r} is locked — close Ghidra to continue.")
-        print(f"  Close any open CodeBrowser / Ghidra Project Manager that")
-        print(f"  has this project open, then try option 9 again.")
-        print()
-        print(f"  Reason: {result['locked']}")
+        for line in result["locked"].splitlines():
+            print(f"  {line}" if line else "")
         print("=" * 60)
         print()
         input("  Press Enter to return to main menu ... ")
@@ -1327,7 +1386,8 @@ def _enrich_menu():
 
 def _run_enrichment_sequence(label, pdir, pname, program_path):
     """Run option 9's mutators in order, stopping at the first failure."""
-    import_script_name = _infer_commonlib_script(Path(program_path).name)
+    import_script_name = _preferred_importer(
+        _infer_commonlib_script(Path(program_path).name))
     # The CommonLib apply is the high-coverage precondition.  A failed or
     # deliberately skipped locked-project attempt must not cascade into RTTI
     # or a reconciler against a partial program.
@@ -1344,13 +1404,14 @@ def _run_enrichment_sequence(label, pdir, pname, program_path):
     for target in _local_target_pe_candidates(program_path):
         args.extend(("--target-pe", str(target)))
     _header(f"RTTI vtable pipeline: {label} {program_path}")
-    result = subprocess.run(args, check=False)
-    if result.returncode == 3:
-        extra = _prompt_for_target_pe(program_path)
+    rc = _run_project_step(args, pdir, pname, "the RTTI vtable pipeline")
+    if rc == 3:
+        extra = _prompt_for_target_pe(program_path, pdir, pname)
         if extra:
-            result = subprocess.run(args + ["--target-pe", extra], check=False)
-    if result.returncode != 0:
-        print(f"  RTTI pipeline failed (exit {result.returncode}); "
+            rc = _run_project_step(args + ["--target-pe", extra], pdir, pname,
+                                   "the RTTI vtable pipeline")
+    if rc != 0:
+        print(f"  RTTI pipeline failed (exit {rc}); "
               "reconciler was not started.")
         return False
 
@@ -1376,7 +1437,7 @@ def _export_menu():
 
     print()
     print("-" * 60)
-    print("  Export symbols from an enriched Ghidra project")
+    print("  Export symbols from an improved Ghidra project")
     print("-" * 60)
     print("  Discovered Ghidra projects:")
     for i, (label, _, _) in enumerate(projects, 1):
@@ -1398,9 +1459,10 @@ def _export_menu():
     print(f"\n  Opening {label} to list programs ...")
     result = _list_programs_in_project(pdir, pname)
     if isinstance(result, dict) and result.get("locked"):
-        print(f"\n  Project {label!r} is locked — close Ghidra and retry.")
-        print(f"  Reason: {result['locked']}")
-        input("  Press Enter to return to main menu ... ")
+        print()
+        for line in result["locked"].splitlines():
+            print(f"  {line}" if line else "")
+        input("\n  Press Enter to return to main menu ... ")
         return
     if result is None:
         print(f"\n  Could not open project {label!r}.  See error above.")
@@ -1465,7 +1527,7 @@ def _export_menu():
         if analysis_ans == "y":
             args.append("--include-analysis")
     _header(f"Symbol export: {label} {program_path}")
-    subprocess.run(args, check=False)
+    _run_project_step(args, pdir, pname, "the symbol export")
     input("\n  Press Enter to return to main menu ... ")
 
 
@@ -1517,6 +1579,30 @@ def _infer_commonlib_script(program_name):
     return None
 
 
+# A runtime can have a better importer than the one its name infers.  Skyrim VR
+# is the case that matters: the powerof3 parse compiles VR with the SE define
+# set, so it emits SE-shaped structs and -- by its own vtable policy -- no
+# vtables at all, which is why an RTTI walk over VR finds 8,000 vtables and can
+# name none of them.  CommonLibVR compiles VR with ENABLE_SKYRIM_VR, so its
+# layouts and vtable slots are the real ones (anchor-verified against the
+# binary).  Prefer it whenever it has actually been generated.
+_PREFERRED_IMPORTERS = {
+    "CommonLibImport_VR.py": "CommonLibImport_CLVR_VR.py",
+    # Fallout 4 VR is the same story: CommonLibF4 models flatscreen F4, so its
+    # VR vtables are refused by policy, while CommonLibF4VR (parsed with
+    # -DENABLE_FALLOUT_VR, plus the 0xD1 virtual it omits) is anchor-verified.
+    "CommonLibImport_F4_VR.py": "CommonLibImport_CLF4VR_VR.py",
+}
+
+
+def _preferred_importer(script_name):
+    """Upgrade an inferred importer to a truer one for the same runtime."""
+    better = _PREFERRED_IMPORTERS.get(script_name)
+    if better and (GHIDRA_SCRIPTS_DIR / better).is_file():
+        return better
+    return script_name
+
+
 def _local_target_pe_candidates(program_path):
     """Return local exact-identity candidates for an option 9 program.
 
@@ -1544,14 +1630,57 @@ def _local_target_pe_candidates(program_path):
     return sorted(path for path in EXES_ROOT.rglob("*.exe") if path.is_file())
 
 
-def _prompt_for_target_pe(program_path):
-    """Ask the user for the exact backing .exe when none was auto-discovered."""
+def _recover_target_pe(program_path, pdir, pname):
+    """Export the Program's original imported bytes into ``exes/``.
+
+    Returns the recovered path, or None.  The helper keeps the file only when
+    it hashes to the SHA-256 the Program recorded at import time.
+    """
+    suggested = _infer_commonlib_script(Path(program_path).name)
+    matches = [entry for entry in VERSION_CATALOG if entry[4] == suggested]
+    out_dir = (EXES_ROOT / matches[0][3]) if len(matches) == 1 \
+        else (EXES_ROOT / "recovered")
+    out = out_dir / Path(program_path).name
+    if not _wait_for_unlock(pdir, pname, "original-executable recovery"):
+        return None
+    rc = _run_project_step(
+        [sys.executable, str(SCRIPTS_DIR / "core" / "recover_original_exe.py"),
+         "--project-dir", str(pdir), "--project-name", str(pname),
+         "--program-path", program_path, "--out", str(out)],
+        pdir, pname, "the original-executable recovery")
+    if rc != 0 or not out.is_file():
+        print("  Recovery failed; no executable was written.")
+        return None
+    return str(out)
+
+
+def _prompt_for_target_pe(program_path, pdir=None, pname=None):
+    """Offer to recover the exact backing .exe, or take one from the user.
+
+    For a Steam build the imported file was usually a temporary Steamless
+    unpack that nobody kept, and re-unpacking does not reproduce it: Steamless
+    versions differ in whether they strip the dead ``.bind`` section, so the
+    new file has a different size and hash.  Ghidra stores the imported bytes
+    in the program database, so the exact file can be recovered from the
+    project itself and proven against the Program's import-time SHA-256.
+    """
     name = Path(program_path).name
     print()
     print(f"  The binary {name!r} was imported from was not found on disk, and")
-    print("  no staged exe under exes/ matched it.  If you still have the exact")
-    print("  .exe this program was imported from, enter its full path below")
-    print("  (for a Steam build, the Steamless-unpacked .exe); blank to cancel.")
+    print("  no staged exe under exes/ matched it.")
+    can_recover = bool(pdir and pname)
+    if can_recover:
+        print()
+        print("  Ghidra kept the imported bytes inside the project, so the exact")
+        print("  .exe can be recovered from it -- and verified against the hash")
+        print("  the program recorded when it was imported.")
+        print()
+        print("    [r]  recover it from the project  (recommended)")
+        print("    or   enter the full path to the exact .exe, blank to cancel")
+    else:
+        print("  If you still have the exact .exe this program was imported from,")
+        print("  enter its full path below (for a Steam build, the Steamless-")
+        print("  unpacked .exe); blank to cancel.")
     try:
         raw = input("  target .exe > ").strip().strip('"')
     except (EOFError, KeyboardInterrupt):
@@ -1559,6 +1688,8 @@ def _prompt_for_target_pe(program_path):
         return None
     if not raw:
         return None
+    if can_recover and raw.lower() == "r":
+        return _recover_target_pe(program_path, pdir, pname)
     candidate = Path(raw)
     if not candidate.is_file():
         print(f"  Not a file: {candidate}")
@@ -1574,14 +1705,87 @@ _COMMONLIB_APPLY_SCRIPTS = {
     'CommonLibImport_SE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'se']),
     'CommonLibImport_AE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'ae']),
     'CommonLibImport_VR.py':     ('apply_skyrim_to_user_project.py', ['--version', 'vr']),
+    # Same applier and runtime; the script itself is passed with --script.
+    'CommonLibImport_CLVR_VR.py': ('apply_skyrim_to_user_project.py', ['--version', 'vr']),
     'CommonLibImport_F4_OG.py':  ('apply_f4_to_user_project.py',  ['--version', 'og']),
     'CommonLibImport_F4_NG.py':  ('apply_f4_to_user_project.py',  ['--version', 'ng']),
     'CommonLibImport_F4_AE.py':  ('apply_f4_to_user_project.py',  ['--version', 'ae']),
     'CommonLibImport_F4_VR.py':  ('apply_f4_to_user_project.py',  ['--version', 'vr']),
+    # Same applier and runtime; the script itself is passed with --script.
+    'CommonLibImport_CLF4VR_VR.py': ('apply_f4_to_user_project.py', ['--version', 'vr']),
     'CommonLibImport_F4_221.py': ('apply_f4_to_user_project.py',  ['--version', '221']),
     'CommonLibImport_FNV.py':    ('apply_fnv_to_user_project.py', []),
     'CommonLibImport_SF.py':     ('apply_sf_to_user_project.py',  []),
 }
+
+
+def _ensure_importer_bound(suggested, import_script, pdir, pname, program_path):
+    """Bind a legacy importer to this build, recovering its .exe if it is gone.
+
+    An importer with no ``TARGET_MANIFESTS`` cannot be applied: nothing proves
+    it was generated for the program in front of it.  Regenerating needs the
+    exact executable -- which, for a Steam build, was usually a temporary
+    Steamless unpack that no longer exists and cannot be reproduced.  Ghidra
+    stores the imported bytes in the program database, so offer to recover it
+    from the project rather than send the user hunting for a deleted file.
+    """
+    try:
+        extract_target_manifests(import_script)
+        return True
+    except ImporterBindingError:
+        pass
+
+    entry = entry_for_importer(suggested)
+    print()
+    print("-" * 60)
+    print(f"  {suggested} is not bound to a game build")
+    print("-" * 60)
+    print("  It records no TARGET_MANIFESTS, so there is no way to check it was")
+    print("  generated for this program.  Applying it unchecked could stamp")
+    print("  thousands of confidently wrong names, so it has to be regenerated")
+    print("  against the exact executable this program was imported from.")
+    print()
+
+    exe_present = bool(entry) and _version_status(entry)[0]
+    if exe_present:
+        print(f"  That executable is staged under exes/{entry[3]}/.")
+        prompt = "  Regenerate the importer now? (Y/n) > "
+    else:
+        subdir = entry[3] if entry else "<game>/<version>"
+        print(f"  Nothing is staged under exes/{subdir}/, but Ghidra kept the")
+        print("  imported bytes inside this project, so the exact .exe can be")
+        print("  recovered from it and verified against the program's hash.")
+        prompt = "  Recover the executable and regenerate? (Y/n) > "
+
+    try:
+        ans = input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if ans == 'n':
+        return False
+
+    if not exe_present and not _recover_target_pe(program_path, pdir, pname):
+        return False
+
+    target = generation_target(suggested)
+    if target is None:
+        print(f"  {suggested} is not a known importer; cannot regenerate it.")
+        return False
+    game, only_version = target
+    try:
+        generate_scripts(games={game}, only_version=only_version)
+    except (subprocess.CalledProcessError, RuntimeError) as exc:
+        print(f"  Generation failed: {exc}")
+        return False
+
+    try:
+        extract_target_manifests(import_script)
+    except ImporterBindingError as exc:
+        print(f"  {suggested} is still unbound after regeneration:\n\n{exc}\n")
+        return False
+    print(f"  {suggested} is now bound to this build.")
+    return True
 
 
 def _offer_commonlib_apply(
@@ -1626,17 +1830,22 @@ def _offer_commonlib_apply(
     if ans == 'n':
         return True
 
+    if not _ensure_importer_bound(suggested, import_script,
+                                  pdir, pname, program_path):
+        return False
+
     if not _wait_for_unlock(pdir, pname, f"CommonLib apply ({suggested})"):
         return False
     cmd = [sys.executable, str(applier),
            *extra_args,
+           '--script',       str(import_script),
            '--project-dir',  pdir,
            '--project-name', pname,
            '--program-path', program_path]
     _header(f"CommonLib apply ({suggested})")
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        print(f"  CommonLib apply failed (exit {result.returncode}).")
+    rc = _run_project_step(cmd, pdir, pname, f"the CommonLib apply ({suggested})")
+    if rc != 0:
+        print(f"  CommonLib apply failed (exit {rc}).")
         return False
     return True
 
@@ -1696,9 +1905,10 @@ def _run_vtable_reconciler(
            '--program',      program_path,
            '--import-script', str(chosen)]
     _header(f"Vtable name reconciler ({chosen.name})")
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        print(f"  Vtable reconciler failed (exit {result.returncode}).")
+    rc = _run_project_step(cmd, pdir, pname,
+                           f"the vtable reconciler ({chosen.name})")
+    if rc != 0:
+        print(f"  Vtable reconciler failed (exit {rc}).")
         return False
     return True
 

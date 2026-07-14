@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Sequencer: enrich every game/version program inside Combined.gpr.
+"""Sequencer: improve every game/version program inside Combined.gpr.
 
-Runs all currently-supported enrichment passes back-to-back so you
+Runs all currently-supported improvement passes back-to-back so you
 only have to close Ghidra once.  Each step is a subprocess.  The default is
 fail-fast because later byte-signature write-back steps depend on names
 created by earlier applies; use ``--keep-going`` only for independent
@@ -182,7 +182,7 @@ def main():
     failures = [label for label, status, _ in results
                 if status.startswith('FAIL')]
     if failures:
-        print(f"\nFAILED: {len(failures)} required enrichment step(s).")
+        print(f"\nFAILED: {len(failures)} required improvement step(s).")
         return 1
     return 0
 

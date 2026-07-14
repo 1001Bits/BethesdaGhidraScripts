@@ -20,3 +20,13 @@
 	path = extern/CommonLibVR
 	url = https://github.com/alandtse/CommonLibVR.git
 	branch = ng
+[submodule "extern/DirectXMath"]
+	path = extern/DirectXMath
+	url = https://github.com/microsoft/DirectXMath
+[submodule "extern/DirectXTK"]
+	path = extern/DirectXTK
+	url = https://github.com/microsoft/DirectXTK
+[submodule "extern/CommonLibF4VR"]
+	path = extern/CommonLibF4VR
+	url = https://github.com/ArthurHub/CommonLibF4VR
+	branch = master

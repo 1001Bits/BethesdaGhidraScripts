@@ -32,6 +32,10 @@ Output
 ------
 Prints a per-class reconciliation report:
   - ``reconciled``: name overwritten (was a stale CommonLib-style label)
+  - ``failed``    : rename threw and the name could not be put in effect; the
+                    slot still carries its stale name.  Never folded into
+                    ``reconciled`` -- a miscount here would claim the binary was
+                    corrected when it was not.
   - ``ok``        : already matches AST expectation (no action)
   - ``unnamed``   : ``FUN_``/``sub_`` placeholder, deferred to main import
   - ``manual``    : non-CommonLib name (no ``::``), left alone
@@ -47,6 +51,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from ghidra_project import open_user_project
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
@@ -57,32 +62,70 @@ GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
 _PLACEHOLDER_SLOT = re.compile(r'(?:Func|vfunc_?)\d+(?:_v\d+)?')
 
 
+def _promote_existing_symbol(program, func_addr, wanted):
+    """Make an already-present symbol of *wanted* name the primary one.
+
+    Ghidra refuses ``setName`` when a symbol of that name already sits at the
+    address -- typically a label the CommonLib import pass put there.  The name
+    is then *present but not in effect*: the function's primary name is still
+    the stale one, so the slot reads wrong everywhere it matters (decompiler,
+    call graph, exports).  Promoting the existing symbol is the rename.
+
+    Returns True when the address ends up primarily named *wanted*.
+    """
+    for symbol in program.getSymbolTable().getSymbols(func_addr):
+        if str(symbol.getName()) == wanted or str(symbol.getName(True)) == wanted:
+            if symbol.isPrimary():
+                return True
+            symbol.setPrimary()
+            return True
+    return False
+
+
 def _rename_slot(func, func_addr, program, target, expected_name, curr,
                  dry_run, class_short, SourceType):
     """Apply the bound CommonLib slot name, preserving the naming convention.
 
     A function already inside a class namespace keeps it (leaf rename); a flat
     function gets the flat ``Class::method`` form the CommonLib importer uses.
+
+    Returns True when the slot now carries the bound name.  A rename that threw
+    must never be counted as reconciled -- the whole point of this pass is that
+    the name in the binary is the one the bound importer says it should be.
     """
     if dry_run:
         print('  DRY {} @ 0x{:X} : {!r} -> {!r}'.format(
             class_short, func_addr.getOffset(), curr, target))
-        return
+        return True
+
+    namespace = func.getParentNamespace()
+    in_class_ns = (namespace is not None and not namespace.isGlobal())
+    wanted = expected_name if in_class_ns else target
+
     try:
-        namespace = func.getParentNamespace()
-        in_class_ns = (namespace is not None and
-                       not namespace.isGlobal())
-        func.setName(expected_name if in_class_ns else target,
-                     SourceType.IMPORTED)
-        cu = program.getListing().getCodeUnitAt(func_addr)
-        if cu:
-            existing = cu.getComment(0) or ''
-            note = 'Reconciled from stale name: ' + curr
-            if note not in existing:
-                cu.setComment(0, note + ('\n' + existing if existing else ''))
-    except Exception as e:  # noqa: BLE001
-        print('  WARN setName failed on 0x{:X}: {}'.format(
-            func_addr.getOffset(), e))
+        func.setName(wanted, SourceType.IMPORTED)
+    except Exception as exc:  # noqa: BLE001
+        # Almost always DuplicateNameException: the wanted name is already at
+        # this address as a non-primary symbol.  Promote it instead of leaving
+        # the function under its stale name.
+        try:
+            if not _promote_existing_symbol(program, func_addr, wanted):
+                print('  WARN setName failed on 0x{:X}: {}'.format(
+                    func_addr.getOffset(), exc))
+                return False
+        except Exception as promote_exc:  # noqa: BLE001
+            print('  WARN setName failed on 0x{:X}: {} '
+                  '(and promoting the existing symbol failed: {})'.format(
+                      func_addr.getOffset(), exc, promote_exc))
+            return False
+
+    cu = program.getListing().getCodeUnitAt(func_addr)
+    if cu:
+        existing = cu.getComment(0) or ''
+        note = 'Reconciled from stale name: ' + curr
+        if note not in existing:
+            cu.setComment(0, note + ('\n' + existing if existing else ''))
+    return True
 
 
 def _extract_vtables_from_import_script(script_path: Path
@@ -291,7 +334,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         domain_file = _find_program(project, args.program)
         if domain_file is None:
             print('ERROR: program {} not found in project'.format(args.program))
@@ -343,8 +386,8 @@ def main():
                         claims.setdefault(faddr.getOffset(), set()).add(
                             class_short + '::' + expected_name)
 
-            totals = {'reconciled': 0, 'ok': 0, 'unnamed': 0, 'manual': 0,
-                      'no_vtable': 0, 'no_func': 0, 'read_fail': 0}
+            totals = {'reconciled': 0, 'failed': 0, 'ok': 0, 'unnamed': 0,
+                      'manual': 0, 'no_vtable': 0, 'no_func': 0, 'read_fail': 0}
 
             tx = program.startTransaction('Vtable name reconciler') if not args.dry_run else None
             commit = False
@@ -391,10 +434,11 @@ def main():
                         # type an older pipeline stamped on them -- upgrade
                         # them to the bound CommonLib method name.
                         if _PLACEHOLDER_SLOT.fullmatch(leaf_curr):
-                            _rename_slot(func, func_addr, program, target,
-                                         expected_name, curr, args.dry_run,
-                                         class_short, SourceType)
-                            totals['reconciled'] += 1
+                            renamed = _rename_slot(
+                                func, func_addr, program, target,
+                                expected_name, curr, args.dry_run,
+                                class_short, SourceType)
+                            totals['reconciled' if renamed else 'failed'] += 1
                             continue
                         # Only reconcile names of the form '<x>::<leaf>' where
                         # the leaf is one of THIS class's expected method names
@@ -413,10 +457,11 @@ def main():
                             totals['manual'] += 1
                             continue
                         # Stale CommonLib name: overwrite.
-                        _rename_slot(func, func_addr, program, target,
-                                     expected_name, curr, args.dry_run,
-                                     class_short, SourceType)
-                        totals['reconciled'] += 1
+                        renamed = _rename_slot(
+                            func, func_addr, program, target,
+                            expected_name, curr, args.dry_run,
+                            class_short, SourceType)
+                        totals['reconciled' if renamed else 'failed'] += 1
                 commit = True
             finally:
                 if tx is not None:
@@ -426,8 +471,12 @@ def main():
 
             print()
             print('=== Reconciler summary ===')
-            for k in ('reconciled', 'ok', 'unnamed', 'manual', 'no_vtable', 'no_func', 'read_fail'):
+            for k in ('reconciled', 'failed', 'ok', 'unnamed', 'manual',
+                      'no_vtable', 'no_func', 'read_fail'):
                 print('  {:<12} {}'.format(k, totals[k]))
+            if totals['failed']:
+                print('  ({} slot(s) still carry a stale name -- see the WARNs '
+                      'above)'.format(totals['failed']))
             if args.dry_run:
                 print('(dry-run: no changes written)')
             else:

@@ -90,6 +90,8 @@ def test_commonlib_offer_reports_subprocess_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "GHIDRA_SCRIPTS_DIR", generated)
     monkeypatch.setattr(run, "SCRIPTS_DIR", scripts)
     monkeypatch.setattr(run, "_wait_for_unlock", lambda *_args: True)
+    # Binding is its own step with its own tests; this one is about the applier.
+    monkeypatch.setattr(run, "_ensure_importer_bound", lambda *_args: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
     monkeypatch.setattr(
         run.subprocess, "run",
@@ -98,6 +100,172 @@ def test_commonlib_offer_reports_subprocess_failure(tmp_path, monkeypatch):
     assert run._offer_commonlib_apply(
         "project-dir", "Combined",
         "/Fallout4/Fallout4_1_11_221.exe") is False
+
+
+def test_locked_project_step_is_retried_not_reported_as_failed(monkeypatch, capsys):
+    """The usual holder is the previous step's JVM, still exiting.
+
+    No lock file is on disk by then, so the pre-flight file check waves the step
+    through and the open loses the race.  Retrying is the entire fix, so a step
+    that exits PROJECT_LOCKED_EXIT must offer one rather than report a failure.
+    """
+    codes = iter([run.PROJECT_LOCKED_EXIT, run.PROJECT_LOCKED_EXIT, 0])
+    attempts = []
+
+    def fake_run(cmd, **_kwargs):
+        attempts.append(cmd)
+        return SimpleNamespace(returncode=next(codes))
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    rc = run._run_project_step(["step"], "project-dir", "Combined", "the step")
+    assert rc == 0
+    assert len(attempts) == 3
+
+
+def test_declining_the_retry_leaves_the_step_locked(monkeypatch):
+    monkeypatch.setattr(
+        run.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=run.PROJECT_LOCKED_EXIT))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    assert run._run_project_step(
+        ["step"], "project-dir", "Combined", "the step") == run.PROJECT_LOCKED_EXIT
+
+
+def test_a_real_failure_is_not_mistaken_for_a_lock(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=4)
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", _never_asked)
+
+    assert run._run_project_step(
+        ["step"], "project-dir", "Combined", "the step") == 4
+    assert len(calls) == 1
+
+
+def _never_asked(_prompt):
+    raise AssertionError("a non-lock exit code must not prompt for a retry")
+
+
+def test_unbound_importer_is_never_applied(tmp_path, monkeypatch):
+    """An importer that names no build must not reach the applier at all."""
+    generated = tmp_path / "generated"
+    scripts = tmp_path / "scripts"
+    generated.mkdir()
+    scripts.mkdir()
+    (generated / "CommonLibImport_F4_221.py").write_text(
+        "# legacy, unbound\n", encoding="ascii")
+    (scripts / "apply_f4_to_user_project.py").write_text(
+        "# fixture\n", encoding="ascii")
+    applied = []
+
+    monkeypatch.setattr(run, "GHIDRA_SCRIPTS_DIR", generated)
+    monkeypatch.setattr(run, "SCRIPTS_DIR", scripts)
+    monkeypatch.setattr(run, "_wait_for_unlock", lambda *_args: True)
+    # "Apply now?" -> yes; "Regenerate?" -> no.
+    answers = iter(["y", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(
+        run.subprocess, "run",
+        lambda *args, **kwargs: applied.append(args) or SimpleNamespace(returncode=0))
+
+    assert run._offer_commonlib_apply(
+        "project-dir", "Combined",
+        "/Fallout4/Fallout4_1_11_221.exe") is False
+    assert not applied, "an unbound importer must never be handed to the applier"
+
+
+def test_true_vr_importer_is_preferred_when_generated(tmp_path, monkeypatch):
+    """The powerof3 VR importer emits no vtables; prefer the CommonLibVR one."""
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    monkeypatch.setattr(run, "GHIDRA_SCRIPTS_DIR", generated)
+
+    # Not generated yet -> the inferred (powerof3) importer stands.
+    assert run._preferred_importer("CommonLibImport_VR.py") == "CommonLibImport_VR.py"
+
+    (generated / "CommonLibImport_CLVR_VR.py").write_text("# fixture\n", encoding="ascii")
+    assert run._preferred_importer("CommonLibImport_VR.py") == "CommonLibImport_CLVR_VR.py"
+
+    # Other runtimes are untouched, and an unknown program stays unknown.
+    assert run._preferred_importer("CommonLibImport_SE.py") == "CommonLibImport_SE.py"
+    assert run._preferred_importer(None) is None
+
+
+def test_true_vr_importer_resolves_to_the_skyrim_vr_build():
+    """The alias must still name exes/skyrim/vr, or its errors point nowhere."""
+    from version_catalog import entry_for_importer, target_for_importer
+
+    assert entry_for_importer("CommonLibImport_CLVR_VR.py")[0] == "svr"
+    assert target_for_importer("CommonLibImport_CLVR_VR.py") == (
+        "Skyrim VR 1.4.15", "skyrim/vr")
+
+
+def test_true_f4vr_importer_is_preferred_and_resolves_to_the_f4vr_build(
+        tmp_path, monkeypatch):
+    """Fallout 4 VR gets the same upgrade: CommonLibF4 emits no VR vtables."""
+    from version_catalog import entry_for_importer, generation_target, target_for_importer
+
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    monkeypatch.setattr(run, "GHIDRA_SCRIPTS_DIR", generated)
+
+    assert run._preferred_importer("CommonLibImport_F4_VR.py") == "CommonLibImport_F4_VR.py"
+    (generated / "CommonLibImport_CLF4VR_VR.py").write_text("# fixture\n", encoding="ascii")
+    assert run._preferred_importer("CommonLibImport_F4_VR.py") == "CommonLibImport_CLF4VR_VR.py"
+
+    assert entry_for_importer("CommonLibImport_CLF4VR_VR.py")[0] == "f4vr"
+    assert target_for_importer("CommonLibImport_CLF4VR_VR.py") == (
+        "Fallout 4 VR 1.2.72", "f4/vr")
+    assert generation_target("CommonLibImport_CLF4VR_VR.py") == ("f4", "vr")
+
+
+def test_ensure_importer_bound_recovers_exe_when_none_is_staged(
+        tmp_path, monkeypatch):
+    """The exe is usually gone, so offer recovery instead of a dead end."""
+    importer = tmp_path / "CommonLibImport_VR.py"
+    importer.write_text("# legacy, unbound\n", encoding="ascii")
+    calls = []
+
+    monkeypatch.setattr(run, "_version_status", lambda _entry: (False, True, None))
+    monkeypatch.setattr(run, "_recover_target_pe",
+                        lambda *args: calls.append("recover") or "recovered.exe")
+
+    def _fake_generate(games=None, only_version=None):
+        calls.append(("generate", tuple(sorted(games)), only_version))
+        importer.write_text("TARGET_MANIFESTS = []\n", encoding="ascii")
+
+    monkeypatch.setattr(run, "generate_scripts", _fake_generate)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    # TARGET_MANIFESTS = [] is still not a valid binding, so this must fail --
+    # and it must have tried recovery and a VR-only regeneration to get there.
+    assert run._ensure_importer_bound(
+        "CommonLibImport_VR.py", importer,
+        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is False
+    assert calls == ["recover", ("generate", ("skyrim",), "vr")]
+
+
+def test_ensure_importer_bound_passes_through_a_bound_importer(tmp_path, monkeypatch):
+    importer = tmp_path / "CommonLibImport_VR.py"
+    importer.write_text("# unused\n", encoding="ascii")
+    monkeypatch.setattr(run, "extract_target_manifests", lambda _path: [{"sha256": "a" * 64}])
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    assert run._ensure_importer_bound(
+        "CommonLibImport_VR.py", importer,
+        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is True
+
+
+def _no_input(_prompt):
+    raise AssertionError("a bound importer must not prompt the user")
 
 
 def test_option9_stops_before_rtti_when_commonlib_apply_fails(monkeypatch):
@@ -252,6 +420,8 @@ def test_headless_enrichment_stage_is_idempotent_and_rejects_stale_state():
     assert run_headless._enrichment_stage_action(
         run_headless.PIPELINE_STAGE_ENRICHED + sha, sha, False) == "skip"
     with pytest.raises(RuntimeError, match="different or legacy"):
+        # A legacy stamp: the marker on disk says "enriched" whatever we now
+        # call the step, so the stage check must still recognise it.
         run_headless._enrichment_stage_action("enriched:" + sha, sha, False)
     with pytest.raises(RuntimeError, match="different or legacy"):
         run_headless._enrichment_stage_action(
