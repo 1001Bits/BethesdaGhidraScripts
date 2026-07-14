@@ -196,18 +196,12 @@ Skyrim VR shares the SE-derived ID namespace with SE/AE, so the same
 against the VR address library.  The VR address library ships as a CSV
 (community-maintained) rather than meh321's binary format.
 
-That script alone is not enough, though, and the reason is worth stating: the
-flatscreen CommonLibs parse VR with the *flatscreen* defines set, so VR structs
-come out SE/OG-shaped -- and because those layouts are known to be wrong for VR,
-both libraries' own policy is to emit **no VR vtables at all**.  An RTTI walk
-over SkyrimVR.exe finds ~8,500 vtables and can name almost none of them.  So
-each VR runtime is additionally parsed from a CommonLib that genuinely models
-it (`alandtse/CommonLibVR` with `ENABLE_SKYRIM_VR`, `ArthurHub/CommonLibF4VR`
-with `ENABLE_FALLOUT_VR`), which yields the real struct sizes -- `NiAVObject`
-is `0x138` in Skyrim VR, not SE's `0x110` -- and real vtable slots.  Emission is
-fail-closed: nothing is written unless the slots match a hand-verified anchors
-CSV (`scripts/commonlibvr/anchors/`, `scripts/commonlibf4vr/anchors/`) for that
-exact binary.  Menu option **9** prefers these importers automatically.
+That is not enough on its own: the flatscreen CommonLibs describe VR structs as
+if they were SE/OG ones, and they emit no VR vtables at all.  So each VR runtime
+is also parsed from a CommonLib that really models it (`alandtse/CommonLibVR`,
+`ArthurHub/CommonLibF4VR`), giving the true struct sizes and vtable slots --
+checked against a hand-verified anchors CSV before anything is written, and used
+by menu option **9** automatically.
 
 CommonLibF4's IDs sit in the NG/AE namespace (1.10.984 / 1.11.191), so those
 two versions get full type + function symbol coverage from the address
