@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Address-coordinate helpers for the 32-bit Fallout New Vegas image.
 
-The FNV enrichment sources historically mixed absolute virtual addresses
+The FNV improvement sources historically mixed absolute virtual addresses
 (VAs) and image-relative virtual addresses (RVAs), sometimes in the same
 file.  Downstream code must never guess which coordinate a number uses.
 This module is the single conversion boundary used by the FNV tools.

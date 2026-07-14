@@ -1,7 +1,7 @@
 """Pure (Ghidra-free) decompiler-quality scoring for signature conflict resolution.
 
 When a CommonLib signature conflicts with an existing USER_DEFINED/IMPORTED one,
-the enrich apply does NOT blindly trust the incumbent: it decompiles the function
+the improve apply does NOT blindly trust the incumbent: it decompiles the function
 with each signature and keeps whichever produces cleaner C. This module holds the
 scoring + decision logic so it is unit-testable without a Ghidra session.
 

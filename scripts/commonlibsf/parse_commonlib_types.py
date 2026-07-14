@@ -201,7 +201,7 @@ def _build_fallback_symbols(addr_lib, sf_version, layout, verbose=True):
          curated ID->name database (~974 entries).  ID-keyed, so it
          resolves against ANY versionlib: fully version-portable.
       2. ``refs/sf116_named_from_combined_final.csv`` -- the offline
-         enrichment corpus (~64k ``0xVA,name`` rows: byte-sig + BSim +
+         improvement corpus (~64k ``0xVA,name`` rows: byte-sig + BSim +
          RTTI-walk names harvested from the user's Combined project).
          VA-keyed against 1.16.236; when the detected exe is a different
          patch the RVAs are remapped 236-RVA -> ID -> detected-RVA via

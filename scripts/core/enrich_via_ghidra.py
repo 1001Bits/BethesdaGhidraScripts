@@ -1,4 +1,4 @@
-"""Enrich a per-binary vtable layout CSV with names + fingerprints from Ghidra.
+"""Improve a per-binary vtable layout CSV with names + fingerprints from Ghidra.
 
 For every slot in the input CSV that doesn't already have a fingerprint,
 calls ``get_function_signature`` against the running GhidrAssistMCP server
@@ -170,7 +170,7 @@ def main() -> int:
         cv = layout.classes[cls_name]
         for slot, e in cv.slots.items():
             if e.fingerprint:
-                continue  # already enriched -- resume
+                continue  # already improved -- resume
             if args.skip_named and e.func_name and not e.func_name.startswith('FUN_'):
                 continue
             worklist.append((cls_name, slot, e))

@@ -1,4 +1,4 @@
-"""Enrich a per-binary vtable layout CSV with PDB names from an on-disk symbol file.
+"""Improve a per-binary vtable layout CSV with PDB names from an on-disk symbol file.
 
 Useful when the legacy importer produced a layout CSV with addresses but
 no function names (the ``f4vr_vtables.txt`` format auto-labels every slot
@@ -90,7 +90,7 @@ def main() -> int:
     syms = load_symbols(args.symbols)
     print(f'Loaded symbol table: {len(syms):,} entries')
 
-    enriched = 0
+    improved = 0
     addr_misses = 0
     for cv in layout.classes.values():
         for e in cv.slots.values():
@@ -100,12 +100,12 @@ def main() -> int:
             if name:
                 if name != e.func_name:
                     e.func_name = name
-                    enriched += 1
+                    improved += 1
             else:
                 addr_misses += 1
 
     n = save_csv(layout, args.out)
-    print(f'Enriched {enriched:,} slots with PDB names')
+    print(f'Improved {improved:,} slots with PDB names')
     print(f'Address misses: {addr_misses:,} (no symbol entry for that address)')
     print(f'Wrote {n:,} rows -> {args.out}')
     return 0

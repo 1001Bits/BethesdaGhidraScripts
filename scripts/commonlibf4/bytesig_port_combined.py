@@ -461,7 +461,7 @@ def main():
                          "(default 221 — has the richest PDB pool)")
     ap.add_argument('--targets', nargs='+', default=['og', 'ng', 'ae', 'vr'],
                     choices=sorted(VERSIONS),
-                    help="Target F4 variants to enrich (default: all except 221)")
+                    help="Target F4 variants to improve (default: all except 221)")
     ap.add_argument('--source-path', default=None,
                     help="Exact source program path (overrides hint match)")
     ap.add_argument('--target-paths', nargs='+', default=None,

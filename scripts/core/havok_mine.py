@@ -33,13 +33,13 @@ headers (for example, a locally configured Havok SDK include tree), parsed into 
 structs.  That is a separate, partial-coverage effort: the SDK ships
 Physics2012 + Common but not the hkb*/hknp* gameplay headers, and offset
 computation requires compiling the (template/SIMD/alignment-macro heavy)
-tree -- out of scope for binary-derived enrichment.
+tree -- out of scope for binary-derived improvement.
 
 This file is kept as a VERIFIER: if a future build (or a debug/editor
 binary) is suspected to ship reflection, run it -- a nonzero
 "hkClass (>=1 members)" count means the metadata is present and the
 emitted CSV gives authoritative field offsets for the whole havok
-subsystem.  It is deliberately NOT in the default enrichment sweep.
+subsystem.  It is deliberately NOT in the default improvement sweep.
 
 Layout (Havok 2014.x x64 ABI, from the SDK headers
 Source/Common/Base/Reflection/{hkClass,hkClassMember}.h -- CONFIRMED):

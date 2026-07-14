@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind an enrichment-evidence file to its exact target executable.
+"""Bind an improvement-evidence file to its exact target executable.
 
 The identity-gated appliers (``apply_idc_labels``, ``apply_og_names``,
 ``apply_vcall_xrefs``) refuse ``--apply`` without a ``<evidence>.identity.json``

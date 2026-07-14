@@ -198,7 +198,7 @@ def run():
 
     # =========================== APPLY ===========================
     print('\n*** APPLYING (CLVR_APPLY=go) ***')
-    tx = dtm.startTransaction('CommonLibVR enrich apply')
+    tx = dtm.startTransaction('CommonLibVR improve apply')
     try:
         # Phase 1: register created[] target for every struct + enum + vtable.
         # REUSE/PROTECT -> existing dt; CREATE -> shell in /types.h; REPLACE ->
@@ -615,7 +615,7 @@ def run_symbols():
             return 'REL::ID(%d)' % ai
         return None
 
-    tx = cp.startTransaction('CommonLibVR symbol/vtable enrich')
+    tx = cp.startTransaction('CommonLibVR symbol/vtable improve')
     labeled = named = made = sigd = 0
     try:
         for s in SYMBOLS:
@@ -662,7 +662,7 @@ def run_symbols():
         gns['_import_fallback_symbols']()   # enrich-safe: FUN_/sub_ only
     finally:
         cp.endTransaction(tx, True)
-    print('Symbol/vtable enrich complete.')
+    print('Symbol/vtable improve complete.')
 
 
 def _sig_key(sig):

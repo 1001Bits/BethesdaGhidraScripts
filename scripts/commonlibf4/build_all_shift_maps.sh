@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build per-version F4 shift maps after enrichment.
+# Build per-version F4 shift maps after improvement.
 #
 # The build-time patcher applies shift maps in the form
 #   ref_slot (header layout) -> target_slot (binary layout)
@@ -8,7 +8,7 @@
 # computed by matching against OG.
 #
 # Prerequisites:
-#   - F4 OG, NG, AE, VR all enriched via scripts/core/enrich_via_ghidra.py
+#   - F4 OG, NG, AE, VR all improved via scripts/core/enrich_via_ghidra.py
 #     (run separately while each binary is loaded in Ghidra).
 #   - F4 OG must be loaded in Ghidra at some point to populate
 #     refs/f4_og_vtables.csv with fingerprints.

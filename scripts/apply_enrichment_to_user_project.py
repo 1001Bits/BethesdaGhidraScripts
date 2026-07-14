@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a core enrichment driver (string_anchored_rename / ctor_mine /
+"""Run a core improvement driver (string_anchored_rename / ctor_mine /
 globals_harvest) against a program in a user's Ghidra project via pyghidra.
 
 These drivers are game-agnostic -- they work on any MSVC-compiled
@@ -31,6 +31,7 @@ sys.path.insert(0, str(CORE_DIR))
 from pyghidra_result import end_outer_transaction, require_script_success
 from binary_identity import (inspect_pe, verify_ghidra_program,
                              _program_executable_path)
+from ghidra_project import open_user_project
 
 DRIVERS = {
     'string_anchored_rename': CORE_DIR / 'string_anchored_rename.py',
@@ -50,7 +51,7 @@ DRIVERS = {
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--driver', required=True, choices=sorted(DRIVERS),
-                    help="Which core enrichment driver to run")
+                    help="Which core improvement driver to run")
     ap.add_argument('--project-dir',  default="C:/GhidraProjects")
     ap.add_argument('--project-name', default="Combined")
     ap.add_argument('--program-path', required=True,
@@ -74,7 +75,7 @@ def main():
     monitor = ConsoleTaskMonitor()
 
     print(f"Opening project: {args.project_dir}/{args.project_name}.gpr")
-    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         root = project.getProjectData().getRootFolder()
 
         match = []
@@ -102,7 +103,7 @@ def main():
             executable = _program_executable_path(program)
             verify_ghidra_program(program, [inspect_pe(executable)])
             print(f"Running {args.driver} via pyghidra...")
-            tx = program.startTransaction("Atomic enrichment " + args.driver)
+            tx = program.startTransaction("Atomic improvement " + args.driver)
             commit = False
             try:
                 stdout, stderr = pyghidra.ghidra_script(
@@ -114,7 +115,7 @@ def main():
                 end_outer_transaction(program, tx, commit, args.driver)
             if not args.read_only:
                 print("Saving...")
-                program.save(f"enrichment: {args.driver}", monitor)
+                program.save(f"improvement: {args.driver}", monitor)
             print("Done.")
         finally:
             program.release(consumer)

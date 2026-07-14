@@ -1,6 +1,6 @@
 """In-Ghidra population cycle orchestrator (the convergence driver).
 
-Closes the loop WITHOUT leaving Ghidra. Each cycle runs three enrich stages in
+Closes the loop WITHOUT leaving Ghidra. Each cycle runs three improve stages in
 order and the output of each is an anchor for the next:
 
   1. thiscall  (seed_this.py)        -- widen the typed-`this` surface

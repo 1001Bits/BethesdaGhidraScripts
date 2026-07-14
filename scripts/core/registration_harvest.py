@@ -212,7 +212,7 @@ def run():
     program = currentProgram  # noqa: F821
     # Establish exact target provenance before any output or Program mutation.
     # A detached/legacy Program with no executable SHA-256 is not a safe
-    # source of persistent enrichment evidence.
+    # source of persistent improvement evidence.
     target_sha = _target_sha(program)
     from binary_identity import inspect_pe, verify_ghidra_program
     backing_manifest = inspect_pe(str(program.getExecutablePath()))
@@ -321,7 +321,7 @@ def run():
     success = False
     had_parent_transaction = (
         APPLY and program.getCurrentTransactionInfo() is not None)
-    tx = program.startTransaction("BGS registration enrichment") if APPLY else None
+    tx = program.startTransaction("BGS registration improvement") if APPLY else None
     try:
         if APPLY:
             for row in rows:
@@ -347,7 +347,7 @@ def run():
             committed = bool(program.endTransaction(tx, success))
             if success and not had_parent_transaction and not committed:
                 raise RuntimeError(
-                    "registration enrichment transaction did not commit")
+                    "registration improvement transaction did not commit")
 
     print("registry-harvest (%s): scanned=%d raw=%d accepted=%d %s=%d -> %s" % (
         program.getName(), scanned, len(observations), len(rows),

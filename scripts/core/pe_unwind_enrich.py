@@ -1,4 +1,4 @@
-"""Ghidra driver: enrich AMD64 functions from linker ``.pdata/.xdata``.
+"""Ghidra driver: improve AMD64 functions from linker ``.pdata/.xdata``.
 
 Runtime-function entries provide exact function starts/ranges and unwind facts
 without relying on prologue bytes.  The driver validates every destination
@@ -72,7 +72,7 @@ def run():
     success = False
     had_parent_transaction = (
         APPLY and cp.getCurrentTransactionInfo() is not None)
-    tx = cp.startTransaction("BGS PE unwind enrichment") if APPLY else None
+    tx = cp.startTransaction("BGS PE unwind improvement") if APPLY else None
     try:
         for row in runtime_functions:
             begin_rva = int(row["begin_rva"])
@@ -148,7 +148,7 @@ def run():
             committed = bool(cp.endTransaction(tx, success))
             if success and not had_parent_transaction and not committed:
                 raise RuntimeError(
-                    "pe-unwind enrichment transaction did not commit")
+                    "pe-unwind improvement transaction did not commit")
 
     print("pe-unwind (%s): %s valid=%d existing=%d %s=%d %s=%d rejected=%d" % (
         cp.getName(), "APPLIED" if APPLY else "DRY-RUN", valid, existing,
