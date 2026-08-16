@@ -283,7 +283,16 @@ def _ghidra_version(path):
 
 
 def _clang_version(executable=None):
-    command = str(executable) if executable is not None else "clang"
+    # Default to the clang this repo installs, not whatever "clang" PATH resolves to.
+    # setup_clang() puts it under tools/llvm/bin and only mutates PATH for the life of
+    # that process, so a later `python run.py build` sees no clang on PATH: the status
+    # panel prints "Clang: not installed" and generate_scripts() skips emitting the
+    # importers -- the run then imports binaries, ports nothing, and still exits 0.
+    if executable is None:
+        local = LLVM_DIR / "bin" / ("clang.exe" if sys.platform == "win32" else "clang")
+        command = str(local) if local.is_file() else "clang"
+    else:
+        command = str(executable)
     try:
         r = subprocess.run(
             [command, "--version"], capture_output=True, text=True, check=True)

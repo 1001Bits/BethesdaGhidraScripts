@@ -1,0 +1,23 @@
+# Identity-bound artifacts must reach the working tree byte-for-byte.
+#
+# Several reference corpora are validated against a SHA-256 recorded in a sibling
+# *.identity.json. Git's line-ending conversion changes those bytes: with the
+# Git-for-Windows default (core.autocrlf=true) a checkout rewrites LF to CRLF, the
+# hash no longer matches, and the loader refuses the file. For
+# f4_221_pdb_publics.txt that surfaces as
+#
+#   ValueError: F4 221 PDB-public dump changed after binding
+#
+# raised from pdb_publics_f4_221.py::_validate_identity, which aborts
+# generate_scripts() with a traceback and takes the whole run down -- so the 38k-record
+# 1.11.221 public-symbol corpus is unusable on a default Windows clone no matter which
+# executables are staged. The file is bound to its LF form (the bytes stored in the
+# index), so -text makes the checkout match the binding on every platform.
+scripts/commonlibf4/refs/f4_221_pdb_publics.txt -text
+
+# NOTE for maintainers: bytesig_ported_221.csv and bytesig_ported_og.csv are the
+# mirror image -- their recorded hashes match the CRLF *working tree* rather than the
+# LF index, so they validate on Windows today and would fail on a checkout that does
+# not convert (Linux/macOS, or core.autocrlf=false). Marking them -text as well is the
+# consistent fix, but it requires re-recording their artifact_sha256 against the LF
+# bytes, so it is deliberately left out of this change.

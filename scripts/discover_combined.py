@@ -35,7 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'core'))
 from evidence_identity import (EvidenceIdentityError, bind_for_hash,
                                read_binding)
-from binary_identity import inspect_pe, verify_ghidra_program
+from binary_identity import (inspect_pe, verify_ghidra_program,
+                             _program_executable_path)
 from pyghidra_result import end_outer_transaction, require_script_success
 
 REPO_DIR   = Path(__file__).resolve().parent.parent
@@ -252,7 +253,11 @@ def main():
                 program = df.getDomainObject(consumer, True, False, monitor)
                 try:
                     try:
-                        executable = str(program.getExecutablePath() or '')
+                        # Ghidra renders a Windows drive path as /C:/...; passing that
+                        # straight to the filesystem yields C:\C:\... and every program
+                        # fails identity verification. binary_identity ships the
+                        # canonicalizer for exactly this -- use it.
+                        executable = _program_executable_path(program)
                         manifest = inspect_pe(executable)
                         verify_ghidra_program(program, [manifest])
                     except Exception as exc:  # noqa: BLE001

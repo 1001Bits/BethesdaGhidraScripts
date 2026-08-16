@@ -53,11 +53,15 @@ from bytesig_evidence import (                         # noqa: E402
 # Version → (CommonLibImport filename, [path-substring hints used to find
 # the binary inside a combined project]).  Mirrors apply_f4_to_user_project.
 VERSIONS = {
-    'og':  ('CommonLibImport_F4_OG.py',  ['_og_', '_og.', '1_10_163', '1.10.163']),
-    'ng':  ('CommonLibImport_F4_NG.py',  ['_ng_', '_ng.', '1_10_984', '1.10.984', '1_10_980', '1.10.980']),
-    'ae':  ('CommonLibImport_F4_AE.py',  ['_ae_', '_ae.', ' ae.exe', '1_11_191', '1.11.191']),
-    'vr':  ('CommonLibImport_F4_VR.py',  ['fallout4vr', 'fallout4_vr', '1_2_72', '1.2.72']),
-    '221': ('CommonLibImport_F4_221.py', ['_221.exe', '_221_', '1_11_221', '1.11.221']),
+    'og':  ('CommonLibImport_F4_OG.py',  ['_og_', '_og.', '/og/', '1_10_163', '1.10.163']),
+    'ng':  ('CommonLibImport_F4_NG.py',  ['_ng_', '_ng.', '/ng/', '1_10_984', '1.10.984',
+                                          '1_10_980', '1.10.980']),
+    'ae':  ('CommonLibImport_F4_AE.py',  ['_ae_', '_ae.', ' ae.exe', '/ae/', '1_11_191', '1.11.191']),
+    'vr':  ('CommonLibImport_F4_VR.py',  ['fallout4vr', 'fallout4_vr', '/vr/', '1_2_72', '1.2.72']),
+    # '/221/' covers this repo's own import layout (exes/f4/221/Fallout4.exe imports as
+    # /f4/221/Fallout4.exe.unpacked.exe); the underscore forms cover hand-named binaries.
+    '221': ('CommonLibImport_F4_221.py',
+            ['_221.exe', '_221_', '/221/', '1_11_221', '1.11.221']),
 }
 
 VERSION_TO_RVA_KEY = {'og': 'og', 'ng': 'ng', 'ae': 'a', 'vr': 'v', '221': '221'}
