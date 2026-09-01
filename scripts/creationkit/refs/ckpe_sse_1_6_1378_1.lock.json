@@ -1,0 +1,199 @@
+{
+  "schema": "bgs-ckpe-evidence-lock-v1",
+  "source": {
+    "commit": "cfd8533d7522822242d0b0602fe77d17bc929cea",
+    "database": {
+      "canonical_tree_sha256": "d9aeb6d340572295fb55fb731dfc67b1b418e9fd5a75bede36b1711ce54156b4",
+      "file_count": 126,
+      "path": "Database/SSE/1_6_1378_1"
+    },
+    "license": "LGPL-3.0",
+    "patch_sources": {
+      "canonical_tree_sha256": "ae840ac76dcc92ad0fdc22342bf70cf5dc1f69279a3fb5d266a371199b7e6848",
+      "file_count": 121,
+      "path": "CKPE.SkyrimSE/Src/Patches"
+    },
+    "repository": "https://github.com/Perchik71/Creation-Kit-Platform-Extended"
+  },
+  "target": {
+    "anchors": [
+      {
+        "bytes": "cccccccccce916c9aa01e9e1aa9601e9",
+        "rva": 16109568,
+        "section": ".text"
+      },
+      {
+        "bytes": "44247848837c2478000f849b00000048",
+        "rva": 27215354,
+        "section": ".text"
+      },
+      {
+        "bytes": "edaaf30f11ad80050000f30f116e0848",
+        "rva": 38321141,
+        "section": ".text"
+      },
+      {
+        "bytes": "cccccccccccccccccccccccccccccccc",
+        "rva": 49426928,
+        "section": ".text"
+      },
+      {
+        "bytes": "000000bc1f1343010000007500000000",
+        "rva": 52430501,
+        "section": ".rdata"
+      },
+      {
+        "bytes": "02500106020006320250010602000632",
+        "rva": 55430474,
+        "section": ".rdata"
+      },
+      {
+        "bytes": "deadbeef000000002825f54201000000",
+        "rva": 58433536,
+        "section": ".data"
+      },
+      {
+        "bytes": "00000000000007000000000000000000",
+        "rva": 59852106,
+        "section": ".data"
+      }
+    ],
+    "file_size": 47954944,
+    "file_version": [
+      1,
+      6,
+      1378,
+      1
+    ],
+    "image_base": 5368709120,
+    "image_size": 95490048,
+    "machine": 34404,
+    "pointer_size": 8,
+    "sections": [
+      {
+        "characteristics": 3758096544,
+        "executable": true,
+        "name": ".textbss",
+        "raw_offset": 0,
+        "raw_size": 0,
+        "readable": true,
+        "rva": 4096,
+        "virtual_size": 16104625,
+        "writable": true
+      },
+      {
+        "characteristics": 1610612768,
+        "executable": true,
+        "name": ".text",
+        "raw_offset": 1536,
+        "raw_size": 33317376,
+        "readable": true,
+        "rva": 16109568,
+        "virtual_size": 33317376,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rdata",
+        "raw_offset": 33318912,
+        "raw_size": 8999936,
+        "readable": true,
+        "rva": 49430528,
+        "virtual_size": 8999881,
+        "writable": false
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".data",
+        "raw_offset": 42318848,
+        "raw_size": 2127872,
+        "readable": true,
+        "rva": 58433536,
+        "virtual_size": 33531889,
+        "writable": true
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".pdata",
+        "raw_offset": 44446720,
+        "raw_size": 1910272,
+        "readable": true,
+        "rva": 91967488,
+        "virtual_size": 1909920,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".idata",
+        "raw_offset": 46356992,
+        "raw_size": 50176,
+        "readable": true,
+        "rva": 93880320,
+        "virtual_size": 49999,
+        "writable": false
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".tls",
+        "raw_offset": 46407168,
+        "raw_size": 15360,
+        "readable": true,
+        "rva": 93933568,
+        "virtual_size": 14933,
+        "writable": true
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".text",
+        "raw_offset": 46422528,
+        "raw_size": 8192,
+        "readable": true,
+        "rva": 93949952,
+        "virtual_size": 7950,
+        "writable": true
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".00cfg",
+        "raw_offset": 46430720,
+        "raw_size": 512,
+        "readable": true,
+        "rva": 93958144,
+        "virtual_size": 283,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": "_RDATA",
+        "raw_offset": 46431232,
+        "raw_size": 6144,
+        "readable": true,
+        "rva": 93962240,
+        "virtual_size": 5974,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rsrc",
+        "raw_offset": 46437376,
+        "raw_size": 1517568,
+        "readable": true,
+        "rva": 93970432,
+        "virtual_size": 1517164,
+        "writable": false
+      }
+    ],
+    "sha256": "3e8f7215303a82d8991f87fbc42eb84ef2672d5d8ab038212447faecfdf37b23",
+    "timestamp": 1731014139,
+    "version_string": "1.6.1378.1"
+  }
+}

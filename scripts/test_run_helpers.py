@@ -60,6 +60,7 @@ def test_launch_ghidra_reaches_process_start(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "GHIDRA_DIR", ghidra)
     monkeypatch.setattr(run, "PROJECTS_DIR", tmp_path / "ghidraprojects")
     monkeypatch.setattr(run, "_project_lock_files", lambda *_args: [])
+    monkeypatch.setattr(run, "_configure_java_home_override", lambda: None)
     monkeypatch.setattr(run.sys, "platform", "win32")
     monkeypatch.setattr(run.subprocess, "Popen",
                         lambda *args, **kwargs: launched.append((args, kwargs)))
@@ -98,7 +99,7 @@ def test_commonlib_offer_reports_subprocess_failure(tmp_path, monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(returncode=17))
 
     assert run._offer_commonlib_apply(
-        "project-dir", "Combined",
+        "project-dir", "ExampleProject",
         "/Fallout4/Fallout4_1_11_221.exe") is False
 
 
@@ -117,9 +118,10 @@ def test_locked_project_step_is_retried_not_reported_as_failed(monkeypatch, caps
         return SimpleNamespace(returncode=next(codes))
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
+    monkeypatch.setattr(run, "_configure_java_home_override", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
 
-    rc = run._run_project_step(["step"], "project-dir", "Combined", "the step")
+    rc = run._run_project_step(["step"], "project-dir", "ExampleProject", "the step")
     assert rc == 0
     assert len(attempts) == 3
 
@@ -129,10 +131,11 @@ def test_declining_the_retry_leaves_the_step_locked(monkeypatch):
         run.subprocess, "run",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=run.PROJECT_LOCKED_EXIT))
+    monkeypatch.setattr(run, "_configure_java_home_override", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
 
     assert run._run_project_step(
-        ["step"], "project-dir", "Combined", "the step") == run.PROJECT_LOCKED_EXIT
+        ["step"], "project-dir", "ExampleProject", "the step") == run.PROJECT_LOCKED_EXIT
 
 
 def test_a_real_failure_is_not_mistaken_for_a_lock(monkeypatch):
@@ -143,10 +146,11 @@ def test_a_real_failure_is_not_mistaken_for_a_lock(monkeypatch):
         return SimpleNamespace(returncode=4)
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
+    monkeypatch.setattr(run, "_configure_java_home_override", lambda: None)
     monkeypatch.setattr("builtins.input", _never_asked)
 
     assert run._run_project_step(
-        ["step"], "project-dir", "Combined", "the step") == 4
+        ["step"], "project-dir", "ExampleProject", "the step") == 4
     assert len(calls) == 1
 
 
@@ -177,7 +181,7 @@ def test_unbound_importer_is_never_applied(tmp_path, monkeypatch):
         lambda *args, **kwargs: applied.append(args) or SimpleNamespace(returncode=0))
 
     assert run._offer_commonlib_apply(
-        "project-dir", "Combined",
+        "project-dir", "ExampleProject",
         "/Fallout4/Fallout4_1_11_221.exe") is False
     assert not applied, "an unbound importer must never be handed to the applier"
 
@@ -249,7 +253,7 @@ def test_ensure_importer_bound_recovers_exe_when_none_is_staged(
     # and it must have tried recovery and a VR-only regeneration to get there.
     assert run._ensure_importer_bound(
         "CommonLibImport_VR.py", importer,
-        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is False
+        "project-dir", "ExampleProject", "/Skyrim/SkyrimVR_1_4_15.exe") is False
     assert calls == ["recover", ("generate", ("skyrim",), "vr")]
 
 
@@ -261,14 +265,14 @@ def test_ensure_importer_bound_passes_through_a_bound_importer(tmp_path, monkeyp
 
     assert run._ensure_importer_bound(
         "CommonLibImport_VR.py", importer,
-        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is True
+        "project-dir", "ExampleProject", "/Skyrim/SkyrimVR_1_4_15.exe") is True
 
 
 def _no_input(_prompt):
     raise AssertionError("a bound importer must not prompt the user")
 
 
-def test_option9_stops_before_rtti_when_commonlib_apply_fails(monkeypatch):
+def test_option9_runs_rtti_first_and_stops_when_commonlib_apply_fails(monkeypatch):
     calls = []
     monkeypatch.setattr(
         run, "_offer_commonlib_apply",
@@ -279,13 +283,15 @@ def test_option9_stops_before_rtti_when_commonlib_apply_fails(monkeypatch):
     monkeypatch.setattr(
         run, "_run_vtable_reconciler",
         lambda *_args, **_kwargs: calls.append("reconciler"))
+    monkeypatch.setattr(run, "_local_target_pe_candidates", lambda _path: [])
+    monkeypatch.setattr(run, "_header", lambda _message: None)
     monkeypatch.setattr(
-        run.subprocess, "run",
-        lambda *_args, **_kwargs: calls.append("rtti"))
+        run, "_run_project_step",
+        lambda *_args, **_kwargs: calls.append("rtti") or 0)
 
     assert run._run_enrichment_sequence(
-        "Combined", "project-dir", "Combined", "/game.exe") is False
-    assert calls == ["commonlib"]
+        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is False
+    assert calls == ["unlock", "rtti", "commonlib"]
 
 
 def test_option9_stops_before_reconciler_when_rtti_fails(monkeypatch):
@@ -303,7 +309,7 @@ def test_option9_stops_before_reconciler_when_rtti_fails(monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(returncode=9))
 
     assert run._run_enrichment_sequence(
-        "Combined", "project-dir", "Combined", "/game.exe") is False
+        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is False
     assert calls == []
 
 
@@ -330,7 +336,7 @@ def test_option9_passes_all_local_identity_candidates_to_rtti(
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
     assert run._run_enrichment_sequence(
-        "Combined", "project-dir", "Combined", "/game.exe") is True
+        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is True
     assert calls[0][-4:] == (
         "--target-pe", str(first), "--target-pe", str(unpacked))
     assert calls[1] == ("reconciler",)
@@ -372,7 +378,7 @@ def test_reconciler_uses_inferred_importer_without_prompts_or_dry_run(
 
     program = "/Fallout4/Fallout4_1_11_221.exe"
     assert run._run_vtable_reconciler(
-        "project-dir", "Combined", program) is True
+        "project-dir", "ExampleProject", program) is True
     assert len(calls) == 1
     command = calls[0]
     assert command[command.index("--import-script") + 1] == str(chosen)
@@ -392,10 +398,10 @@ def test_reconciler_skips_empty_or_unresolved_importer_without_pyghidra(
         lambda *_args, **_kwargs: pytest.fail("reconciler must not launch"))
 
     assert run._run_vtable_reconciler(
-        "project-dir", "Combined",
+        "project-dir", "ExampleProject",
         "/Fallout4/Fallout4_1_11_221.exe") is True
     assert run._run_vtable_reconciler(
-        "project-dir", "Combined", "/Unknown/game.exe") is True
+        "project-dir", "ExampleProject", "/Unknown/game.exe") is True
 
 
 def test_cmd_all_does_not_launch_failed_build(monkeypatch):
@@ -451,6 +457,44 @@ def test_interactive_cli_bootstraps_selected_python_before_menu(monkeypatch):
 
     run.main()
     assert calls == ["runtime", "menu"]
+
+
+def test_java_override_uses_jdk_from_path(tmp_path, monkeypatch):
+    suffix = ".exe" if run.sys.platform == "win32" else ""
+    home = tmp_path / "jdk"
+    bindir = home / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / ("java" + suffix)).write_text("", encoding="ascii")
+    (bindir / ("javac" + suffix)).write_text("", encoding="ascii")
+    monkeypatch.delenv("JAVA_HOME_OVERRIDE", raising=False)
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(
+        run.shutil, "which", lambda _name: str(bindir / ("java" + suffix)))
+
+    assert run._configure_java_home_override() == home.resolve()
+    assert run.os.environ["JAVA_HOME_OVERRIDE"] == str(home.resolve())
+
+
+def test_java_override_rejects_invalid_explicit_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("JAVA_HOME_OVERRIDE", str(tmp_path / "not-a-jdk"))
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(run.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="does not name a usable JDK"):
+        run._configure_java_home_override()
+
+
+def test_interactive_cli_propagates_workflow_failure(monkeypatch):
+    monkeypatch.setattr(run, "_require_supported_python", lambda: None)
+    monkeypatch.setattr(run, "_configure_utf8_console", lambda: None)
+    monkeypatch.setattr(run, "_enable_log_tee", lambda: None)
+    monkeypatch.setattr(run, "_ensure_python_packages", lambda: None)
+    monkeypatch.setattr(run, "_run_menu", lambda: 1)
+    monkeypatch.setattr(run.sys, "argv", ["run.py"])
+
+    with pytest.raises(SystemExit) as exc:
+        run.main()
+    assert exc.value.code == 1
 
 
 def test_interactive_cli_never_opens_menu_after_runtime_failure(monkeypatch):
@@ -574,3 +618,271 @@ def test_core_runtime_has_no_legacy_pdbparse_dependency():
     assert not any("pdbparse" in requirement.lower()
                    for requirement in run.PYTHON_LOCK_REQUIREMENTS)
     assert not hasattr(run, "OPTIONAL_PACKAGES")
+
+
+def test_clang_status_uses_receipt_verified_repo_toolchain(
+        tmp_path, monkeypatch):
+    llvm = tmp_path / "llvm"
+    clang = llvm / "bin" / ("clang.exe" if run.sys.platform == "win32"
+                             else "clang")
+    clang.parent.mkdir(parents=True)
+    clang.write_bytes(b"fixture")
+    validated = []
+
+    monkeypatch.setattr(run, "LLVM_DIR", llvm)
+    monkeypatch.setattr(
+        run, "validate_repo_llvm_install",
+        lambda repo: validated.append(repo))
+    monkeypatch.setattr(
+        run, "_clang_version",
+        lambda executable=None: "clang version " + run.PINNED_LLVM_VERSION)
+
+    assert run._installed_clang_version() == (
+        "clang version " + run.PINNED_LLVM_VERSION)
+    assert validated == [run.REPO_DIR]
+
+
+def test_clang_status_rejects_unverified_local_toolchain(
+        tmp_path, monkeypatch):
+    llvm = tmp_path / "llvm"
+    clang = llvm / "bin" / ("clang.exe" if run.sys.platform == "win32"
+                             else "clang")
+    clang.parent.mkdir(parents=True)
+    clang.write_bytes(b"fixture")
+
+    monkeypatch.setattr(run, "LLVM_DIR", llvm)
+    monkeypatch.delenv("BGS_ALLOW_TOOLCHAIN_DRIFT", raising=False)
+    monkeypatch.setattr(
+        run, "validate_repo_llvm_install",
+        lambda _repo: (_ for _ in ()).throw(run.PDBIdentityError("bad receipt")))
+    monkeypatch.setattr(
+        run, "_clang_version",
+        lambda *_args, **_kwargs:
+        pytest.fail("an unverified compiler must not be executed"))
+
+    assert run._installed_clang_version() is None
+
+
+def test_expanded_source_bundle_uses_lock_without_git(
+        tmp_path, monkeypatch):
+    revisions = {
+        "extern/One": "1" * 40,
+        "extern/Two/nested": "2" * 40,
+    }
+    lock_path = tmp_path / "toolchain.lock.json"
+    lock_path.write_text(
+        json.dumps({"submodules": revisions}), encoding="utf-8")
+    for relative in revisions:
+        (tmp_path / relative).mkdir(parents=True)
+    calls = []
+
+    monkeypatch.setattr(run, "REPO_DIR", tmp_path)
+    monkeypatch.setattr(run, "TOOLCHAIN_LOCK_FILE", lock_path)
+    monkeypatch.setattr(run, "_header", lambda *_args: None)
+    monkeypatch.setattr(
+        run.subprocess, "run",
+        lambda *_args, **_kwargs: calls.append("git") or
+        pytest.fail("expanded bundles must not invoke git"))
+
+    assert run._get_submodule_hashes() == revisions
+    assert run._assert_submodules_clean() == revisions
+    run.update_submodules()
+    assert calls == []
+
+
+def test_expanded_source_bundle_rejects_missing_locked_tree(
+        tmp_path, monkeypatch):
+    lock_path = tmp_path / "toolchain.lock.json"
+    lock_path.write_text(
+        json.dumps({"submodules": {"extern/Missing": "3" * 40}}),
+        encoding="utf-8")
+    monkeypatch.setattr(run, "REPO_DIR", tmp_path)
+    monkeypatch.setattr(run, "TOOLCHAIN_LOCK_FILE", lock_path)
+
+    with pytest.raises(RuntimeError, match="missing locked source tree"):
+        run._assert_submodules_clean()
+
+
+@pytest.mark.parametrize(
+    ("program_name", "importer", "applier", "version", "game", "subdir"),
+    [
+        ("SkyrimAE_1_7_104.exe", "CommonLibImport_AE_1_7_104.py",
+         "apply_skyrim_to_user_project.py", "17104", "skyrim", "17104"),
+        ("SkyrimSE_1.7.104.exe", "CommonLibImport_AE_1_7_104.py",
+         "apply_skyrim_to_user_project.py", "17104", "skyrim", "17104"),
+        ("Fallout4_1_11_240.exe", "CommonLibImport_F4_240.py",
+         "apply_f4_to_user_project.py", "240", "f4", "240"),
+    ],
+)
+def test_latest_programs_have_end_to_end_cli_routing(
+        program_name, importer, applier, version, game, subdir):
+    from version_catalog import generation_target
+
+    assert run._infer_commonlib_script(program_name) == importer
+    assert run._COMMONLIB_APPLY_SCRIPTS[importer] == (
+        applier, ["--version", version])
+    assert generation_target(importer) == (game, subdir)
+    assert run_headless.script_for(game, subdir).name == importer
+
+
+def test_generated_script_completeness_tracks_only_staged_versions(
+        tmp_path, monkeypatch):
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    staged_keys = {"ae17104", "f4240"}
+
+    def version_status(entry):
+        script_present = (generated / entry[4]).is_file()
+        return entry[0] in staged_keys, script_present, None
+
+    monkeypatch.setattr(run, "GHIDRA_SCRIPTS_DIR", generated)
+    monkeypatch.setattr(run, "_version_status", version_status)
+    (generated / "CommonLibImport_AE_1_7_104.py").write_text(
+        "# fixture\n", encoding="ascii")
+    (generated / "CommonLibImport_F4_240.py").write_text(
+        "# fixture\n", encoding="ascii")
+
+    assert run._scripts_exist({"skyrim", "f4"}) is True
+    (generated / "CommonLibImport_F4_240.py").unlink()
+    assert run._scripts_exist({"skyrim", "f4"}) is False
+
+
+def test_project_discovery_keeps_every_gpr_in_a_shared_directory(
+        tmp_path, monkeypatch):
+    for name in ("CK_Opt_Audit", "ExampleProject", "ExampleProject_Audit", "MyProject"):
+        (tmp_path / (name + ".gpr")).write_text("", encoding="ascii")
+    debug = tmp_path / "Debug"
+    debug.mkdir()
+    for name in ("XboxDebug", "XDIVR"):
+        (debug / (name + ".gpr")).write_text("", encoding="ascii")
+
+    monkeypatch.setattr(run, "PROJECTS_DIR", tmp_path / "managed")
+    monkeypatch.setattr(run, "GHIDRA_PROJECT_NAME", "Managed")
+    monkeypatch.setattr(run, "EXTERNAL_GHIDRA_ROOTS", [tmp_path])
+
+    labels = {label for label, _, _ in run._discover_ghidra_projects()}
+    assert labels == {
+        "CK_Opt_Audit", "ExampleProject", "ExampleProject_Audit", "MyProject",
+        "Debug/XboxDebug", "Debug/XDIVR",
+    }
+
+
+@pytest.mark.parametrize(
+    ("program_path", "importer"),
+    [
+        ("/Skyrim/SkyrimAE_1_7_104.exe",
+         "CommonLibImport_AE_1_7_104.py"),
+        ("/Fallout4/Fallout4_1_11_240.exe",
+         "CommonLibImport_F4_240.py"),
+    ],
+)
+def test_option9_passes_exact_latest_importer_through_every_phase(
+        program_path, importer, monkeypatch):
+    calls = []
+
+    def commonlib(*_args, **kwargs):
+        calls.append(("apply", kwargs["import_script_name"]))
+        return True
+
+    def reconcile(*_args, **kwargs):
+        calls.append(("reconcile", kwargs["import_script_name"]))
+        return True
+
+    monkeypatch.setattr(run, "_offer_commonlib_apply", commonlib)
+    monkeypatch.setattr(run, "_wait_for_unlock", lambda *_args: True)
+    monkeypatch.setattr(run, "_local_target_pe_candidates", lambda _path: [])
+    monkeypatch.setattr(run, "_header", lambda *_args: None)
+    monkeypatch.setattr(
+        run, "_run_project_step",
+        lambda *_args: calls.append(("rtti", importer)) or 0)
+    monkeypatch.setattr(run, "_run_vtable_reconciler", reconcile)
+
+    assert run._run_enrichment_sequence(
+        "ExampleProject", "project-dir", "ExampleProject", program_path) is True
+    assert calls == [
+        ("rtti", importer),
+        ("apply", importer),
+        ("reconcile", importer),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("catalog_key", "game", "version"),
+    [("ae17104", "skyrim", "17104"), ("f4240", "f4", "240")],
+)
+def test_per_version_workflow_routes_latest_runtime(
+        catalog_key, game, version, monkeypatch):
+    entry = next(item for item in run.VERSION_CATALOG if item[0] == catalog_key)
+    calls = []
+
+    monkeypatch.setattr(run, "VERSION_CATALOG", [entry])
+    monkeypatch.setattr(
+        run, "_version_status", lambda _entry: (True, True, Path("game.exe")))
+    monkeypatch.setattr(
+        run, "generate_scripts",
+        lambda games, only_version=None:
+        calls.append(("generate", games, only_version)))
+    monkeypatch.setattr(
+        run, "run_headless",
+        lambda selected_game=None, selected_version=None:
+        calls.append(("headless", selected_game, selected_version)) or 0)
+    monkeypatch.setattr(
+        run, "_finalize_build",
+        lambda rc, games: calls.append(("finalize", rc, games)) or rc)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    run._version_submenu()
+    assert calls == [
+        ("generate", {game}, version),
+        ("headless", game, version),
+        ("finalize", 0, {game}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        ("1", ["check", "ghidra", "steamless", "fakepdb", "clang"]),
+        ("2", ["submodules"]),
+        ("3", ["version-menu"]),
+        ("4", [("generate", {"skyrim"})]),
+        ("5", ["headless", ("finalize", 0, {"skyrim"})]),
+        ("6", ["launch"]),
+        ("7", [("generate", {"skyrim"}), "headless",
+               ("finalize", 0, {"skyrim"})]),
+        ("8", ["clean"]),
+        ("9", ["enrich"]),
+        ("10", ["export"]),
+    ],
+)
+def test_interactive_menu_dispatches_every_workflow(
+        choice, expected, monkeypatch):
+    calls = []
+    answers = iter([choice] if choice == "6" else [choice, "q"])
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(run, "_print_status", lambda: None)
+    monkeypatch.setattr(run, "_show_menu", lambda: None)
+    monkeypatch.setattr(run, "check_prerequisites", lambda: calls.append("check"))
+    monkeypatch.setattr(run, "setup_ghidra", lambda: calls.append("ghidra"))
+    monkeypatch.setattr(run, "setup_steamless", lambda: calls.append("steamless"))
+    monkeypatch.setattr(run, "setup_fakepdb", lambda: calls.append("fakepdb"))
+    monkeypatch.setattr(run, "_ensure_clang", lambda: calls.append("clang"))
+    monkeypatch.setattr(run, "update_submodules", lambda: calls.append("submodules"))
+    monkeypatch.setattr(run, "_version_submenu", lambda: calls.append("version-menu"))
+    monkeypatch.setattr(run, "_discover_games", lambda: {"skyrim"})
+    monkeypatch.setattr(
+        run, "generate_scripts",
+        lambda games: calls.append(("generate", games)))
+    monkeypatch.setattr(
+        run, "run_headless", lambda: calls.append("headless") or 0)
+    monkeypatch.setattr(
+        run, "_finalize_build",
+        lambda rc, games: calls.append(("finalize", rc, games)) or rc)
+    monkeypatch.setattr(run, "launch_ghidra", lambda: calls.append("launch"))
+    monkeypatch.setattr(run, "clean_project", lambda: calls.append("clean"))
+    monkeypatch.setattr(run, "_enrich_menu", lambda: calls.append("enrich"))
+    monkeypatch.setattr(run, "_export_menu", lambda: calls.append("export"))
+
+    run._run_menu()
+    assert calls == expected

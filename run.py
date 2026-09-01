@@ -27,11 +27,20 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+def _resolve_ghidra_dir(repo_dir, environ=None):
+    """Use an explicitly configured Ghidra before the local tool cache."""
+    environ = os.environ if environ is None else environ
+    configured = str(environ.get("GHIDRA_INSTALL_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(repo_dir) / "tools" / "ghidra"
+
+
 REPO_DIR      = Path(__file__).resolve().parent
 EXES_ROOT     = REPO_DIR / "exes"
 SCRIPTS_DIR   = REPO_DIR / "scripts"
 TOOLS_DIR     = REPO_DIR / "tools"
-GHIDRA_DIR    = TOOLS_DIR / "ghidra"
+GHIDRA_DIR    = _resolve_ghidra_dir(REPO_DIR)
 STEAMLESS_DIR = TOOLS_DIR / "Steamless"
 LLVM_DIR      = TOOLS_DIR / "llvm"
 FAKEPDB_DIR   = TOOLS_DIR / "fakepdb"
@@ -186,6 +195,40 @@ def _header(msg):
     print(f"\n{'=' * 60}\n  {msg}\n{'=' * 60}")
 
 
+def _configure_java_home_override():
+    """Give PyGhidra a JDK without writing Ghidra's per-user settings.
+
+    PyGhidra otherwise asks Ghidra's LaunchSupport helper to discover a JDK
+    with ``-save``.  That writes ``java_home.save`` below the user's roaming
+    profile, which is unnecessary global state and fails in restricted or
+    portable environments.  Prefer an explicit override, then JAVA_HOME,
+    then the JDK that owns the ``java`` executable on PATH.
+    """
+    java_name = "java.exe" if sys.platform == "win32" else "java"
+    javac_name = "javac.exe" if sys.platform == "win32" else "javac"
+    explicit = os.environ.get("JAVA_HOME_OVERRIDE")
+    candidates = [explicit, os.environ.get("JAVA_HOME")]
+    path_java = shutil.which(java_name)
+    if path_java:
+        candidates.append(str(Path(path_java).resolve().parent.parent))
+
+    for raw_home in candidates:
+        if not raw_home:
+            continue
+        home = Path(raw_home).expanduser().resolve()
+        if ((home / "bin" / java_name).is_file() and
+                (home / "bin" / javac_name).is_file()):
+            os.environ["JAVA_HOME_OVERRIDE"] = str(home)
+            return home
+
+    if explicit:
+        raise RuntimeError(
+            f"JAVA_HOME_OVERRIDE does not name a usable JDK: {explicit}")
+    raise RuntimeError(
+        "A JDK is required for Ghidra, but no usable JAVA_HOME_OVERRIDE, "
+        "JAVA_HOME, or java/javac pair was found on PATH.")
+
+
 def _download(url, dest, label="Downloading", expected_digest=None):
     digest = hashlib.sha256()
     with urllib.request.urlopen(url) as resp:
@@ -304,6 +347,24 @@ def _accept_clang_version(version_line):
     return False
 
 
+def _installed_clang_version():
+    """Return the compiler generation can actually use, not merely PATH clang."""
+    clang_name = "clang.exe" if sys.platform == "win32" else "clang"
+    local_clang = LLVM_DIR / "bin" / clang_name
+    if local_clang.is_file():
+        try:
+            validate_repo_llvm_install(REPO_DIR)
+        except PDBIdentityError:
+            pass
+        else:
+            version = _clang_version(local_clang)
+            if version and PINNED_LLVM_VERSION in version:
+                return version
+    if os.environ.get("BGS_ALLOW_TOOLCHAIN_DRIFT"):
+        return _clang_version()
+    return None
+
+
 def _discover_exes():
     """Return list of (game, version, exe_path) tuples."""
     found = []
@@ -336,32 +397,35 @@ def _project_exists():
 
 
 def _scripts_exist(games):
-    # One parse pass per game emits scripts for every version that game's
-    # CommonLib + address libraries support, so check the full set.
-    if "skyrim" in games:
-        for name in ("CommonLibImport_SE.py",
-                     "CommonLibImport_AE.py",
-                     "CommonLibImport_VR.py"):
-            if not (GHIDRA_SCRIPTS_DIR / name).is_file():
-                return False
-    if "f4" in games:
-        for name in ("CommonLibImport_F4_OG.py",
-                     "CommonLibImport_F4_NG.py",
-                     "CommonLibImport_F4_AE.py",
-                     "CommonLibImport_F4_221.py",
-                     "CommonLibImport_F4_VR.py"):
-            if not (GHIDRA_SCRIPTS_DIR / name).is_file():
-                return False
-    if "starfield" in games:
-        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_SF.py").is_file():
-            return False
-    if "fnv" in games:
-        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_FNV.py").is_file():
+    # A generated-script set is complete when every executable currently
+    # staged for the selected games has its catalogued importer.  Requiring
+    # importers for unstaged sibling versions makes a latest-only setup look
+    # permanently incomplete and immediately goes stale when a version is
+    # added to VERSION_CATALOG.
+    for entry in VERSION_CATALOG:
+        if entry[1] not in games:
+            continue
+        exe_present, script_present, _ = _version_status(entry)
+        if exe_present and not script_present:
             return False
     return True
 
 
 def _get_submodule_entries():
+    # GitHub release bundles expand every pinned submodule in-tree and
+    # deliberately omit all .git metadata.  In that mode toolchain.lock.json
+    # is the source manifest; require every declared tree to be present rather
+    # than invoking a git-submodule command that cannot work in an archive.
+    if not (REPO_DIR / ".git").exists():
+        try:
+            lock = json.loads(TOOLCHAIN_LOCK_FILE.read_text(encoding="utf-8"))
+            locked_submodules = lock["submodules"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("invalid or missing toolchain.lock.json") from exc
+        return {
+            path: (commit, " " if (REPO_DIR / path).is_dir() else "-")
+            for path, commit in locked_submodules.items()
+        }
     r = subprocess.run(
         ["git", "submodule", "status", "--recursive"],
         cwd=str(REPO_DIR), capture_output=True, text=True, check=True)
@@ -396,6 +460,14 @@ def _assert_submodules_clean():
         raise RuntimeError(
             "submodule gitlinks do not match toolchain.lock.json: " +
             ", ".join(sorted(lock_mismatch)))
+    if not (REPO_DIR / ".git").exists():
+        missing = [path for path, (_commit, prefix) in entries.items()
+                   if prefix != " "]
+        if missing:
+            raise RuntimeError(
+                "expanded source bundle is missing locked source tree(s): " +
+                ", ".join(sorted(missing)))
+        return actual_hashes
     dirty = []
     revision_drift = [path for path, (_commit, prefix) in entries.items()
                       if prefix != " "]
@@ -521,6 +593,11 @@ def check_prerequisites():
 
 def update_submodules():
     _header("Update Submodules")
+    if not (REPO_DIR / ".git").exists():
+        revisions = _assert_submodules_clean()
+        print("  Expanded source bundle: {} locked source trees are present; "
+              "no Git update is required.".format(len(revisions)))
+        return
     subprocess.run(
         ["git", "submodule", "update", "--init", "--recursive"],
         cwd=str(REPO_DIR), check=True)
@@ -931,6 +1008,7 @@ def generate_scripts(games=None, only_version=None):
 
 def run_headless(game=None, version=None, import_only=False):
     _header("Headless Ghidra Import")
+    _configure_java_home_override()
     args = [sys.executable, str(SCRIPTS_DIR / "run_headless.py")]
     if game:
         args.append(str(game))
@@ -1003,6 +1081,7 @@ def _finalize_build(rc, games):
 
 def launch_ghidra():
     _header("Launching Ghidra")
+    _configure_java_home_override()
     if sys.platform == "win32":
         launcher = GHIDRA_DIR / "ghidraRun.bat"
     else:
@@ -1095,7 +1174,7 @@ def _print_status():
 
     # Tools
     ghidra_ver = _ghidra_version(GHIDRA_DIR)
-    clang_ver = _clang_version()
+    clang_ver = _installed_clang_version()
     steamless_ok = (STEAMLESS_DIR / "Steamless.CLI.exe").is_file()
     try:
         validate_fakepdb_install(REPO_DIR)
@@ -1168,7 +1247,7 @@ def _discover_ghidra_projects():
     """Find all .gpr Ghidra projects in known roots.
 
     Includes the in-repo project plus any under EXTERNAL_GHIDRA_ROOTS
-    (e.g., C:/GhidraProjects/Combined.gpr if the user has a separate
+    (e.g., C:/GhidraProjects/ExampleProject.gpr if the user has a separate
     pre-analyzed corpus).  Returns a list of (display_name, project_dir,
     project_name) tuples.
     """
@@ -1178,25 +1257,30 @@ def _discover_ghidra_projects():
         out.append(("(this repo) " + GHIDRA_PROJECT_NAME,
                     str(PROJECTS_DIR / GHIDRA_PROJECT_NAME),
                     GHIDRA_PROJECT_NAME))
-    seen = {(in_repo_gpr.parent.resolve())}
+    # Multiple Ghidra projects can legitimately share one project directory.
+    # Deduplicate by the .gpr file, not its parent directory, otherwise only
+    # the alphabetically first project in each directory is displayed.
+    seen = {in_repo_gpr.resolve()}
     for root in EXTERNAL_GHIDRA_ROOTS:
         if not root.is_dir():
             continue
         for gpr in sorted(root.glob("*.gpr")):
+            project_id = gpr.resolve()
             project_dir = gpr.parent.resolve()
-            if project_dir in seen:
+            if project_id in seen:
                 continue
-            seen.add(project_dir)
+            seen.add(project_id)
             out.append((gpr.stem, str(project_dir), gpr.stem))
         # Also probe one level down (e.g., C:/GhidraProjects/Fallout/F4VR.gpr)
         for sub in sorted(root.iterdir()):
             if not sub.is_dir():
                 continue
             for gpr in sorted(sub.glob("*.gpr")):
+                project_id = gpr.resolve()
                 project_dir = gpr.parent.resolve()
-                if project_dir in seen:
+                if project_id in seen:
                     continue
-                seen.add(project_dir)
+                seen.add(project_id)
                 out.append((f"{sub.name}/{gpr.stem}", str(project_dir), gpr.stem))
     return out
 
@@ -1249,6 +1333,7 @@ def _run_project_step(cmd, project_dir, project_name, step_label, **kwargs):
 
     Returns the child's exit code (``PROJECT_LOCKED_EXIT`` if the user gave up).
     """
+    _configure_java_home_override()
     kwargs.setdefault("check", False)
     while True:
         result = subprocess.run(cmd, **kwargs)
@@ -1271,6 +1356,13 @@ def _list_programs_in_project(project_dir, project_name):
     if _project_lock_files(project_dir, project_name):
         return {"locked": lock_message(project_dir, project_name)}
 
+    if not _ghidra_version(GHIDRA_DIR):
+        print(f"  Ghidra is not installed or valid at: {GHIDRA_DIR}")
+        print("  Run menu option 1, or set GHIDRA_INSTALL_DIR to a valid "
+              "Ghidra installation before starting run.py.")
+        return None
+
+    _configure_java_home_override()
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
     try:
         import pyghidra
@@ -1388,14 +1480,9 @@ def _run_enrichment_sequence(label, pdir, pname, program_path):
     """Run option 9's mutators in order, stopping at the first failure."""
     import_script_name = _preferred_importer(
         _infer_commonlib_script(Path(program_path).name))
-    # The CommonLib apply is the high-coverage precondition.  A failed or
-    # deliberately skipped locked-project attempt must not cascade into RTTI
-    # or a reconciler against a partial program.
-    if not _offer_commonlib_apply(
-            pdir, pname, program_path, import_script_name=import_script_name):
-        print("  CommonLib pre-apply did not complete; RTTI was not started.")
-        return False
-
+    # Establish binary-ground-truth vtables before any address-library labels
+    # are applied.  Newly-added runtime databases can otherwise place plausible
+    # duplicate VTABLE_ labels at non-vtable addresses.
     if not _wait_for_unlock(pdir, pname, "RTTI vtable pipeline"):
         return False
     args = [sys.executable,
@@ -1412,7 +1499,14 @@ def _run_enrichment_sequence(label, pdir, pname, program_path):
                                    "the RTTI vtable pipeline")
     if rc != 0:
         print(f"  RTTI pipeline failed (exit {rc}); "
-              "reconciler was not started.")
+              "CommonLib apply and reconciler were not started.")
+        return False
+
+    # CommonLib is now safe to add its broader type/name coverage.  A failed
+    # apply must not cascade into reconciliation against a partial program.
+    if not _offer_commonlib_apply(
+            pdir, pname, program_path, import_script_name=import_script_name):
+        print("  CommonLib apply did not complete; reconciler was not started.")
         return False
 
     # Reconcile against the same exact importer chosen above.  The helper
@@ -1551,6 +1645,9 @@ def _infer_commonlib_script(program_name):
         # emitted until an exact GOG executable is present and bound.
         return None
     if 'skyrimae' in n:
+        if ('1_7_104' in n or '1.7.104' in n or '_17104' in n or
+                n.endswith('17104.exe')):
+            return 'CommonLibImport_AE_1_7_104.py'
         return 'CommonLibImport_AE.py'
     if 'skyrimse' in n:
         # Bethesda names both SE and AE binaries SkyrimSE.exe.  Automatic
@@ -1558,6 +1655,9 @@ def _infer_commonlib_script(program_name):
         # basename is whichever Steam build happens to be current.
         if '1_5_97' in n or '1.5.97' in n:
             return 'CommonLibImport_SE.py'
+        if ('1_7_104' in n or '1.7.104' in n or '_17104' in n or
+                n.endswith('17104.exe')):
+            return 'CommonLibImport_AE_1_7_104.py'
         if ('1_6_1170' in n or '1.6.1170' in n or
                 '_ae' in n or ' ae' in n):
             return 'CommonLibImport_AE.py'
@@ -1566,6 +1666,9 @@ def _infer_commonlib_script(program_name):
         return 'CommonLibImport_VR.py'
     if 'fallout4' in n:
         # Disambiguate by version tag embedded in the name.
+        if ('1_11_240' in n or '1.11.240' in n or '_240' in n or
+                n.endswith('240.exe')):
+            return 'CommonLibImport_F4_240.py'
         if '1_11_221' in n or '1.11.221' in n or '_221' in n or n.endswith('221.exe'):
             return 'CommonLibImport_F4_221.py'
         if '1_11_191' in n or '1.11.191' in n or '_ae' in n or ' ae' in n:
@@ -1609,8 +1712,8 @@ def _local_target_pe_candidates(program_path):
     These paths are evidence candidates, not trusted selections.  The RTTI
     subprocess inspects each PE, then requires one candidate's SHA, anchors,
     sections, image base, and pointer width to attest the live Program.  Both
-    packed and identity-bound unpacked files are passed because a Combined
-    project commonly records a deleted temporary Steamless path.
+    packed and identity-bound unpacked files are passed because an imported
+    program may record a deleted temporary Steamless path.
     """
     suggested = _infer_commonlib_script(Path(program_path).name)
     matches = [entry for entry in VERSION_CATALOG if entry[4] == suggested]
@@ -1700,10 +1803,11 @@ def _prompt_for_target_pe(program_path, pdir=None, pname=None):
 # Per-version pyghidra applier in scripts/.  Each takes
 # ``--project-dir``, ``--project-name`` and ``--program-path``.  Values are
 # (applier_basename, [extra args]); the unified F4 applier accepts
-# ``--version`` so all five F4 variants share one entry point.
+# ``--version`` so all six F4 variants share one entry point.
 _COMMONLIB_APPLY_SCRIPTS = {
     'CommonLibImport_SE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'se']),
     'CommonLibImport_AE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'ae']),
+    'CommonLibImport_AE_1_7_104.py': ('apply_skyrim_to_user_project.py', ['--version', '17104']),
     'CommonLibImport_VR.py':     ('apply_skyrim_to_user_project.py', ['--version', 'vr']),
     # Same applier and runtime; the script itself is passed with --script.
     'CommonLibImport_CLVR_VR.py': ('apply_skyrim_to_user_project.py', ['--version', 'vr']),
@@ -1714,6 +1818,7 @@ _COMMONLIB_APPLY_SCRIPTS = {
     # Same applier and runtime; the script itself is passed with --script.
     'CommonLibImport_CLF4VR_VR.py': ('apply_f4_to_user_project.py', ['--version', 'vr']),
     'CommonLibImport_F4_221.py': ('apply_f4_to_user_project.py',  ['--version', '221']),
+    'CommonLibImport_F4_240.py': ('apply_f4_to_user_project.py',  ['--version', '240']),
     'CommonLibImport_FNV.py':    ('apply_fnv_to_user_project.py', []),
     'CommonLibImport_SF.py':     ('apply_sf_to_user_project.py',  []),
 }
@@ -1793,9 +1898,8 @@ def _offer_commonlib_apply(
     """Optional pre-step: apply CommonLibImport_<inferred>.py via pyghidra.
 
     Detects the matching import script from the program name and runs the
-    per-version applier if one exists.  No-op when there's no applier for
-    this version (e.g. F4 OG/NG/AE/VR -- those still go through menu 5's
-    headless import path against the in-repo project).
+    per-version applier if one exists.  No-op only when the selected runtime
+    has no standalone applier.
     """
     program_name = Path(program_path).name
     suggested = (import_script_name or
@@ -1960,8 +2064,7 @@ def _version_submenu():
                 continue
             generate_scripts(present)
             rc = run_headless()
-            _finalize_build(rc, present)
-            return
+            return _finalize_build(rc, present)
         if not choice.isdigit() or not (1 <= int(choice) <= len(VERSION_CATALOG)):
             print("  Invalid choice.")
             continue
@@ -1980,13 +2083,13 @@ def _version_submenu():
         # already and ignore the filter).
         generate_scripts({game}, only_version=version)
         rc = run_headless(game, version)
-        _finalize_build(rc, {game})
-        return
+        return _finalize_build(rc, {game})
 
 
 def _run_menu():
     _print_status()
     _show_menu()
+    exit_code = 0
 
     while True:
         try:
@@ -2007,13 +2110,18 @@ def _run_menu():
             elif choice == "2":
                 update_submodules()
             elif choice == "3":
-                _version_submenu()
+                rc = _version_submenu()
+                if rc:
+                    raise RuntimeError(
+                        f"per-version workflow failed (exit {rc})")
             elif choice == "4":
                 games = _discover_games()
                 generate_scripts(games)
             elif choice == "5":
                 rc = run_headless()
-                _finalize_build(rc, _discover_games())
+                rc = _finalize_build(rc, _discover_games())
+                if rc:
+                    raise RuntimeError(f"headless import failed (exit {rc})")
             elif choice == "6":
                 launch_ghidra()
                 break
@@ -2021,7 +2129,9 @@ def _run_menu():
                 games = _discover_games()
                 generate_scripts(games)
                 rc = run_headless()
-                _finalize_build(rc, games)
+                rc = _finalize_build(rc, games)
+                if rc:
+                    raise RuntimeError(f"full rebuild failed (exit {rc})")
             elif choice == "8":
                 clean_project()
             elif choice == "9":
@@ -2035,9 +2145,11 @@ def _run_menu():
             # e.g. locked-runtime install failure or submodule drift; report
             # and return to the menu instead of crashing out of it.
             print(f"\n  ERROR: {exc}")
+            exit_code = 1
 
         _print_status()
         _show_menu()
+    return exit_code
 
 
 # =====================================================================
@@ -2152,7 +2264,9 @@ def main():
         except RuntimeError as exc:
             print(f"\n  ERROR: {exc}")
             raise SystemExit(1)
-        _run_menu()
+        rc = _run_menu()
+        if rc:
+            raise SystemExit(rc)
     elif args[0] in ("setup", "build", "all", "clean"):
         try:
             {"setup": _cmd_setup, "build": _cmd_build,

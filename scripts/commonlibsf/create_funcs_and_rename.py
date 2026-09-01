@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))

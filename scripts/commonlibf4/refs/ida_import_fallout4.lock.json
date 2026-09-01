@@ -1,0 +1,113 @@
+{
+  "schema": "bgs-external-input-lock-v1",
+  "artifact": {
+    "name": "ida-import-fallout4.zip",
+    "sha256": "274ac8d9d917f25c1dce93618f4fa6749a83cb85f361d277b45d5136e08b43d6",
+    "size": 401821,
+    "image_base": 5368709120,
+    "entry_count": 7
+  },
+  "provenance": {
+    "acquired": "2026-08-05",
+    "acquisition": "user-provided local input",
+    "author": "unknown",
+    "origin": "unknown",
+    "license": "unknown",
+    "redistribution_allowed": false,
+    "raw_input_policy": "local-only",
+    "repository_policy": "Do not commit or package the raw archive, extracted scripts, or generated symbol evidence without permission from the source author."
+  },
+  "entries": [
+    {
+      "name": "ida-import-fallout4-1.10.980.0.py",
+      "version": "1.10.980.0",
+      "sha256": "f485445b3b2060b097742f9bd17f95db66680b80baa48e8016ceb49d1a071048",
+      "size": 253875,
+      "records": 3936,
+      "bare_rva_records": 68,
+      "unique_names": 3837,
+      "duplicate_name_groups": 82,
+      "records_in_duplicate_name_groups": 181,
+      "approved_target_sha256": []
+    },
+    {
+      "name": "ida-import-fallout4-1.10.984.0.py",
+      "version": "1.10.984.0",
+      "sha256": "e9a7fa80d485d8649b30995104954592f35c29179f7aec1013137e4f1afa0cc5",
+      "size": 253875,
+      "records": 3936,
+      "bare_rva_records": 68,
+      "unique_names": 3837,
+      "duplicate_name_groups": 82,
+      "records_in_duplicate_name_groups": 181,
+      "approved_target_sha256": []
+    },
+    {
+      "name": "ida-import-fallout4-1.11.137.0.py",
+      "version": "1.11.137.0",
+      "sha256": "50f1235e46cd347054384901a603b90acfead4976d4204290c63de8b8f3600e5",
+      "size": 247462,
+      "records": 3826,
+      "bare_rva_records": 76,
+      "unique_names": 3728,
+      "duplicate_name_groups": 81,
+      "records_in_duplicate_name_groups": 179,
+      "approved_target_sha256": []
+    },
+    {
+      "name": "ida-import-fallout4-1.11.159.0.py",
+      "version": "1.11.159.0",
+      "sha256": "b1415aadec760b1598d2b58be78baa1e9ab31ffe9ff640d83684b68424b8e784",
+      "size": 247466,
+      "records": 3826,
+      "bare_rva_records": 75,
+      "unique_names": 3728,
+      "duplicate_name_groups": 81,
+      "records_in_duplicate_name_groups": 179,
+      "approved_target_sha256": []
+    },
+    {
+      "name": "ida-import-fallout4-1.11.169.0.py",
+      "version": "1.11.169.0",
+      "sha256": "10226cfe5fbdedc9ff47372168c4a98d0a958c4d882765c9da9ed9fc3efd67cb",
+      "size": 247466,
+      "records": 3826,
+      "bare_rva_records": 75,
+      "unique_names": 3728,
+      "duplicate_name_groups": 81,
+      "records_in_duplicate_name_groups": 179,
+      "approved_target_sha256": []
+    },
+    {
+      "name": "ida-import-fallout4-1.11.191.0.py",
+      "version": "1.11.191.0",
+      "sha256": "ecc61b5d7a7f3d20ae6d816c4402c5de52fd2391521692348ea27ecabd1e131c",
+      "size": 247396,
+      "records": 3825,
+      "bare_rva_records": 75,
+      "unique_names": 3727,
+      "duplicate_name_groups": 81,
+      "records_in_duplicate_name_groups": 179,
+      "approved_target_sha256": [
+        "81694b37816c8045855905a52c5fb13583c5803121fabb5024760892014e9bc6",
+        "e555c6c0e7aba3e9e4801c2e5e11e3a76b42ce080683b4b9c1cf074c2030b737",
+        "a5c5df53bf9f99201d35261851adf28f7bce309328c2b5ffd2a66326a7f4752a"
+      ]
+    },
+    {
+      "name": "ida-import-fallout4-1.11.221.0.py",
+      "version": "1.11.221.0",
+      "sha256": "475cf101acb697c752569fb5ee0b2cb241bff3d13f73998b5707f12bd36106ca",
+      "size": 247396,
+      "records": 3825,
+      "bare_rva_records": 75,
+      "unique_names": 3727,
+      "duplicate_name_groups": 81,
+      "records_in_duplicate_name_groups": 179,
+      "approved_target_sha256": [
+        "428f9996cc4248e26c0f62f9fdd3eaf0e5eb305834b67ee5996538e593218b61",
+        "488015e2010308bfa164d3720cb618deea7e1c098b1d61af530d258a6f17d27b"
+      ]
+    }
+  ]
+}

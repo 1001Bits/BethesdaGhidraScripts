@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -11,6 +12,7 @@ from symbol_export import (
     build_fakepdb_root,
     collect_segments,
     generate_shareable_pdb,
+    package_symbol_bundle,
     select_shareable_symbols,
     write_outputs,
 )
@@ -119,6 +121,36 @@ def test_public_target_manifest_omits_executable_evidence_bytes():
     assert "anchors" not in public
     assert "function_starts" not in public
     assert "data_directories" not in public
+
+
+def test_symbol_bundle_revision_is_explicit_and_checksummed(tmp_path):
+    pdb = tmp_path / "Game.pdb"
+    identity = tmp_path / "Game.pdb.identity.json"
+    symbols = tmp_path / "Game.symbols.json"
+    pdb.write_bytes(b"pdb")
+    identity.write_text("{}\n", encoding="utf-8")
+    symbols.write_text("{}\n", encoding="utf-8")
+    target = {
+        "sha256": "d" * 64,
+        "version_string": "1.2.3.4",
+    }
+    bundle = package_symbol_bundle(
+        tmp_path, "Game.exe", pdb, identity, symbols, target, revision=2)
+    assert bundle.name == (
+        "Game-1.2.3.4-dddddddddddd-community-symbols-r2.zip")
+    with zipfile.ZipFile(bundle) as archive:
+        assert set(archive.namelist()) == {
+            "Game.pdb", "Game.pdb.identity.json", "Game.symbols.json",
+            "README.txt"}
+        assert "Symbol bundle revision: r2" in archive.read(
+            "README.txt").decode("utf-8")
+    checksum = Path(str(bundle) + ".sha256").read_text(
+        encoding="utf-8").split()[0]
+    assert checksum == hashlib.sha256(bundle.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="revision"):
+        package_symbol_bundle(
+            tmp_path, "Game.exe", pdb, identity, symbols, target,
+            revision=0)
 
 
 def test_pinned_fakepdb_real_round_trip_when_local_tool_and_target_exist(tmp_path):

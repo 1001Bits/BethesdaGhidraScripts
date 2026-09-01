@@ -20,9 +20,12 @@ RE untouched. Decision logic + the empirical rationale live in propagate_plan.py
 
 NON-DESTRUCTIVE / TRANSACTIONS: the Ghidra MCP wraps each eval in its own outer
 transaction, and Ghidra rolls back the whole group if any nested transaction ends
-with commit=False. So this NEVER ends a transaction with commit=False: dry-run
+with commit=False.  So an individual anomaly is NEVER rolled back -- dry-run
 mutates nothing (it only decompiles, classifies, and writes a CSV), and apply opens
-ONE transaction that is always committed. Protected signatures (IMPORTED PDB,
+ONE transaction, with per-function failures caught, counted and still committed.
+That transaction is discarded only if an exception escapes the run itself, where
+committing would persist a half-applied pass and report it as success.
+Protected signatures (IMPORTED PDB,
 USER_DEFINED human/CommonLib) are never written. Seeds use SourceType.ANALYSIS so a
 human edit / CommonLib re-import outranks them. Dry-run by default; CLVR_PROP=go to
 apply.
@@ -131,10 +134,12 @@ def run():
         return res
 
     worklist = list(dict.fromkeys(seed))   # de-dup, preserve order
-    # Apply opens ONE transaction, always committed (a nested commit=False would
-    # poison the MCP's outer transaction and discard the whole run). Dry-run opens
-    # none and mutates nothing.
+    # Apply opens ONE transaction and never rolls back for a single anomaly (a
+    # nested commit=False would poison the MCP's outer transaction and discard the
+    # whole run).  It is discarded only if an exception escapes the loop, where the
+    # alternative is persisting a half-applied pass.  Dry-run opens none.
     tx = cp.startTransaction('type-propagate') if APPLY else None
+    success = False
     try:
         while worklist and rounds_done < MAX_ROUNDS:
             rounds_done += 1
@@ -170,9 +175,10 @@ def run():
                 break                            # dry-run is a single pass (no fixpoint)
             # only revisit neighbours that haven't hit the apply cap
             worklist = [e for e in nxt if applied_count.get(e, 0) < APPLY_CAP]
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)          # always commit; never poison
+            cp.endTransaction(tx, success)       # commit only if the loop completed
 
     # write the proposal CSV (high-value, reviewable -- every row is a concrete
     # named-type gain over a generic slot)

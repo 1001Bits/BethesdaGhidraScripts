@@ -199,6 +199,7 @@ def run():
     # =========================== APPLY ===========================
     print('\n*** APPLYING (CLVR_APPLY=go) ***')
     tx = dtm.startTransaction('CommonLibVR improve apply')
+    success = False
     try:
         # Phase 1: register created[] target for every struct + enum + vtable.
         # REUSE/PROTECT -> existing dt; CREATE -> shell in /types.h; REPLACE ->
@@ -338,8 +339,9 @@ def run():
             except Exception as e:
                 print('replace failed for {}: {}'.format(name, e))
         print('Replaced {} existing types via replaceDataType'.format(swapped))
+        success = True
     finally:
-        dtm.endTransaction(tx, True)
+        dtm.endTransaction(tx, success)
     print('Type enrich-apply complete. (symbols/vtable-names are a separate pass)')
 
     # Always collapse any .conflict copies this (or a prior) run produced onto their
@@ -566,6 +568,13 @@ def _safe_eol_comment(cu, text):
 
 def run_symbols():
     """Enrich-safe symbol + vtable pass (separate from the types pass):
+
+    Run ``scripts/core/run_vtable_pipeline.py`` on the target first.  Its RTTI
+    Complete Object Locator walk is binary ground truth; address-library
+    VTABLE labels can be wrong on a newly-added runtime and otherwise create
+    plausible duplicate labels at non-vtable addresses.  Option 9 enforces
+    this ordering automatically.  Manual driver users must do the same.
+
       - apply VTABLE_/RTTI_ labels (additive),
       - name functions ONLY where currently FUN_/sub_ (never clobber a real name),
       - set EOL comments only if absent (prepend, never overwrite),
@@ -617,6 +626,7 @@ def run_symbols():
 
     tx = cp.startTransaction('CommonLibVR symbol/vtable improve')
     labeled = named = made = sigd = 0
+    success = False
     try:
         for s in SYMBOLS:
             off = s.get(vkey)
@@ -626,7 +636,7 @@ def run_symbols():
             nm = s['n']
             if s['t'] == 'label':
                 if nm not in [x.getName() for x in stt.getSymbols(addr)]:
-                    stt.createLabel(addr, nm, SourceType.USER_DEFINED)
+                    stt.createLabel(addr, nm, SourceType.IMPORTED)
                     labeled += 1
                 rc = relid(s)
                 if rc:
@@ -645,7 +655,7 @@ def run_symbols():
                     continue
                 cur = f.getName()
                 if cur.startswith('FUN_') or cur.startswith('sub_'):
-                    f.setName(nm, SourceType.USER_DEFINED)
+                    f.setName(nm, SourceType.IMPORTED)
                     named += 1
                 rc = relid(s)
                 if rc:
@@ -660,8 +670,9 @@ def run_symbols():
         print('Symbols: labeled %d, named %d, created %d, signatures %d' % (labeled, named, made, sigd))
         gns['_import_vtable_names']()       # enrich-safe: names vfuncs at vtable slots
         gns['_import_fallback_symbols']()   # enrich-safe: FUN_/sub_ only
+        success = True
     finally:
-        cp.endTransaction(tx, True)
+        cp.endTransaction(tx, success)
     print('Symbol/vtable improve complete.')
 
 
@@ -751,6 +762,7 @@ def run_sigconflict():
     rows = []
     evaluated = wins_cand = wins_exist = conflicts = 0
     tx = cp.startTransaction('CommonLibVR signature conflict resolution')
+    success = False
     try:
         for s in SYMBOLS:
             if s.get('t') != 'func':
@@ -802,8 +814,9 @@ def run_sigconflict():
                          'applied' if (winner == 'candidate' and apply_go) else 'kept-existing'))
             if cap and conflicts >= cap:
                 break
+        success = True
     finally:
-        cp.endTransaction(tx, True)
+        cp.endTransaction(tx, success)
         decomp.dispose()
 
     with open(out_csv, 'w') as fh:
@@ -869,9 +882,9 @@ def run_classes():
             sub = st.getNamespace(part, parent)
             if sub is None and apply_go:
                 if i == class_index:
-                    sub = st.createClass(parent, part, SourceType.USER_DEFINED)
+                    sub = st.createClass(parent, part, SourceType.ANALYSIS)
                 else:
-                    sub = st.createNameSpace(parent, part, SourceType.USER_DEFINED)
+                    sub = st.createNameSpace(parent, part, SourceType.ANALYSIS)
             if sub is None:
                 sub = parent   # dry-run, or creation skipped
             parent = sub
@@ -881,6 +894,7 @@ def run_classes():
     reparented = classes_seen = errors = 0
     tx = cp.startTransaction('CommonLibVR class population')
     sample = []
+    success = False
     try:
         # B: reparent flat Class::Method functions
         from ghidra.util.exception import DuplicateNameException
@@ -920,12 +934,12 @@ def run_classes():
                 if target_ns is not global_ns:
                     f.setParentNamespace(target_ns)
                 try:
-                    f.setName(leaf, SourceType.USER_DEFINED)
+                    f.setName(leaf, SourceType.ANALYSIS)
                 except DuplicateNameException:
                     # leaf already taken in this namespace (overload/static) --
                     # disambiguate with the address, matching the vtable-walk style.
                     f.setName('%s_%X' % (leaf, f.getEntryPoint().getOffset()),
-                              SourceType.USER_DEFINED)
+                              SourceType.ANALYSIS)
                 reparented += 1
             except Exception:
                 errors += 1
@@ -989,8 +1003,9 @@ def run_classes():
                     errors += 1
             else:
                 rewired += 1
+        success = True
     finally:
-        cp.endTransaction(tx, True)
+        cp.endTransaction(tx, success)
 
     print('Classes: %s. flat-method functions=%d, reparented=%d, ns->class=%d, '
           'vftable rewired=%d, errors=%d'

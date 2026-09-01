@@ -25,7 +25,7 @@ Modes:
   CLVR_CYCLE=go  -- run the apply loop to convergence.
 
 Each sub-stage stays non-destructive (ANALYSIS source, protect IMPORTED/
-USER_DEFINED, one always-committed transaction -- never commit=False). Knobs:
+USER_DEFINED, one transaction that no individual anomaly rolls back). Knobs:
 CLVR_CYCLE_MAX (cycles, default 5), CLVR_CYCLE_MIN_GAIN (default 5), plus every
 sub-stage's own env (CLVR_PROP_SEED, CLVR_DISCOVER_PER_CLASS, ...) passes through.
 """

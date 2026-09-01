@@ -3,12 +3,12 @@
 binary in the user's combined Ghidra project via pyghidra.
 
 Supports every F4 variant in one place: OG (1.10.163) / NG (1.10.984) /
-AE (1.11.191) / VR (1.2.72) / 1.11.221.  Pick the version with
+AE (1.11.191) / VR (1.2.72) / 1.11.221 / 1.11.240.  Pick the version with
 ``--version`` and the script auto-selects the matching CommonLibImport
 file and disambiguates the binary inside a combined project by its
 version-tagged filename.
 
-The combined ``Combined.gpr`` / ``F4VR.gpr`` projects under
+The combined ``ExampleProject.gpr`` / ``F4VR.gpr`` projects under
 ``C:/GhidraProjects`` typically hold several Fallout4 binaries imported
 as ``Fallout4_<VER>_<patch>.exe`` (e.g. ``Fallout4_AE_1_11_191.exe``,
 ``Fallout4VR_1_2_72.exe``).  ``--version`` matches the version tag.
@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 SCRIPTS_OUT = REPO_DIR / "ghidrascripts"
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
@@ -48,13 +48,14 @@ VERSIONS = {
     'ae':  ('CommonLibImport_F4_AE.py',  'Fallout4.exe',   ['_ae_', '_ae.', ' ae.exe', '1_11_191', '1.11.191']),
     'vr':  ('CommonLibImport_F4_VR.py',  'Fallout4VR.exe', ['fallout4vr', 'fallout4_vr', '1_2_72', '1.2.72']),
     '221': ('CommonLibImport_F4_221.py', 'Fallout4.exe',   ['_221.exe', '_221_', '1_11_221', '1.11.221']),
+    '240': ('CommonLibImport_F4_240.py', 'Fallout4.exe',   ['_240.exe', '_240_', '1_11_240', '1.11.240']),
 }
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--version', required=True, choices=sorted(VERSIONS),
-                    help="F4 variant to apply (og/ng/ae/vr/221)")
+                    help="F4 variant to apply (og/ng/ae/vr/221/240)")
     ap.add_argument('--project-dir',  default=str(PROJECT_DIR),
                     help="Directory containing the .gpr (default: %(default)s)")
     ap.add_argument('--project-name', default=PROJECT_NAME,

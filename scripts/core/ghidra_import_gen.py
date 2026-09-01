@@ -1541,9 +1541,9 @@ def _import_symbols():
     # still runs but no function symbols get applied (use byte-signature
     # porting from AE as a separate post-pass).
     version_key = {
-        'se': 's', 'ae': 'a', 'svr': 'v',
+        'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v',
         'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
-        'f4_221': '221',
+        'f4_221': '221', 'f4_240': '240',
         'sf': 'sf',
         'fnv': 'fnv',
     }.get(VERSION, 'a')
@@ -1698,7 +1698,11 @@ def _build_rva_to_id():
             rva, rid = struct.unpack_from('<II', blob, i)
             rva_to_id[rva] = rid
     else:
-        version_key = 's' if VERSION == 'se' else 'a'
+        version_key = {
+            'se': 's', 'ae': 'a', '17104': '17104',
+            'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a',
+            'f4_vr': 'v', 'f4_221': '221', 'f4_240': '240',
+        }.get(VERSION, 'a')
         id_key = 'si' if VERSION == 'se' else 'ai'
         for s in SYMBOLS:
             rva = s.get(version_key)
@@ -1979,9 +1983,9 @@ def _import_fallback_symbols():
     # still runs but no function symbols get applied (use byte-signature
     # porting from AE as a separate post-pass).
     version_key = {
-        'se': 's', 'ae': 'a', 'svr': 'v',
+        'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v',
         'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
-        'f4_221': '221',
+        'f4_221': '221', 'f4_240': '240',
         'sf': 'sf',
         'fnv': 'fnv',
     }.get(VERSION, 'a')
@@ -2085,8 +2089,16 @@ def _import_fallback_symbols():
     if count_fb_sig or count_fb_sig_fail:
         print('Fallback signatures applied: ' + str(count_fb_sig) + ', failed: ' + str(count_fb_sig_fail))
 
+'''
 
+try:
+    from .provenance import GHIDRA_PROVENANCE_APPLY_SNIPPET
+except (ImportError, ValueError):
+    from provenance import GHIDRA_PROVENANCE_APPLY_SNIPPET
+
+GHIDRA_SCRIPT_FOOTER += GHIDRA_PROVENANCE_APPLY_SNIPPET + '''
 run()
+_apply_bgs_provenance()
 '''
 
 
@@ -2187,6 +2199,16 @@ def generate_script(
                  repr(json.dumps(deduped_targets, separators=(',', ':'))) + ')')
     lines.append('TARGET_LINEAGE = _json_target.loads(' +
                  repr(json.dumps(target_lineage, separators=(',', ':'))) + ')')
+    try:
+        from .provenance import build_manifest, canonical_json
+    except (ImportError, ValueError):
+        from provenance import build_manifest, canonical_json
+    from pathlib import Path as _ProvenancePath
+    provenance_manifest = build_manifest(
+        _ProvenancePath(__file__).resolve().parents[2], __file__,
+        deduped_targets)
+    lines.append('BGS_PROVENANCE = _json_target.loads(' +
+                 repr(canonical_json(provenance_manifest)) + ')')
     lines.append('')
 
     # Ghidra has one datatype namespace per category, while C++ permits tag

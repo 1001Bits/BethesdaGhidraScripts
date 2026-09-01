@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-GHIDRA_DIR = Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"))
 
 
 def main():

@@ -21,12 +21,15 @@ TRANSACTION MODEL (important): the Ghidra MCP wraps each eval in its OWN outer
 transaction, so any transaction this script opens is NESTED inside it. Ghidra rolls
 back the ENTIRE transaction group if any nested transaction is ended with
 commit=False -- so a single rolled-back function would silently discard the whole
-run. Therefore this script NEVER ends a transaction with commit=False:
+run. Therefore no INDIVIDUAL function is ever rolled back:
   * dry-run mutates NOTHING (it only classifies and counts), so there is nothing to
     roll back;
   * apply opens ONE transaction, mutates, and on the rare post-mutation verify
     failure RESTORES that function's original signature via the API (not a
-    rollback), then always commits the group.
+    rollback), then commits the group.
+The one case that does discard the group is an exception escaping the run itself:
+there the alternative is committing a half-applied pass and reporting it as
+success, which is the same silent-corruption failure seen from the other side.
 Seeds use SourceType.ANALYSIS so a human edit / CommonLib re-import outranks them.
 Dry-run by default; CLVR_SEED=go to apply. Decision logic is in seed_plan.py
 (unit-tested).
@@ -88,6 +91,7 @@ def run():
     # would poison the MCP's outer transaction and discard everything). Dry-run
     # opens no transaction and mutates nothing.
     tx = cp.startTransaction('thiscall-seed') if APPLY else None
+    success = False
     try:
         for f in fm.getFunctions(True):
             parent = f.getParentNamespace()
@@ -160,7 +164,7 @@ def run():
                         # Restore in-API (NOT a transaction rollback, which would
                         # poison the whole group) and count as an anomaly.
                         ApplyFunctionSignatureCmd(
-                            f.getEntryPoint(), orig_sig, SourceType.USER_DEFINED).applyTo(cp, monitor)  # noqa: F821
+                            f.getEntryPoint(), orig_sig, SourceType.ANALYSIS).applyTo(cp, monitor)  # noqa: F821
                         kind, tag = 'anomaly', 'convert-ANOMALY(%d->%d)' % (before_n, len(ps))
                 else:
                     f.setCallingConvention('__thiscall')
@@ -191,9 +195,10 @@ def run():
                 errors += 1
             if len(sample) < 15 and kind in ('convert', 'thiscall', 'fallback'):
                 sample.append('%s::%s  [%s]' % (cls, leaf, tag))
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)   # always commit the group; never poison it
+            cp.endTransaction(tx, success)   # commit only if the whole run completed
 
     print('thiscall-set (%s): %s' % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN (no changes made)'))
     if APPLY:

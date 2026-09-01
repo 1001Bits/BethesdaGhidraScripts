@@ -42,10 +42,14 @@ def run():
     if cp.getDefaultPointerSize() != 8:
         print("pe-unwind: AMD64 runtime-function format does not apply to " + cp.getName())
         return
-    from binary_identity import PEIdentityError, verify_ghidra_program
+    from binary_identity import (PEIdentityError, _program_executable_path,
+                                 verify_ghidra_program)
     from pe_unwind import extract_runtime_functions
 
-    executable_path = str(cp.getExecutablePath() or "")
+    # Ghidra records Windows paths in URI-like form (for example
+    # ``/C:/Games/...``).  Use the central normalizer so the identity guard
+    # checks the real backing file instead of rejecting a valid import.
+    executable_path = _program_executable_path(cp) or ""
     if not executable_path or not os.path.isfile(executable_path):
         raise RuntimeError(
             "pe-unwind requires the exact imported executable to remain available")

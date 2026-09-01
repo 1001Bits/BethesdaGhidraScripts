@@ -1,7 +1,8 @@
 """Skyrim SE / AE / VR address library database loader.
 
-SE (1.5.97) and AE (1.6.1170) ship as compressed .bin files in the meh321
-V1/V2 format.  VR (1.4.15) ships as a flat CSV with a metadata row.  All
+SE (1.5.97) and AE (1.6.1170) ship as compressed meh321 V1/V2 files;
+AE (1.7.104) uses the flat-indexed V5 format.  VR (1.4.15) ships as a flat
+CSV with a metadata row.  All
 three share the SE-derived ID namespace, so a single ID can be looked up
 across all three DBs.
 """
@@ -194,6 +195,7 @@ class AddressLibrary:
     def __init__(self):
         self.se_db: Dict[int, int] = {}
         self.ae_db: Dict[int, int] = {}
+        self.db_17104: Dict[int, int] = {}
         self.vr_db: Dict[int, int] = {}
 
     def load_bin(self, file_path: str,
@@ -210,7 +212,7 @@ class AddressLibrary:
                 return value
 
             fmt = struct.unpack('<I', read_exact(4))[0]
-            if fmt not in (1, 2):
+            if fmt not in (1, 2, 5):
                 raise ValueError('unsupported SSE address-library format {} in {}'.format(
                     fmt, file_path))
             embedded_version = tuple(struct.unpack('<4I', read_exact(16)))
@@ -220,6 +222,30 @@ class AddressLibrary:
                     raise ValueError(
                         'SSE address-library version mismatch in {}: {} != {}'.format(
                             file_path, embedded_version, expected[:4]))
+            if fmt == 5:
+                # V5 stores a fixed 64-byte module label followed by a
+                # uint64 pointer size and an RVA array indexed directly by
+                # relocation ID.  A zero entry means the ID is unmapped.
+                read_exact(64)
+                ptr_size = struct.unpack('<Q', read_exact(8))[0]
+                if ptr_size != 8:
+                    raise ValueError(
+                        'Skyrim V5 address library has pointer size {} in {}'.format(
+                            ptr_size, file_path))
+                addr_count = struct.unpack('<I', read_exact(4))[0]
+                remaining = os.path.getsize(file_path) - f.tell()
+                expected_bytes = addr_count * 4
+                if expected_bytes != remaining:
+                    raise ValueError(
+                        'invalid Skyrim V5 address table in {}: expected {} '
+                        'bytes, found {}'.format(
+                            file_path, expected_bytes, remaining))
+                values = read_exact(expected_bytes)
+                for relocation_id, (offset,) in enumerate(
+                        struct.iter_unpack('<I', values)):
+                    if offset:
+                        db[relocation_id] = offset
+                return db
             name_len = struct.unpack('<I', read_exact(4))[0]
             if name_len > os.path.getsize(file_path) - f.tell():
                 raise ValueError('invalid module-name length {} in {}'.format(
@@ -348,16 +374,20 @@ class AddressLibrary:
                     len(db), declared_count))
         return db
 
-    def load_all(self, base_path: str) -> None:
+    def load_all(self, base_path: str, require_17104: bool = False) -> None:
         sse_dir = os.path.join(base_path, 'sse')
         self.se_db = self.load_bin(
             os.path.join(sse_dir, 'version-1-5-97-0.bin'), (1, 5, 97, 0))
         self.ae_db = self.load_bin(
             os.path.join(sse_dir, 'versionlib-1-6-1170-0.bin'), (1, 6, 1170, 0))
+        self.db_17104 = self.load_bin(
+            os.path.join(sse_dir, 'versionlib-1-7-104-0.bin'), (1, 7, 104, 0))
         self.vr_db = self.load_csv(os.path.join(sse_dir, 'version-1-4-15-0.csv'))
         missing = [name for name, db in (
             ('SE 1.5.97', self.se_db), ('AE 1.6.1170', self.ae_db),
             ('VR 1.4.15', self.vr_db)) if not db]
+        if require_17104 and not self.db_17104:
+            missing.append('AE 1.7.104')
         if missing:
             raise FileNotFoundError('Missing or empty Skyrim address libraries: {}'.format(
                 ', '.join(missing)))

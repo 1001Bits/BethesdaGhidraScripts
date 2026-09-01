@@ -8,7 +8,8 @@ functions (~25k from CommonLibImport_F4_AE.py + IDAImportNames) and finds
 matching positions in OG / NG / VR via masked byte signatures.
 
 Pipeline:
-  Source pool:  CommonLibImport_F4_AE.py SYMBOLS + extras/IDAImportNames_*.py
+  Source pool:  CommonLibImport_F4_AE.py SYMBOLS + identity-bound normalized
+                IDA evidence (or the historical byte-pinned legacy corpus)
   Signatures:   bytesig_port.py  (exact 32 B match + masked 48 B retry)
   Output:       OG/NG/VR scripts re-emitted with ported names embedded
 
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import os
 import re
 import sys
@@ -40,6 +42,7 @@ from pathlib import Path
 _SCRIPT_DIR  = Path(__file__).resolve().parent
 _PROJECT_DIR = _SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(_PROJECT_DIR / "scripts" / "core"))
+sys.path.insert(0, str(_SCRIPT_DIR))
 
 import ast
 from bytesig_port import load_pe_text, build_prefix_index, port_symbols  # noqa: E402
@@ -48,11 +51,25 @@ from addrlib_emit  import build_name_to_id, join_ids, write_addrlib_csv  # noqa:
 from binary_identity import inspect_pe                                   # noqa: E402
 from pe_unwind import extract_runtime_functions                          # noqa: E402
 from importer_binding import accepts_manifest                           # noqa: E402
-from address_library import F4AddressLibrary                             # noqa: E402
 from bytesig_evidence import (                                           # noqa: E402
     load_validated as load_bytesig_evidence,
     persist as persist_bytesig_evidence,
 )
+
+
+# Several game pipelines have a top-level module named ``address_library``.
+# A combined pytest/Python process may already have another game's module in
+# sys.modules, so bind the F4 implementation by its exact file rather than
+# trusting the ambiguous global module name.
+_F4_ADDRESS_LIBRARY_MODULE = "bgs_commonlibf4_address_library"
+_f4_address_library_spec = importlib.util.spec_from_file_location(
+    _F4_ADDRESS_LIBRARY_MODULE, _SCRIPT_DIR / "address_library.py")
+if _f4_address_library_spec is None or _f4_address_library_spec.loader is None:
+    raise ImportError("cannot load the local Fallout 4 address-library module")
+_f4_address_library = importlib.util.module_from_spec(_f4_address_library_spec)
+sys.modules[_F4_ADDRESS_LIBRARY_MODULE] = _f4_address_library
+_f4_address_library_spec.loader.exec_module(_f4_address_library)
+F4AddressLibrary = _f4_address_library.F4AddressLibrary
 
 
 _JSON_LOADS_RE = re.compile(r"^_json(?:_sym)?\.loads\((.+)\)$")
@@ -81,6 +98,7 @@ def _extract_symbols_array(content: str, var_name: str = "SYMBOLS"):
 EXES_DIR       = _PROJECT_DIR / "exes" / "f4"
 GENERATED_DIR  = _PROJECT_DIR / "ghidrascripts"
 EXTRAS_DIR     = _PROJECT_DIR / "extras"
+IDA_NORMALIZED_DIR = EXTRAS_DIR / "normalized"
 STEAMLESS_CLI  = _PROJECT_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
 IDA_CORPUS_SHA256 = 'b0c327619f1a4e71fb3061c571d44a9d4de9154ab641dcc1932414dcbca639c0'
 IDA_SOURCE_SHA256 = {
@@ -142,7 +160,36 @@ def _load_commonlib_f4_names(source: str) -> dict[str, int]:
 
 
 def _load_ida_names(source_manifest) -> dict[str, int]:
-    """{name: rva} from extras/IDAImportNames_1.11.191.0.py (AE-keyed)."""
+    """Return an identity-bound, reciprocal-unique AE ``{name: rva}`` pool.
+
+    A locally normalized archive map takes priority.  Its loader verifies the
+    evidence content, exact PE identity, source-archive lock, section kind,
+    linker function boundary, and duplicate-name quarantine.  The historical
+    raw script remains a byte-for-byte pinned compatibility source only; an
+    arbitrary/new raw script can never bypass normalization by changing a
+    constant here.
+    """
+    from ida_name_archive import (
+        load_normalized_evidence, select_normalized_evidence_path)
+    normalized_path = select_normalized_evidence_path(
+        "1.11.191.0", str(source_manifest.get("sha256") or ""),
+        IDA_NORMALIZED_DIR)
+    if normalized_path is not None:
+        rows = load_normalized_evidence(
+            normalized_path, source_manifest,
+            expected_version="1.11.191.0")
+        out: dict[str, int] = {}
+        for row in rows:
+            name = row["name"]
+            if (row["kind"] != "func" or not _NAME_RE.match(name)
+                    or "<" in name or ">" in name):
+                continue
+            if name in out:
+                raise ValueError(
+                    "normalized IDA evidence contains an ambiguous name")
+            out[name] = int(row["rva"])
+        return out
+
     p = EXTRAS_DIR / "IDAImportNames_1.11.191.0.py"
     if not p.is_file():
         return {}

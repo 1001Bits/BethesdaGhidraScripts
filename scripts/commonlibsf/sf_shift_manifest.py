@@ -27,7 +27,12 @@ def version_token(version: Sequence[int]) -> str:
 
 
 def map_path(refs_dir: os.PathLike, version: Sequence[int]) -> Path:
-    return Path(refs_dir) / 'shift_sf_{}.json'.format(version_token(version))
+    # Compressed on purpose: a full Starfield map carries per-slot evidence for
+    # ~233k slots and runs to ~111 MB as plain JSON, which GitHub refuses to
+    # store at all.  gzip brings it to ~3 MB, in line with the layout CSVs that
+    # already ship compressed.  Only the container changes; the document, and
+    # therefore the semantic-rebuild check, is untouched.
+    return Path(refs_dir) / 'shift_sf_{}.json.gz'.format(version_token(version))
 
 
 def file_sha256(path: os.PathLike) -> str:
@@ -42,16 +47,34 @@ def layout_identity_path(layout_path: os.PathLike) -> Path:
     return Path(str(layout_path) + '.identity.json')
 
 
+def read_json_maybe_gzip(path: os.PathLike) -> dict:
+    """Read a JSON document, transparently decompressing a ``.gz`` container."""
+    path = Path(path)
+    if path.suffix == '.gz':
+        with gzip.open(str(path), 'rt', encoding='utf-8') as fh:
+            return json.load(fh)
+    with path.open('r', encoding='utf-8') as fh:
+        return json.load(fh)
+
+
 def _write_json_atomic(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp',
                                     dir=str(path.parent))
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
-            json.dump(doc, fh, indent=2, sort_keys=True)
-            fh.write('\n')
-            fh.flush()
-            os.fsync(fh.fileno())
+        payload = (json.dumps(doc, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        with os.fdopen(fd, 'wb') as raw:
+            if Path(path).suffix == '.gz':
+                # mtime=0 and no stored filename: the artifact's own SHA-256 is
+                # recorded elsewhere, so it must not change when only the clock
+                # does.
+                with gzip.GzipFile(filename='', mode='wb', fileobj=raw,
+                                   mtime=0) as compressed:
+                    compressed.write(payload)
+            else:
+                raw.write(payload)
+            raw.flush()
+            os.fsync(raw.fileno())
         os.replace(tmp_name, path)
     finally:
         if os.path.exists(tmp_name):
@@ -173,23 +196,65 @@ def load_layout_identity(layout_path: os.PathLike,
 
 def _rebuild_semantic_map(reference_layout: os.PathLike,
                           target_layout: os.PathLike,
-                          target_version: Sequence[int]) -> dict:
-    """Return the deterministic matcher result for two exact layouts."""
+                          target_version: Sequence[int],
+                          reference_versionlib: Optional[os.PathLike] = None,
+                          target_versionlib: Optional[os.PathLike] = None) -> dict:
+    """Return the deterministic matcher result for two exact layouts.
+
+    The rebuild must reproduce exactly what the builder did, so when the map
+    was derived with Address Library ID matching the same translation has to be
+    supplied here.  Both version libraries are SHA-256 bound by the caller, so
+    recomputing from them keeps the check independent of the stored map.
+    """
     core_dir = Path(__file__).resolve().parent.parent / 'core'
     if str(core_dir) not in sys.path:
         sys.path.insert(0, str(core_dir))
     from vtable_layout import load_csv
     from vtable_matcher import build_shift_map
+    translation = None
+    if reference_versionlib is not None and target_versionlib is not None:
+        from versionlib_map import build_va_translation, read_versionlib
+        translation = build_va_translation(
+            read_versionlib(str(reference_versionlib)),
+            read_versionlib(str(target_versionlib)))
     reference_label = 'sf'
     target_label = 'sf_' + version_token(target_version).replace('-', '_')
     return build_shift_map(
         load_csv(str(reference_layout), reference_label),
-        load_csv(str(target_layout), target_label)).to_json()
+        load_csv(str(target_layout), target_label),
+        translation).to_json()
 
 
-def _require_semantic_match(doc: dict, expected: dict) -> None:
+def _map_uses_id_matching(doc: dict) -> bool:
+    """True when the stored map carries Address Library ID evidence."""
+    for section in ('vtables', 'classes'):
+        tables = doc.get(section)
+        if not isinstance(tables, dict):
+            continue
+        for table in tables.values():
+            if not isinstance(table, dict):
+                continue
+            evidence = table.get('match_evidence')
+            if not isinstance(evidence, dict):
+                continue
+            for item in evidence.values():
+                if isinstance(item, dict) and \
+                        item.get('method') == 'address_library_id':
+                    return True
+    return False
+
+
+def _require_semantic_match(doc: dict, expected: dict,
+                            had_versionlibs: bool = True) -> None:
     for key in ('reference', 'target', 'classes', 'vtables'):
         if doc.get(key) != expected.get(key):
+            if not had_versionlibs and _map_uses_id_matching(doc):
+                # Rebuilding without the version libraries reproduces only the
+                # weaker fingerprint-only match, so the mismatch says nothing
+                # about whether the stored map is honest.
+                raise ValueError(
+                    'SF shift map was derived with Address Library ID matching; '
+                    'pass reference_versionlib and target_versionlib to verify it')
             raise ValueError(
                 'SF shift map semantic content does not match bound layouts')
 
@@ -200,8 +265,7 @@ def load_validated(path: os.PathLike, target_version: Sequence[int],
                    reference_versionlib: Optional[os.PathLike] = None,
                    target_versionlib: Optional[os.PathLike] = None) -> dict:
     """Load a shift map only when all available target identity fields match."""
-    with open(path, 'r', encoding='utf-8') as fh:
-        doc = json.load(fh)
+    doc = read_json_maybe_gzip(path)
     if doc.get('schema_version') != SCHEMA_VERSION:
         raise ValueError('unsupported/missing SF shift schema in {}'.format(path))
     expected_version = list(normalize_version(target_version))
@@ -242,22 +306,27 @@ def load_validated(path: os.PathLike, target_version: Sequence[int],
     if reference_layout is not None and target_layout is not None:
         _require_semantic_match(
             doc, _rebuild_semantic_map(
-                reference_layout, target_layout, target_version))
+                reference_layout, target_layout, target_version,
+                reference_versionlib, target_versionlib),
+            had_versionlibs=bool(reference_versionlib and target_versionlib))
     return doc
 
 
 def bind_generated_map(path: os.PathLike, target_version: Sequence[int],
                        target_sha256: str, reference_layout: os.PathLike,
-                       target_layout: os.PathLike) -> dict:
+                       target_layout: os.PathLike,
+                       reference_versionlib: Optional[os.PathLike] = None,
+                       target_versionlib: Optional[os.PathLike] = None) -> dict:
     """Add target identity to build_shift_map.py output and replace atomically."""
     path = Path(path)
-    with path.open('r', encoding='utf-8') as fh:
-        doc = json.load(fh)
+    doc = read_json_maybe_gzip(path)
     if not isinstance(doc.get('classes'), dict):
         raise ValueError('generated shift map contains no classes object')
     _require_semantic_match(
         doc, _rebuild_semantic_map(
-            reference_layout, target_layout, target_version))
+            reference_layout, target_layout, target_version,
+            reference_versionlib, target_versionlib),
+        had_versionlibs=bool(reference_versionlib and target_versionlib))
     maps = doc.get('vtables') if isinstance(doc.get('vtables'), dict) \
         else doc['classes']
     matched = sum(len(item.get('ref_to_target', {}))

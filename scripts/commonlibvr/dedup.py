@@ -114,6 +114,7 @@ def purge_conflicts(cp, dtm, apply, mon):
         return (len(confs), 0, 0)
 
     rewired = removed = skipped = 0
+    success = False
     tx = cp.startTransaction('dedup: purge .conflict')
     try:
         for d in _all_conflicts(dtm):
@@ -136,8 +137,9 @@ def purge_conflicts(cp, dtm, apply, mon):
                 removed += 1
             except Exception:
                 skipped += 1
+        success = True
     finally:
-        cp.endTransaction(tx, True)
+        cp.endTransaction(tx, success)
     print('purge_conflicts APPLIED (%s): rewired=%d removed=%d skipped=%d remaining=%d'
           % (cp.getName(), rewired, removed, skipped, len(_all_conflicts(dtm))))
     return (rewired, removed, skipped)
@@ -224,6 +226,7 @@ def run():
     done = err = 0
     for i in range(0, len(uniq), BATCH):
         batch = uniq[i:i + BATCH]
+        success = False
         tx = cp.startTransaction('dedup batch %d' % (i // BATCH))
         try:
             for m, k in batch:
@@ -232,8 +235,9 @@ def run():
                     done += 1
                 except Exception:
                     err += 1
+            success = True
         finally:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
         if (i // BATCH) % 5 == 0:
             monitor.setMessage('dedup %d/%d merged' % (done, len(uniq)))  # noqa: F821
             print('  ... %d/%d merged' % (done, len(uniq)))

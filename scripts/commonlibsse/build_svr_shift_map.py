@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Build a Skyrim VR vtable shift map by comparing Skyrim AE (reference)
-and Skyrim VR (target) vtables in Combined.gpr.
+and Skyrim VR (target) vtables in ExampleProject.gpr.
 
 Output: scripts/commonlibsse/refs/shift_svr.json
 
 Pipeline:
-  1. Open Combined.gpr.
+  1. Open ExampleProject.gpr.
   2. For Skyrim AE and Skyrim VR programs, RTTI-scan each binary to find
      every vtable + its class name (the MSVC CompleteObjectLocator chain
      is the same trick we used for Starfield).  This is binary-driven so
@@ -46,10 +46,10 @@ from collections import defaultdict
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 PROJECT_DIR  = "C:/GhidraProjects"
-PROJECT_NAME = "Combined"
+PROJECT_NAME = "ExampleProject"
 AE_PATH      = "/Skyrim/SkyrimAE_1_6_1170.exe"
 VR_PATH      = "/Skyrim/SkyrimVR_1_4_15.exe"
 
@@ -61,7 +61,7 @@ DEFAULT_MAX_SLOTS = 1000
 
 NOISE_PREFIXES = ("FUN_", "thunk_FUN_", "sub_")
 
-# In Combined.gpr's Skyrim VR program, many named functions have a
+# In ExampleProject.gpr's Skyrim VR program, many named functions have a
 # trailing _<address> suffix appended (e.g., "Actor::Move_14062F480").
 # Strip those before comparing to AE.
 import re
@@ -449,7 +449,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    print("Opening Combined.gpr ...")
+    print("Opening ExampleProject.gpr ...")
     with pyghidra.open_project(PROJECT_DIR, PROJECT_NAME, create=False) as project:
         ae_df = project.getProjectData().getFile(AE_PATH)
         vr_df = project.getProjectData().getFile(VR_PATH)

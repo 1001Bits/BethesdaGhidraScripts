@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent.parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
-GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 DEFAULT_IDS_VTABLE = (
     REPO_DIR / "extern" / "CommonLibSF" / "include" / "RE" /
     "IDs_VTABLE.h"

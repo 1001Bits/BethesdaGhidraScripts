@@ -4,7 +4,8 @@ Binary format (from CommonLibF4 IDDatabase::load()):
   uint64  count
   count x (uint64 id, uint64 offset) pairs, sorted by id
 
-Loads OG (1.10.163), NG (1.10.984), AE (1.11.191), and VR (1.2.72).
+Loads OG (1.10.163), NG (1.10.984), AE (1.11.191), 1.11.221,
+1.11.240, and VR (1.2.72).
 
 OG and AE/NG IDs share the same meh321-maintained namespace: a single ID
 resolves to a function's offset in whichever DBs it exists in.  VR uses a
@@ -40,6 +41,7 @@ class F4AddressLibrary:
         self.ae_db: Dict[int, int] = {}
         self.vr_db: Dict[int, int] = {}
         self.db_221: Dict[int, int] = {}
+        self.db_240: Dict[int, int] = {}
 
     def load_bin(self, file_path: str) -> Dict[int, int]:
         if not os.path.exists(file_path):
@@ -140,7 +142,8 @@ class F4AddressLibrary:
         return db
 
     def load_all(self, base_path: str,
-                 ng_version: Tuple[int, int, int, int] = (1, 10, 984, 0)) -> None:
+                 ng_version: Tuple[int, int, int, int] = (1, 10, 984, 0),
+                 require_240: bool = False) -> None:
         """Load the exact databases used by the generated script variants.
 
         NG 1.10.980 and 1.10.984 are similar but not interchangeable.  The
@@ -159,6 +162,7 @@ class F4AddressLibrary:
         self.ae_db = self.load_bin(os.path.join(base_path, 'version-1-11-191-0.bin'))
         self.vr_db = self.load_csv(os.path.join(base_path, 'version-1-2-72-0.csv'))
         self.db_221 = self.load_bin(os.path.join(base_path, 'version-1-11-221-0.bin'))
+        self.db_240 = self.load_bin(os.path.join(base_path, 'version-1-11-240-0.bin'))
 
         required = {
             'OG 1.10.163': self.og_db,
@@ -167,6 +171,8 @@ class F4AddressLibrary:
             'VR 1.2.72': self.vr_db,
             '1.11.221': self.db_221,
         }
+        if require_240:
+            required['1.11.240'] = self.db_240
         missing = [label for label, db in required.items() if not db]
         if missing:
             raise FileNotFoundError(
@@ -182,7 +188,8 @@ class F4AddressLibrary:
             return {}
         out = {}
         for attr, key in (('og_db', 'og'), ('ng_db', 'ng'),
-                          ('ae_db', 'a'), ('db_221', '221')):
+                          ('ae_db', 'a'), ('db_221', '221'),
+                          ('db_240', '240')):
             value = getattr(self, attr).get(id_)
             if value:
                 out[key] = value

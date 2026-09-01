@@ -16,8 +16,10 @@ a dependency that ran THROUGH an untyped global is now a typed edge the deref mo
 sees.
 
 NON-DESTRUCTIVE: only types globals whose target bytes are currently UNDEFINED (never
-clobbers defined data), only renames DEFAULT (DAT_*) symbols, one always-committed
-transaction. Dry-run by default; CLVR_GLOBALS_APPLY=go to write. Knobs:
+clobbers defined data), only renames DEFAULT (DAT_*) symbols, one transaction that
+per-row failures never roll back (they are counted and still committed) and that is
+discarded only if an exception escapes the run.
+Dry-run by default; CLVR_GLOBALS_APPLY=go to write. Knobs:
 CLVR_GLOBALS_CSV (input), CLVR_GLOBALS_ACCEPT_CONF (auto-accept inferred type at/above
 this confidence when decision_type is blank: high|medium|none, default none).
 """
@@ -96,6 +98,7 @@ def run():
     dirty_classes = set()
     samples = []
     tx = cp.startTransaction('apply global types') if APPLY else None
+    success = False
     try:
         for row in rows:
             chosen, is_explicit = _accept(row)
@@ -148,7 +151,7 @@ def run():
                     sym = cp.getSymbolTable().getPrimarySymbol(addr)
                     if sym is not None and sym.getSource().toString() == 'DEFAULT':
                         from ghidra.program.model.symbol import SourceType
-                        sym.setName('g_' + row['inferred_type'], SourceType.USER_DEFINED)
+                        sym.setName('g_' + row['inferred_type'], SourceType.ANALYSIS)
                 except Exception as e:
                     skips['write-error'] = skips.get('write-error', 0) + 1
                     if len(samples) < 20:
@@ -158,9 +161,10 @@ def run():
             if len(samples) < 20:
                 samples.append('%s 0x%X -> %s%s' % ('type' if APPLY else 'would-type',
                                addr.getOffset(), dt.getName(), '' if APPLY else ''))
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)   # always commit; never poison the group
+            cp.endTransaction(tx, success)   # commit only if the loop finished
 
     # write the feedback dirty file so the next discovery pass re-mines the classes that
     # use the now-typed globals (where the new field RE will surface).

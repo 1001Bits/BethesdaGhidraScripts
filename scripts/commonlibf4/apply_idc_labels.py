@@ -35,7 +35,7 @@ import re
 import sys
 from pathlib import Path
 
-GHIDRA_DIR = Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"))
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))

@@ -165,6 +165,7 @@ def run():
 
     done_r = err = 0
     tx = cp.startTransaction('demangle rename')
+    success = False
     try:
         for dt, proper in renames:
             try:
@@ -172,11 +173,13 @@ def run():
                 done_r += 1
             except Exception:
                 err += 1
+        success = True
     finally:
-        cp.endTransaction(tx, True)
+        cp.endTransaction(tx, success)
     done_m = 0
     for i in range(0, len(merges), BATCH):
         tx = cp.startTransaction('demangle merge %d' % (i // BATCH))
+        success = False
         try:
             for dt, keeper in merges[i:i + BATCH]:
                 try:
@@ -184,8 +187,9 @@ def run():
                     done_m += 1
                 except Exception:
                     err += 1
+            success = True
         finally:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
     print('  APPLIED: %d renamed, %d merged, %d errors' % (done_r, done_m, err))
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verify each anchor in scripts/commonlibsf/anchors/sf.csv against
-Combined.gpr's /Starfield/Starfield 1.16.236 by walking the vtable and
+ExampleProject.gpr's /Starfield/Starfield 1.16.236 by walking the vtable and
 naming the function at the anchor's slot.
 
 Output: prints pass/fail per anchor.  If any drift, prints the slot index
@@ -14,10 +14,10 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 PROJECT_DIR  = "C:/GhidraProjects"
-PROJECT_NAME = "Combined"
+PROJECT_NAME = "ExampleProject"
 PROGRAM_PATH = "/Starfield/Starfield 1.16.236"
 
 ANCHORS_CSV   = REPO_DIR / "scripts" / "commonlibsf" / "anchors" / "sf.csv"

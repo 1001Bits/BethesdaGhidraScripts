@@ -106,9 +106,11 @@ def _source_pairs_from_pdb(path):
 
 def _source_pairs_from_program(project_dir, project_name, program_name):
     """[(rva, namespaced_name), ...] of every non-placeholder function."""
-    os.environ.setdefault("GHIDRA_INSTALL_DIR", str(REPO / "tools" / "ghidra"))
+    ghidra_dir = Path(os.environ.get("GHIDRA_INSTALL_DIR") or
+                      (REPO / "tools" / "ghidra"))
+    os.environ.setdefault("GHIDRA_INSTALL_DIR", str(ghidra_dir))
     import pyghidra
-    pyghidra.start(install_dir=REPO / "tools" / "ghidra")
+    pyghidra.start(install_dir=ghidra_dir)
     from ghidra.util.task import ConsoleTaskMonitor
     import java.lang
     monitor = ConsoleTaskMonitor()

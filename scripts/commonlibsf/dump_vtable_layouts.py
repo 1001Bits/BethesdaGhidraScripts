@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 SCRIPT_DIR  = Path(__file__).resolve().parent
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 

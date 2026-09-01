@@ -1,0 +1,2 @@
+# Optional offline signing and trusted signature verification.
+cryptography==46.0.3

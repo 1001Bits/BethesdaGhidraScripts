@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 SF_EXE        = Path(r"C:/Games/Starfield 1.16.236/Starfield.exe")
 EXISTING_VTBL = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf116_commonlib_names.csv"
@@ -263,7 +263,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project("C:/GhidraProjects", "Combined", create=False) as project:
+    with pyghidra.open_project("C:/GhidraProjects", "ExampleProject", create=False) as project:
         domain_file = project.getProjectData().getFile("/Starfield/Starfield 1.16.236")
         consumer = java.lang.Object()
         program = domain_file.getDomainObject(consumer, False, False, monitor)
@@ -282,7 +282,7 @@ def main():
                         text_end = block.getEnd().getOffset()
             print(f".text: 0x{text_start:x} - 0x{text_end:x}")
 
-            # Combined termination set: ALL vtables we know about
+            # Complete termination set: ALL vtables we know about
             all_vtable_set = set(commonlib_vtables) | set(vtables_from_rtti.keys())
 
             n_vtables_done = 0

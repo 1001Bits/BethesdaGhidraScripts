@@ -38,9 +38,10 @@ import tempfile
 import zipfile
 from pathlib import Path
 from ghidra_project import open_user_project
+from provenance import (PROGRAM_INFO_KEY, pdb_canary_name, validate_manifest)
 
 REPO_DIR   = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 # Default-generated names carry no information -- drop them from every output.
 # Checked against BOTH the leaf and the full (namespaced) name, so a label like
@@ -203,7 +204,7 @@ def _write_text_atomic(path, content):
 
 
 def write_outputs(out_dir, module, image_base, functions, labels,
-                  target_manifest=None):
+                  target_manifest=None, bgs_provenance=None):
     module = _module_basename(module)
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.join(out_dir, os.path.splitext(module)[0])
@@ -229,6 +230,8 @@ def write_outputs(out_dir, module, image_base, functions, labels,
                      **({"source": l["source"]} if l.get("source") else {})}
                     for l in vtables],
     }
+    if bgs_provenance is not None:
+        doc["bgs_provenance"] = validate_manifest(bgs_provenance)
     json_path = stem + ".symbols.json"
     _write_text_atomic(json_path, json.dumps(doc, indent=1) + "\n")
 
@@ -260,6 +263,8 @@ def write_outputs(out_dir, module, image_base, functions, labels,
         "target": public_target,
         "outputs": {},
     }
+    if bgs_provenance is not None:
+        identity["bgs_provenance"] = validate_manifest(bgs_provenance)
     for output in (json_path, map_path, dd_path):
         identity["outputs"][os.path.basename(output)] = hashlib.sha256(
             Path(output).read_bytes()).hexdigest()
@@ -312,6 +317,31 @@ def build_fakepdb_root(module, bitness, segments, functions, labels,
         "names": [{"rva": l["rva"], "name": l["name"],
                    "is_public": True, "is_func": False} for l in labels],
     }
+
+
+def add_pdb_provenance_canary(functions, labels, bgs_provenance):
+    """Add a transparent PDB alias at an existing real symbol RVA."""
+    result = list(labels)
+    if bgs_provenance is None:
+        return result
+    validate_manifest(bgs_provenance)
+    candidates = list(functions) + list(labels)
+    if not candidates:
+        return result
+    result.append({"rva": int(candidates[0]["rva"]),
+                   "name": pdb_canary_name(bgs_provenance),
+                   "source": "BGS_PROVENANCE", "kind": "data"})
+    return result
+
+
+def read_program_provenance(program):
+    """Read and fail closed on an invalid stored importer manifest."""
+    from ghidra.program.model.listing import Program
+    raw = program.getOptions(Program.PROGRAM_INFO).getString(
+        PROGRAM_INFO_KEY, "")
+    if not raw:
+        return None
+    return validate_manifest(json.loads(str(raw)))
 
 
 def _manifest_section(target_manifest, rva):
@@ -505,6 +535,7 @@ def generate_shareable_pdb(executable, fakepdb_json, output_path,
     }
     if source_provenance is not None:
         identity["source_provenance"] = source_provenance
+        identity["bgs_provenance"] = validate_manifest(source_provenance)
     identity_path = Path(str(output_path) + ".identity.json")
     _write_text_atomic(identity_path,
                        json.dumps(identity, indent=2, sort_keys=True) + "\n")
@@ -512,14 +543,18 @@ def generate_shareable_pdb(executable, fakepdb_json, output_path,
 
 
 def package_symbol_bundle(out_dir, module, pdb_path, pdb_identity_path,
-                          symbols_json, target_manifest):
+                          symbols_json, target_manifest, revision=1,
+                          bgs_provenance=None):
     """Create one versioned ZIP suitable for sharing with other authors."""
+    revision = int(revision)
+    if revision < 1:
+        raise ValueError("symbol-bundle revision must be positive")
     target = _public_target_manifest(target_manifest)
     version = str(target.get("version_string") or "unknown")
     digest = str(target.get("sha256") or "unknown")
     stem = os.path.splitext(_module_basename(module))[0]
-    bundle_name = "{}-{}-{}-community-symbols-r1.zip".format(
-        stem, version, digest[:12])
+    bundle_name = "{}-{}-{}-community-symbols-r{}.zip".format(
+        stem, version, digest[:12], revision)
     bundle = Path(out_dir) / bundle_name
     fd, temporary_name = tempfile.mkstemp(
         prefix=bundle.stem + ".", suffix=".zip", dir=str(bundle.parent))
@@ -529,6 +564,7 @@ def package_symbol_bundle(out_dir, module, pdb_path, pdb_identity_path,
         "Community synthetic symbols for {module}\n\n"
         "Exact target SHA-256: {sha}\n"
         "Target version: {version}\n\n"
+        "Symbol bundle revision: r{revision}\n\n"
         "The PDB contains public names at RVAs only. It has no compiler types, "
         "locals, source files, line tables, function ranges, or prototypes. "
         "Its GUID and age intentionally match the target executable, so do not "
@@ -538,13 +574,19 @@ def package_symbol_bundle(out_dir, module, pdb_path, pdb_identity_path,
         "rights before publishing a bundle derived from third-party names.\n\n"
         "Generated with FakePDB v0.3 (Apache-2.0): "
         "https://github.com/Mixaill/FakePDB\n").format(
-            module=module, sha=digest, version=version)
+            module=module, sha=digest, version=version,
+            revision=revision)
     try:
         with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(pdb_path, arcname=Path(pdb_path).name)
             archive.write(pdb_identity_path,
                           arcname=Path(pdb_identity_path).name)
             archive.write(symbols_json, arcname=Path(symbols_json).name)
+            if bgs_provenance is not None:
+                archive.writestr(
+                    "BGS_PROVENANCE.json",
+                    json.dumps(validate_manifest(bgs_provenance),
+                               indent=2, sort_keys=True) + "\n")
             archive.writestr("README.txt", readme)
         os.replace(temporary, bundle)
     finally:
@@ -635,8 +677,10 @@ def main():
             image_base, functions, labels = collect(
                 program, args.signatures,
                 image_size=int(target_manifest['image_size']))
+            bgs_provenance = read_program_provenance(program)
             jp, mp, dp = write_outputs(args.out_dir, module, image_base,
-                                       functions, labels, target_manifest)
+                                       functions, labels, target_manifest,
+                                       bgs_provenance=bgs_provenance)
             if args.fakepdb_json or args.pdb or args.package:
                 safe_functions, safe_labels, selection = \
                     select_shareable_symbols(
@@ -644,8 +688,10 @@ def main():
                         include_analysis=args.include_analysis)
                 bitness = program.getDefaultPointerSize() * 8
                 segments = collect_segments(target_manifest)
+                pdb_labels = add_pdb_provenance_canary(
+                    safe_functions, safe_labels, bgs_provenance)
                 root = build_fakepdb_root(module, bitness, segments,
-                                          safe_functions, safe_labels,
+                                          safe_functions, pdb_labels,
                                           image_size=int(
                                               target_manifest['image_size']))
                 fpj = Path(args.out_dir) / (
@@ -669,12 +715,13 @@ def main():
                             "\\", "/")))
                     pdb_output, pdb_identity = generate_shareable_pdb(
                         executable, fpj, Path(args.out_dir) / pdb_name,
-                        safe_functions, safe_labels, target_manifest,
-                        selection)
+                        safe_functions, pdb_labels, target_manifest,
+                        selection, source_provenance=bgs_provenance)
                     if args.package:
                         bundle = package_symbol_bundle(
                             args.out_dir, module, pdb_output, pdb_identity,
-                            jp, target_manifest)
+                            jp, target_manifest,
+                            bgs_provenance=bgs_provenance)
         finally:
             program.release(consumer)
 

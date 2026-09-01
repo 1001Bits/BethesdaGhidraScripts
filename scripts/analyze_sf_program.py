@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run full Ghidra auto-analysis on a program inside a user project.
 
-The Starfield program in Combined.gpr was imported + disassembled (211k
+The Starfield program in ExampleProject.gpr was imported + disassembled (211k
 functions, our CommonLib symbols applied) but its ``Analyzed`` flag is
 False and the reference-creating analyzers never ran -- 0 of its
 VTABLE_ symbols carry a single reference.  That starves every
@@ -15,7 +15,7 @@ lock; the Ghidra GUI must be closed.
 
 Usage:
   python scripts/analyze_sf_program.py
-      [--project-dir C:/GhidraProjects --project-name Combined]
+      [--project-dir C:/GhidraProjects --project-name ExampleProject]
       [--program-path "/Starfield/Starfield 1.16.236"]
 """
 import argparse
@@ -24,13 +24,13 @@ import sys
 from pathlib import Path
 
 REPO_DIR   = Path(__file__).resolve().parent.parent
-GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--project-dir',  default="C:/GhidraProjects")
-    ap.add_argument('--project-name', default="Combined")
+    ap.add_argument('--project-name', default="ExampleProject")
     ap.add_argument('--program-path', default="/Starfield/Starfield 1.16.236")
     args = ap.parse_args()
 

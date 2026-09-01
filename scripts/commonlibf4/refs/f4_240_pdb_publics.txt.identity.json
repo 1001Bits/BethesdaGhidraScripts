@@ -1,0 +1,58 @@
+{
+  "artifact": "f4_240_pdb_publics.txt",
+  "artifact_sha256": "d14c4a4eb1d1dbeed46f356b1d78abdfb27ab4099eb692a462ba55fe86b89a31",
+  "counts": {
+    "data_section_publics": 10023,
+    "executable_section_publics": 32613,
+    "publics": 42636,
+    "quarantined_records": 2280,
+    "runtime_function_starts": 29250,
+    "same_name_multi_rva_groups": 608,
+    "same_rva_alias_groups": 0,
+    "unambiguous_records": 40356
+  },
+  "extractor": {
+    "msf_reader": "scripts/core/pdb_msf.py",
+    "msf_reader_sha256": "0e245aba681f2f83692c7c641da68e484980972156cf69bfe5bf4219702e1cc9",
+    "script": "scripts/commonlibf4/update_pdb_publics.py",
+    "script_sha256": "c1adb7c1800f8f30749b6a918509b724776e60c4132b47553ca6f23f17072190"
+  },
+  "pdb": {
+    "age": 1,
+    "guid": "90F7C238-FC83-4CE6-B480-28951CF1D740",
+    "machine": 34404,
+    "module_info_size": 0,
+    "signature": 1787087766,
+    "signature_utc": "2026-08-18T21:16:06+00:00",
+    "type_record_count": 0,
+    "version": 20000404
+  },
+  "schema_version": 2,
+  "source": {
+    "attribution_note": "Local community reconstruction supplied by the user; upstream author and redistribution license are not established.",
+    "author": "unknown",
+    "canonical_filename": "Fallout4_1_11_240_for_debug.pdb",
+    "kind": "community-generated public-symbol-only PDB",
+    "license": "unknown",
+    "origin": "local-file:C:\\Users\\Noud\\Downloads\\Fallout4_1_11_240_for_debug.pdb",
+    "original_filename": "Fallout4_1_11_240_for_debug.pdb",
+    "redistribution": "raw PDB not bundled; obtain author permission/license before redistribution",
+    "retrieved_utc": "2026-08-20T10:00:27Z",
+    "sha256": "76fbdedad3546ca2acbfd7a512a8a840fab02b0cdf85a384348074b90a7c7d13",
+    "size": 4186112
+  },
+  "targets": [
+    {
+      "file": "Fallout4.exe",
+      "file_version": [
+        1,
+        11,
+        240,
+        0
+      ],
+      "image_size": 69574656,
+      "machine": 34404,
+      "sha256": "fdcef37ac1230af6d0b0050eb2142b139ef3a867b37b9211fb6edfcc646072f8"
+    }
+  ]
+}

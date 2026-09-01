@@ -54,10 +54,8 @@ This opens an interactive menu:
 
   Executables:
     f4/ae: Fallout4.exe
-    f4/vr: Fallout4VR.exe
     skyrim/ae: SkyrimSE.exe
     skyrim/se: SkyrimSE.exe
-    skyrim/vr: SkyrimVR.exe
     starfield/sf: Starfield.exe
 
   Output:
@@ -86,12 +84,12 @@ The status panel at the top shows what's installed and detected. Menu options:
 | **1** | Installs the locked Python packages and exact Ghidra 12.0.4, LLVM 20.1.8, Steamless 3.1.0.5, and FakePDB 0.3 assets. Downloads and installed native binaries are SHA-256/receipt verified. PDB identity/public extraction uses the repository's strict MSF reader and LLVM tooling; the obsolete `pdbparse` dependency is not installed. |
 | **2** | Runs `git submodule update --init --recursive` and restores the reviewed commits recorded by this repository. It does not silently move the evidence base to an unreviewed upstream revision. |
 | **3** | Per-version submenu: pick one detected version (e.g. just Skyrim VR, or just Fallout 4 OG) and run a subset of the pipeline against it -- generate only that version's script, import only its binary, etc. Useful when you don't want to rerun every game. |
-| **4** | Parses every supported CommonLib's headers with clang and generates the Ghidra import scripts under `ghidrascripts/` for **all** detected versions. Requires clang (option 1 installs it). When a VR executable is staged it additionally parses CommonLibVR / CommonLibF4VR with the VR defines set, producing importers with the real VR struct layouts and vtable slots -- these are emitted only after the slots are checked against a hand-verified anchors CSV for that binary. |
+| **4** | Parses every supported CommonLib's headers with clang and generates the Ghidra import scripts under `ghidrascripts/` for **all** detected versions. Requires clang (option 1 installs it). |
 | **5** | Runs exact-target generated importers in headless Ghidra. PE identity, unpacking lineage, importer identity, architecture, sections, and anchors are checked before mutation. Import is transactional; a changed script requires a clean re-import. |
 | **6** | Opens Ghidra with the project loaded. |
 | **7** | Runs options 4 + 5 back-to-back. Use this after updating submodules or replacing an executable. |
 | **8** | Deletes the Ghidra project and state file so the next import starts from scratch. |
-| **9** | Picks an existing Ghidra project (yours, not the BGS one) and a program inside it, then runs three steps in order, stopping at the first failure: **(a)** apply the exact CommonLib importer for that build, **(b)** the generic RTTI-walk vtable-naming pipeline, **(c)** the vtable name reconciler. Step (b) works on any MSVC PE that Ghidra has finished auto-analyzing (x64 or x86), including binaries this repo has no CommonLib for -- Fallout New Vegas, modded engine builds, etc. -- and only renames functions still carrying Ghidra's default `FUN_*` placeholder. Step (c) additionally corrects *stale CommonLib slot names* that an older emission got wrong, and leaves hand-typed names alone; it is skipped when the importer has no AST slot map. For Skyrim VR and Fallout 4 VR the flow automatically prefers the true-VR importers (CommonLibVR / CommonLibF4VR) over the flatscreen ones, which emit no VR vtables at all. An importer that is not bound to a build is never applied: you are offered a regeneration instead, and if the executable it was imported from is gone, it can be recovered from the Ghidra project itself (Ghidra stores the imported bytes) and verified against the program's import-time SHA-256. |
+| **9** | Picks an existing Ghidra project (yours, not the BGS one) and runs the generic RTTI-walk vtable-naming pipeline against it. Works on any MSVC PE that Ghidra has finished auto-analyzing (x64 or x86), including binaries this repo has no CommonLib for -- Fallout New Vegas, modded engine builds, etc. Only renames functions whose name is still Ghidra's default `FUN_*` placeholder; never overwrites imported or user-set symbols. When an exact CommonLib importer is identifiable, the guided flow reuses that importer automatically for safe stale-slot reconciliation; it never asks the user to choose another version or perform a redundant dry run, and skips reconciliation when no AST slot map exists. |
 | **10** | Exports symbols from an improved project as JSON, map, or x64dbg-compatible data. It can also build, round-trip validate, and package an exact-executable synthetic public-symbol PDB. |
 
 **First-time setup:** run **1**, then **2**, then **7**. After that, **6** opens Ghidra with everything
@@ -180,11 +178,11 @@ Windows when the source contains a SteamStub `.bind` section.
 |----------------|---------------------|--------------------|---------------------------------------------------|
 | Skyrim SE      | `exes/skyrim/se`    | `1-5-97-0`         | `powerof3/CommonLibSSE`                           |
 | Skyrim AE      | `exes/skyrim/ae`    | `1-6-1170-0`       | `powerof3/CommonLibSSE`                           |
-| Skyrim VR      | `exes/skyrim/vr`    | `1-4-15-0` (csv)   | `powerof3/CommonLibSSE` + `alandtse/CommonLibVR` (true VR layouts) |
+| Skyrim VR      | `exes/skyrim/vr`    | `1-4-15-0` (csv)   | `powerof3/CommonLibSSE`                           |
 | Fallout 4 OG   | `exes/f4/og`        | `1-10-163-0`       | `libxse/commonlibf4`                              |
 | Fallout 4 NG   | `exes/f4/ng`        | `1-10-984-0`       | `libxse/commonlibf4`                              |
 | Fallout 4 AE   | `exes/f4/ae`, `exes/f4/221` | `1-11-191-0` / `1-11-221-0` | `libxse/commonlibf4` (+ 1.11.221 PDB publics) |
-| Fallout 4 VR   | `exes/f4/vr`        | `1-2-72-0` (csv)   | `libxse/commonlibf4` + `ArthurHub/CommonLibF4VR` (true VR layouts) |
+| Fallout 4 VR   | `exes/f4/vr`        | `1-2-72-0` (csv)   | `libxse/commonlibf4`                              |
 | Starfield      | `exes/starfield/sf` | `1-16-236-0` / `1-16-242-0` / `1-16-244-0` (V5, auto) | `Starfield-Reverse-Engineering/CommonLibSF`       |
 | Fallout NV     | `exes/fnv/og`       | n/a — xNVSE hardcoded VAs | `xNVSE/NVSE` (x86) + optional `refs/fnv_names.csv` |
 
@@ -195,13 +193,6 @@ Skyrim VR shares the SE-derived ID namespace with SE/AE, so the same
 `CommonLibSSE` headers generate a VR-targeting script that resolves SE IDs
 against the VR address library.  The VR address library ships as a CSV
 (community-maintained) rather than meh321's binary format.
-
-That is not enough on its own: the flatscreen CommonLibs describe VR structs as
-if they were SE/OG ones, and they emit no VR vtables at all.  So each VR runtime
-is also parsed from a CommonLib that really models it (`alandtse/CommonLibVR`,
-`ArthurHub/CommonLibF4VR`), giving the true struct sizes and vtable slots --
-checked against a hand-verified anchors CSV before anything is written, and used
-by menu option **9** automatically.
 
 CommonLibF4's IDs sit in the NG/AE namespace (1.10.984 / 1.11.191), so those
 two versions get full type + function symbol coverage from the address
@@ -223,15 +214,36 @@ function names alongside the types when the script runs.
 The byte-sig port only runs when both AE (or NG) and the target binary are
 present in `exes/f4/`; without them, OG/VR fall back to types-only coverage.
 
-For 1.11.221, the checked-in community PDB corpus now contains 37,714 exact-RVA
-public records from the latest supplied snapshot (4,068 more than the prior
-snapshot). It is a synthetic **public-symbol-only** PDB: it contains no compiler
-types, locals, private procedure records, source files, or line tables. The
-loader quarantines 15 same-RVA alias groups and 60 names used at multiple RVAs;
-cross-version byte-signature seeding is further limited to reciprocal-unique
-executable `.pdata` starts. The raw third-party PDB is not redistributed while
-its author/license are unknown; the derived corpus pins its SHA-256, GUID/age,
-target hashes, counts, and extractor hashes.
+For 1.11.221, the checked-in community PDB corpus contains 41,645 exact-RVA
+public records from the latest supplied snapshot (1,418 more than its strict
+predecessor). It is **public-symbol-only**: it contains no compiler types,
+locals, private procedure records, source files, or line tables. The loader
+quarantines 30 same-RVA alias groups and 88 names used at multiple RVAs,
+leaving 41,425 safe records; cross-version byte-signature seeding is further
+limited to reciprocal-unique executable `.pdata` starts. The raw third-party
+PDB is not redistributed while its author/license are unknown; the derived
+corpus pins its SHA-256, GUID/age, target hashes, counts, and extractor hashes.
+
+A separate local-only IDA archive workflow validates the user-supplied
+`ida-import-fallout4.zip` without executing its scripts. For the exact
+1.11.221 targets it accepts 2,757 ambiguity-filtered records (2,675 functions
+and 82 data labels) and binds normalized output to the full executable hash.
+The raw ZIP, extracted scripts, normalized maps, and generated importers that
+embed those names are deliberately excluded from release bundles; see
+`scripts/commonlibf4/IDA_NAME_ARCHIVE.md`.
+
+### Skyrim Creation Kit analysis
+
+`scripts/creationkit/` provides an exact-target workflow for Skyrim Creation
+Kit 1.6.1378.1 (SHA-256
+`3e8f7215303a82d8991f87fbc42eb84ef2672d5d8ab038212447faecfdf37b23`).
+It combines PE unwind recovery, Ghidra's MSVC RTTI class recovery, an
+independent vtable audit, identity-locked CKPE relocation annotations, and
+reciprocal-unique byte-signature naming from analyzed Skyrim SE/AE programs.
+Every mutating evidence pass is fail-closed on executable identity and
+preserves existing meaningful names. CKPE source is not vendored, and reports
+derived from local game/editor binaries are excluded from release bundles.
+See `scripts/creationkit/README.md` for the pinned CKPE commit and commands.
 
 Starfield uses the `Starfield-Reverse-Engineering/CommonLibSF` headers and
 meh321's **V5** address-library binary format (flat `uint32[id]` array
@@ -354,7 +366,7 @@ that, the repo ships **binary-derived improvement drivers** that recover names
 and types straight from the analyzed binary — valuable where CommonLib is thin
 (newer builds, Starfield, FNV) or absent. They run against an exact-identity
 analyzed Ghidra
-project via `scripts/discover_combined.py` (multi-program sequencer) or
+project through menu option 9 or
 `scripts/apply_enrichment_to_user_project.py` (one driver, one program), and
 name mutators preserve analyst/imported symbols unless the selected reviewed
 apply workflow explicitly targets a datatype field or evidence decision.
@@ -402,6 +414,12 @@ python scripts/run_headless.py f4 ae
 # Build a clean Starfield layout baseline without applying generated names
 python scripts/run_headless.py starfield sf --import-only
 
+# Creation Kit: independent RTTI/vtable audit (dry-run first)
+python scripts/core/run_vtable_pipeline.py C:/GhidraProjects ExampleProject "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe" --dry-run --target-pe C:/path/CreationKit.exe
+
+# Creation Kit: reciprocal-unique Skyrim naming ledger (dry-run first)
+python scripts/creationkit/bytesig_port_skyrim_to_ck.py --project-dir C:/GhidraProjects --project-name ExampleProject --target-path "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe"
+
 # Compile every script, run static safety checks, then run maintained tests
 python scripts/quality_gate.py
 ```
@@ -431,11 +449,8 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 │   ├── run_headless.py              Headless Ghidra runner
 │   ├── core/                        Shared: clang parser, script emitter
 │   ├── commonlibsse/                Skyrim SE/AE pipeline
-│   ├── commonlibvr/                 Skyrim VR pipeline (true VR layouts)
-│   ├── commonlibf4/                 Fallout 4 OG/NG/AE pipeline
-│   ├── commonlibf4vr/               Fallout 4 VR pipeline (true VR layouts)
-│   ├── commonlibsf/                 Starfield pipeline
-│   └── commonlibnvse/               Fallout New Vegas pipeline (x86)
+│   ├── commonlibf4/                 Fallout 4 AE pipeline
+│   └── creationkit/                 Exact Skyrim Creation Kit workflow
 ├── ghidrascripts/                   Generated import scripts (output)
 ├── ghidraprojects/                  Ghidra project (output)
 └── tools/                           Ghidra, Steamless, LLVM, FakePDB (auto-downloaded)

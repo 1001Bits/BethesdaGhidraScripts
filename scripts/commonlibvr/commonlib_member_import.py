@@ -112,6 +112,7 @@ def run():
     skips = collections.Counter()
     samples = []
     tx = cp.startTransaction('commonlib member import') if APPLY else None
+    success = False
     try:
         for r in rows:
             cls, cpp = r['class'], r['cpp_type']
@@ -181,9 +182,10 @@ def run():
                 samples.append('%s +0x%X %s -> %s %s%s'
                                % (cls, off, tn, new_name, dt.getName(),
                                   ' [MERGE]' if is_merge else ''))
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
 
     if changed and APPLY:
         try:

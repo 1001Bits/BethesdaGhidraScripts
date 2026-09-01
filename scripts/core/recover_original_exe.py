@@ -93,9 +93,11 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[2]
-    os.environ.setdefault("GHIDRA_INSTALL_DIR", str(repo / "tools" / "ghidra"))
+    ghidra_dir = Path(os.environ.get("GHIDRA_INSTALL_DIR") or
+                      (repo / "tools" / "ghidra"))
+    os.environ.setdefault("GHIDRA_INSTALL_DIR", str(ghidra_dir))
     import pyghidra
-    pyghidra.start(install_dir=repo / "tools" / "ghidra")
+    pyghidra.start(install_dir=ghidra_dir)
     import java.lang
     from ghidra.util.task import ConsoleTaskMonitor
 

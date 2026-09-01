@@ -179,6 +179,13 @@ def _build_shift_map(ref_csv: Path, target_csv: Path,
         '--target', str(target_csv),
         '--target-label', 'sf_' + _ver_filename(target_version).replace('-', '_'),
         '--out', str(out_json),
+        # Starfield IDs are version-stable, so the same function can be found
+        # in both builds by identity instead of by comparing raw prologue
+        # bytes -- which a rebuild invalidates almost everywhere, since it
+        # moves nearly every function and with it every embedded call target.
+        # load_validated below already binds both of these by SHA-256.
+        '--ref-versionlib', str(_versionlib_path(ANCHOR_VERSION)),
+        '--target-versionlib', str(_versionlib_path(target_version)),
     ]
     print('  Building shift map vs SF {} reference ...'.format(_ver_label(ANCHOR_VERSION)))
     env = os.environ.copy()
@@ -188,7 +195,9 @@ def _build_shift_map(ref_csv: Path, target_csv: Path,
         return False
     try:
         bind_generated_map(out_json, target_version, target_sha256,
-                           ref_csv, target_csv)
+                           ref_csv, target_csv,
+                           reference_versionlib=_versionlib_path(ANCHOR_VERSION),
+                           target_versionlib=_versionlib_path(target_version))
         load_validated(out_json, target_version, target_sha256,
                        reference_layout=ref_csv, target_layout=target_csv,
                        reference_versionlib=_versionlib_path(ANCHOR_VERSION),

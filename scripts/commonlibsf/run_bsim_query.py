@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR     = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR   = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR   = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 PROJECT_DIR  = REPO_DIR / "ghidraprojects" / "BethesdaGhidraScripts"
 PROJECT_NAME = "BethesdaGhidraScripts"
 SCRIPT_PATH  = REPO_DIR / "scripts" / "commonlibsf" / "bsim_query_apply.py"

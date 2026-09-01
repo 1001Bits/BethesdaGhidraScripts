@@ -10,7 +10,7 @@ drivers are read-only and write a CSV.
 Usage:
   python scripts/apply_enrichment_to_user_project.py \
       --driver string_anchored_rename \
-      --project-dir C:/GhidraProjects --project-name Combined \
+      --project-dir C:/GhidraProjects --project-name ExampleProject \
       --program-path /Skyrim/SkyrimSE_1_5_97.exe
       [--read-only]   # don't save the program (for ctor_mine / globals_harvest)
 
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR   = Path(__file__).resolve().parent.parent
-GHIDRA_DIR = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 CORE_DIR   = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
 from pyghidra_result import end_outer_transaction, require_script_success
@@ -53,7 +53,7 @@ def main():
     ap.add_argument('--driver', required=True, choices=sorted(DRIVERS),
                     help="Which core improvement driver to run")
     ap.add_argument('--project-dir',  default="C:/GhidraProjects")
-    ap.add_argument('--project-name', default="Combined")
+    ap.add_argument('--project-name', default="ExampleProject")
     ap.add_argument('--program-path', required=True,
                     help="Exact program path inside the project, e.g. "
                          "/Skyrim/SkyrimSE_1_5_97.exe")

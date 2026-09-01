@@ -172,13 +172,99 @@ def _fingerprints_match(a: str, b: str,
     return concrete_matches >= min_concrete_bytes
 
 
-def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
+def _slots_by_function(table: ClassVtable) -> Dict[int, List[int]]:
+    """Group a table's slots by the function pointer they hold, in slot order.
+
+    A quarter of Starfield's slots share a function with another slot in the
+    same table -- identical folded stubs like ``xor eax,eax; ret`` -- so the
+    unit that can be identified is the group, not the individual slot.
+    """
+    groups: Dict[int, List[int]] = {}
+    for slot in sorted(table.slots):
+        groups.setdefault(table.slots[slot].func_addr, []).append(slot)
+    return groups
+
+
+def _match_by_translated_address(ref: ClassVtable, tgt: ClassVtable,
+                                 sm: ClassShiftMap,
+                                 va_translation: Dict[int, int],
+                                 used_target_slots: set) -> None:
+    """Stage 0: pair slots whose functions share an Address Library ID.
+
+    This is identity rather than resemblance, so it survives a rebuild that
+    moves every function -- the case that defeats byte fingerprints entirely.
+    Where a function appears several times in one table the group is paired by
+    ordinal, but only when both sides have the same number of copies: if a
+    build added or dropped one instance of a folded stub, ordinal pairing would
+    silently shift every later duplicate by one.
+    """
+    ref_groups = _slots_by_function(ref)
+    tgt_groups = _slots_by_function(tgt)
+
+    # An ID that was retired and had its address reused would let two distinct
+    # reference functions claim one target function.  At most one of those
+    # edges is right and nothing here can say which, so drop both.
+    arrivals: Dict[int, List[int]] = {}
+    for ref_addr in ref_groups:
+        target_addr = va_translation.get(ref_addr)
+        if target_addr is not None:
+            arrivals.setdefault(target_addr, []).append(ref_addr)
+
+    for ref_addr, ref_slots in sorted(ref_groups.items()):
+        target_addr = va_translation.get(ref_addr)
+        if target_addr is None:
+            continue
+        if len(arrivals.get(target_addr, ())) != 1:
+            sm.ambiguous_matches.append({
+                'ref_slot': ref_slots[0], 'method': 'address_id_collision',
+                'candidates': sorted(arrivals.get(target_addr, ())),
+            })
+            continue
+        tgt_slots = tgt_groups.get(target_addr)
+        if not tgt_slots:
+            continue                    # function is not in this target table
+        if len(tgt_slots) != len(ref_slots):
+            sm.ambiguous_matches.append({
+                'ref_slot': ref_slots[0], 'method': 'address_id_arity',
+                'candidates': list(tgt_slots),
+            })
+            continue
+        for ref_slot, target_slot in zip(ref_slots, tgt_slots):
+            if target_slot in used_target_slots:
+                continue
+            evidence = {
+                'target_slot': target_slot, 'method': 'address_library_id',
+                'confidence': 'verified',
+            }
+            # The fingerprint is no longer the decision, but a disagreement is
+            # worth surfacing: it is what an ID reused for an unrelated
+            # function would look like.
+            ref_fp = _normalize_fingerprint(ref.slots[ref_slot].fingerprint)
+            tgt_fp = _normalize_fingerprint(tgt.slots[target_slot].fingerprint)
+            if ref_fp and tgt_fp and ref_fp != tgt_fp:
+                evidence['fingerprint_agrees'] = False
+            sm.ref_to_target[ref_slot] = target_slot
+            sm.match_evidence[ref_slot] = evidence
+            used_target_slots.add(target_slot)
+
+
+def _match_one_class(ref: ClassVtable, tgt: ClassVtable,
+                     va_translation: Optional[Dict[int, int]] = None
+                     ) -> ClassShiftMap:
     sm = ClassShiftMap(
         class_name=ref.class_name,
         vtable_id=ref.vtable_id,
         target_vtable_id=tgt.vtable_id,
         subobject_offset=ref.subobject_offset,
         is_primary=ref.is_primary)
+
+    used_target_slots = set()
+
+    # Stage 0: Address Library ID identity, when the caller supplied version
+    # libraries for a game whose IDs are version-stable.
+    if va_translation:
+        _match_by_translated_address(
+            ref, tgt, sm, va_translation, used_target_slots)
 
     # Stage 1: exact name match.  Both sides must be unique: distance is not
     # evidence that one overload/ICF duplicate owns a target slot.
@@ -191,12 +277,14 @@ def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
         if e.func_name:
             target_by_name.setdefault(e.func_name, []).append(slot)
 
-    used_target_slots = set()
     for ref_slot in sorted(ref.slots):
+        if ref_slot in sm.ref_to_target:
+            continue
         re_ = ref.slots[ref_slot]
         if not re_.func_name:
             continue
-        candidates = target_by_name.get(re_.func_name, [])
+        candidates = [slot for slot in target_by_name.get(re_.func_name, [])
+                      if slot not in used_target_slots]
         if len(ref_by_name.get(re_.func_name, [])) == 1 and len(candidates) == 1:
             target_slot = candidates[0]
             sm.ref_to_target[ref_slot] = target_slot
@@ -296,8 +384,16 @@ def _match_one_class(ref: ClassVtable, tgt: ClassVtable) -> ClassShiftMap:
     return sm
 
 
-def build_shift_map(ref: BinaryLayout, tgt: BinaryLayout) -> ShiftMap:
-    """Compute the full ShiftMap from reference binary -> target binary."""
+def build_shift_map(ref: BinaryLayout, tgt: BinaryLayout,
+                    va_translation: Optional[Dict[int, int]] = None) -> ShiftMap:
+    """Compute the full ShiftMap from reference binary -> target binary.
+
+    ``va_translation`` maps a reference function address to the same function's
+    address in the target, normally derived from the two builds' Address
+    Library IDs (see ``versionlib_map``).  Supplying it enables identity-based
+    slot matching; omitting it leaves the historical name/fingerprint matching
+    untouched, which is what games with version-unstable IDs must use.
+    """
     out = ShiftMap(reference_label=ref.binary_label, target_label=tgt.binary_label)
     ref_tables = ref.vtables or {
         vt.vtable_id or class_name: vt for class_name, vt in ref.classes.items()
@@ -327,7 +423,7 @@ def build_shift_map(ref: BinaryLayout, tgt: BinaryLayout) -> ShiftMap:
                 'vtable missing or ambiguous in target binary ({} candidates)'.format(
                     len(candidates)))
         else:
-            cm = _match_one_class(ref_vt, tgt_vt)
+            cm = _match_one_class(ref_vt, tgt_vt, va_translation)
         table_identity = ref_vt.vtable_id or identity
         out.vtables[table_identity] = cm
         if ref_vt.is_primary and ref_vt.class_name not in out.classes:
@@ -336,7 +432,23 @@ def build_shift_map(ref: BinaryLayout, tgt: BinaryLayout) -> ShiftMap:
 
 
 def save_json(sm: ShiftMap, path: str) -> None:
+    """Write a shift map, compressing when the path asks for it.
+
+    A full Starfield map carries per-slot evidence for ~233k slots and runs to
+    ~111 MB as plain JSON -- past the size GitHub will store.  A ``.gz`` path
+    writes the identical document through gzip (~3 MB); every other path is
+    unchanged, so the maps other games already ship keep their format.
+    """
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    if path.endswith('.gz'):
+        import gzip
+        payload = json.dumps(sm.to_json(), indent=2, sort_keys=True).encode('utf-8')
+        with open(path, 'wb') as raw:
+            # mtime=0: the artifact is hashed, so it must not differ run to run.
+            with gzip.GzipFile(filename='', mode='wb', fileobj=raw,
+                               mtime=0) as compressed:
+                compressed.write(payload)
+        return
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(sm.to_json(), f, indent=2, sort_keys=True)
 
@@ -344,5 +456,9 @@ def save_json(sm: ShiftMap, path: str) -> None:
 def load_json(path: str) -> Optional[dict]:
     if not os.path.isfile(path):
         return None
+    if path.endswith('.gz'):
+        import gzip
+        with gzip.open(path, 'rt', encoding='utf-8') as f:
+            return json.load(f)
     with open(path, encoding='utf-8') as f:
         return json.load(f)

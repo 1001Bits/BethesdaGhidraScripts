@@ -84,6 +84,7 @@ def process_session(sess, symbols, src_key, dst_key, label, audit_rows):
     if APPLY and plan['seed']:
         ms = sess.getManualMatchSet()
         txid = sess.startTransaction('CLVR VT seed ' + label)
+        success = False
         try:
             for src, dst, kind in plan['seed']:
                 try:
@@ -101,8 +102,9 @@ def process_session(sess, symbols, src_key, dst_key, label, audit_rows):
                     seeded += 1
                 except Exception:
                     seed_fail += 1
+            success = True
         finally:
-            sess.endTransaction(txid, True)
+            sess.endTransaction(txid, success)
 
     for src, dst, got, kind in plan['conflict']:
         audit_rows.append((

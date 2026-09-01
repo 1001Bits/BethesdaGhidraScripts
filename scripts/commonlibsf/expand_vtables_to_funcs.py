@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 PROJECT_DIR  = "C:/GhidraProjects"
-PROJECT_NAME = "Combined"
+PROJECT_NAME = "ExampleProject"
 PROGRAM_PATH = "/Starfield/Starfield 1.16.236"
 
 IN_CSV       = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf116_commonlib_names.csv"

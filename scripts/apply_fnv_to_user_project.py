@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 SCRIPT_PATH = REPO_DIR / "ghidrascripts" / "CommonLibImport_FNV.py"
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))

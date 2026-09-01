@@ -8,8 +8,9 @@ the apply loop lived twice. One copy here.
 NON-DESTRUCTIVE: each field is validated on a DETACHED struct.copy() first and the live
 struct is touched only when the change is provably improve-or-nop (length unchanged,
 protected bytes not decreased -- populate_plan.is_struct_change_safe). The unk*/pad*
-slot is renamed to `fld<digits>` so it leaves the discovery surface. One always-
-committed transaction (never commit=False -- the MCP nests it).
+slot is renamed to `fld<digits>` so it leaves the discovery surface. One transaction,
+never rolled back for an individual field (the MCP nests it, so that would discard
+the whole group) and discarded only if an exception escapes the run.
 """
 import collections
 import os
@@ -53,6 +54,7 @@ def apply_fields(cp, dtm, struct_by_class, dt_by_typename, aggregated, tag, do_a
     changed = set()
     if not do_apply:
         return applied, skips, changed, samples
+    success = False
     txid = cp.startTransaction(tag + ' apply fields')
     try:
         for (cls, off), info in aggregated.items():
@@ -102,6 +104,7 @@ def apply_fields(cp, dtm, struct_by_class, dt_by_typename, aggregated, tag, do_a
                                    % (cls, off, cur_name, new_name, info['type']))
             except Exception:
                 skips['replace-error'] += 1
+        success = True
     finally:
-        cp.endTransaction(txid, True)          # always commit; never poison the group
+        cp.endTransaction(txid, success)       # commit only if the loop ran to completion
     return applied, skips, changed, samples

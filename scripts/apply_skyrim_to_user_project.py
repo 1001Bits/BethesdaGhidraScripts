@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Apply a CommonLibImport_<SE|AE|VR>.py script to the matching Skyrim
+"""Apply a CommonLibImport_<SE|AE|AE_1_7_104|VR>.py script to the matching Skyrim
 binary in the user's Ghidra project via pyghidra.
 
-Supports SE / AE / VR.  Picks the CommonLibImport file by ``--version``
+Supports SE / AE 1.6.1170 / AE 1.7.104 / VR.  Picks the CommonLibImport file by ``--version``
 and disambiguates the binary inside a combined project by its
 version-tagged filename.
 
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 SCRIPTS_OUT = REPO_DIR / "ghidrascripts"
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
@@ -39,6 +39,8 @@ VERSIONS = {
             ['skyrimse_1_5_97', '1_5_97', '1.5.97', '_se_', '_se.']),
     'ae':  ('CommonLibImport_AE.py',  'SkyrimSE.exe', 'SkyrimAE',
             ['skyrimae', '1_6_1170', '1.6.1170', 'gog edition', '_ae_', '_ae.']),
+    '17104': ('CommonLibImport_AE_1_7_104.py', 'SkyrimSE.exe', 'SkyrimAE17104',
+              ['skyrimae_1_7_104', '1_7_104', '1.7.104', '_17104.exe', '_17104_']),
     'vr':  ('CommonLibImport_VR.py',  'SkyrimVR.exe', 'skyrimvr',
             ['skyrimvr', 'skyrim_vr', '1_4_15', '1.4.15', '_vr_', '_vr.']),
 }
@@ -47,7 +49,7 @@ VERSIONS = {
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--version', required=True, choices=sorted(VERSIONS),
-                    help="Skyrim variant to apply (se/ae/vr)")
+                    help="Skyrim variant to apply (se/ae/17104/vr)")
     ap.add_argument('--project-dir',  default=None,
                     help="Directory containing the .gpr (default: "
                          "C:/GhidraProjects/Skyrim)")

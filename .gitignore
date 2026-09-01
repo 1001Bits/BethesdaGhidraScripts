@@ -1,17 +1,28 @@
-/ghidrascripts
-/exes
-/artifacts
-__pycache__
-/ghidraprojects
-/tools
+/ghidrascripts/
+/exes/
+/artifacts/
+/ghidraprojects/
+/tools/
 /bsim/
-.last_run_state
-.last_*.log
-
-# Local audit artifacts from MCP/tool transcripts
-.audit/
-
-# Built release bundles (output of scripts/build_release_bundle.ps1)
+/build/
 /release/
 /symbols/
-build/
+/scripts_tmp/
+/.release_validation/
+/.pytest_cache/
+/.tmp/
+/.audit/
+
+__pycache__/
+*.pyc
+.last_run_state
+.last_*.log
+/tmp_*
+
+# Private release provenance material.
+*.bgs-ed25519-private.pem
+
+# Local or game-derived evidence that must not be redistributed.
+/extras/normalized/
+/scripts/creationkit/refs/generated/
+/scripts/creationkit/refs/*_to_creationkit_*.csv*

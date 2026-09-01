@@ -67,6 +67,15 @@ def test_validate_pdb_rejects_wrong_age(tmp_path, monkeypatch):
         pdb_identity.validate_pdb_for_pe(str(path), "unused.pdb")
 
 
+def test_parse_pdbutil_summary_accepts_llvm22_uppercase_guid():
+    identity = pdb_identity._parse_pdbutil_summary(
+        "Age: 1\nGUID: {22776620-B648-4C12-98F7-D51833DAFFC9}\n")
+    assert identity == {
+        "guid": "22776620-B648-4C12-98F7-D51833DAFFC9",
+        "age": 1,
+    }
+
+
 def test_symbol_cleaning_preserves_double_underscore_identifiers():
     assert pdb_symbols._clean_name("__security_cookie") == "__security_cookie"
 

@@ -35,7 +35,7 @@ import re
 import sys
 from pathlib import Path
 
-GHIDRA_DIR = Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from evidence_identity import read_binding, validate_evidence  # noqa: E402

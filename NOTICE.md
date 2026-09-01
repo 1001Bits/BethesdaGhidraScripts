@@ -175,17 +175,30 @@ plugin source itself is not redistributed here. Because this data derives from
 a GPL-3.0 source, it is one of the components that make the aggregate bundle
 GPL-3.0 (see top-level `LICENSE`).
 
-### Fallout 4 community symbol PDBs — Perchik71
+### Fallout 4 community symbol PDBs — provenance under review
 
-- Author: **Perchik71**
+- A prior strict-subset corpus was attributed to **Perchik71**. The newer
+  user-supplied 1.11.221 PDB's author and redistribution license are not yet
+  independently established; its acquisition URL and exact hash are recorded
+  in the corpus identity sidecar.
 - The `Fallout4_1_11_221_for_debug.pdb` family of community-reconstructed,
   public-symbol-only PDBs for Fallout 4.
 
 `scripts/commonlibf4/refs/f4_221_pdb_publics.txt` is a deterministic text
-corpus extracted from these PDBs (38,029 publics for 1.11.221), and is the
-basis for the Fallout 4 naming and cross-version ID-porting pipelines. The raw
-PDB itself is **not** redistributed here — obtain the author's
-permission/license before redistributing it.
+corpus extracted from these PDBs (41,645 raw publics for 1.11.221, reduced to
+41,425 ambiguity-quarantined safe records), and is the basis for the Fallout 4
+naming and cross-version ID-porting pipelines. The raw PDB itself is **not**
+redistributed here — obtain the author's permission/license before
+redistributing it.
+
+### Fallout 4 local IDA-name archive — unknown provenance
+
+The user-supplied `ida-import-fallout4.zip` contains generated IDA-Python name
+maps for several Fallout 4 versions. Its author, origin, and redistribution
+license are unknown. Releases include only the validation/normalization
+workflow and a SHA-256 metadata lock. The raw ZIP, extracted scripts,
+normalized evidence, and generated importers that embed those names are
+**not** redistributed.
 
 ### Fallout 4 IDA function-name cross-map — Zzyxzz
 
@@ -238,7 +251,7 @@ data, please open an issue on
   Starfield install). Users supply these from their own legitimately
   purchased copy.
 - Microsoft PDB files. Where these appear in the development repository
-  they are excluded from release bundles by `tools/build_release_bundle.ps1`.
+  they are excluded from release bundles by `scripts/build_release_bundle.ps1`.
 - Reverse-engineered name corpora that were derived directly from game
   binaries (e.g. `*.relib`, raw `*.pdb` dumps). These are excluded from
   release bundles.

@@ -244,6 +244,23 @@ def _find_pdbutil(explicit: Optional[str] = None) -> str:
     return str(override)
 
 
+def _parse_pdbutil_summary(text: str) -> Dict[str, object]:
+    """Parse identity fields across llvm-pdbutil summary spellings.
+
+    LLVM 22 prints ``GUID`` in all capitals, while older releases used
+    ``Guid``.  Treat field labels case-insensitively; the identity value is
+    still normalized through :class:`uuid.UUID` below.
+    """
+    guid_match = re.search(
+        r"\bguid:\s*['{]?([0-9A-Fa-f-]{36})", text,
+        flags=re.IGNORECASE)
+    age_match = re.search(r"\bage:\s*(\d+)", text, flags=re.IGNORECASE)
+    if not guid_match or not age_match:
+        raise PDBIdentityError("could not parse PDB GUID/age from llvm-pdbutil")
+    return {"guid": str(uuid.UUID(guid_match.group(1))).upper(),
+            "age": int(age_match.group(1))}
+
+
 def read_pdb_identity(pdb_path: str, llvm_pdbutil: Optional[str] = None) -> Dict[str, object]:
     tool = _find_pdbutil(llvm_pdbutil)
     result = subprocess.run([tool, "dump", "-summary", pdb_path],
@@ -251,13 +268,7 @@ def read_pdb_identity(pdb_path: str, llvm_pdbutil: Optional[str] = None) -> Dict
     if result.returncode != 0:
         raise PDBIdentityError("llvm-pdbutil failed: {}".format(
             (result.stderr or result.stdout).strip()))
-    text = result.stdout + "\n" + result.stderr
-    guid_match = re.search(r"\bGuid:\s*['{]?([0-9A-Fa-f-]{36})", text)
-    age_match = re.search(r"\bAge:\s*(\d+)", text)
-    if not guid_match or not age_match:
-        raise PDBIdentityError("could not parse PDB GUID/age from llvm-pdbutil")
-    return {"guid": str(uuid.UUID(guid_match.group(1))).upper(),
-            "age": int(age_match.group(1))}
+    return _parse_pdbutil_summary(result.stdout + "\n" + result.stderr)
 
 
 def validate_pdb_for_pe(pe_path: str, pdb_path: str,

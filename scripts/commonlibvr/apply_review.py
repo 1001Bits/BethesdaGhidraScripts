@@ -13,8 +13,10 @@ This closes the human-in-the-loop half of the "scripts vs LLM" division: scripts
 the rule-expressible apply and emit the queue; the LLM/human resolves the judgement
 tail; this writes those calls back. Decisions outrank the cycle's ANALYSIS seeds.
 
-NON-DESTRUCTIVE: one always-committed transaction (never commit=False -- the MCP
-nests it), only fills unknown slots, never clobbers existing RE, never resizes.
+NON-DESTRUCTIVE: one transaction, never rolled back for an individual decision
+(the MCP nests it, so that would discard the whole group) and discarded only if an
+exception escapes the run.  Only fills unknown slots, never clobbers existing RE,
+never resizes.
 Dry-run by default (lists what it WOULD apply + any unresolved type names);
 CLVR_REVIEW_APPLY=go to write. Knobs: CLVR_DISCOVER_REVIEW_CSV (input path).
 """
@@ -68,6 +70,7 @@ def run():
     applied = unresolved = skipped = 0
     samples = []
     tx = cp.startTransaction('apply review decisions') if APPLY else None
+    success = False
     try:
         for cls, off, dec in decisions:
             dt = gu.resolve_type(dtm, by_name, dec)
@@ -132,9 +135,10 @@ def run():
             if len(samples) < 25:
                 samples.append('%s %s +0x%X %s -> %s'
                                % ('apply' if APPLY else 'would', cls, off, comp.getFieldName(), dec))
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)   # always commit; never poison the group
+            cp.endTransaction(tx, success)   # commit only if every decision completed
 
     print('apply-review (%s): %s' % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN'))
     print('  decisions=%d  %s=%d  unresolved=%d  skipped=%d'

@@ -275,10 +275,15 @@ Stream*`. Dry-run by default (`CLVR_PROP=go` to apply) writes `<import>.propagat
 its *own* outer transaction, so a script's per-function transactions are *nested* inside it — and
 Ghidra rolls back the **entire** group if any nested transaction ends with `commit=False`. A driver
 that rolled back individual anomalies therefore silently discarded its whole run while reporting
-"APPLIED". The rule both drivers now follow: **never end a transaction with `commit=False`** — dry-run
-mutates nothing (so there is nothing to roll back), and apply opens **one** transaction that is
-**always committed**, restoring any bad change in-API (`ApplyFunctionSignatureCmd`) rather than via
-rollback.
+"APPLIED". The rule both drivers follow: **never roll back for an individual anomaly** — dry-run
+mutates nothing (so there is nothing to roll back), and apply opens **one** transaction, restoring any
+bad change in-API (`ApplyFunctionSignatureCmd`) rather than via rollback. Per-item failures are caught,
+counted and reported, and still commit.
+
+That transaction is committed on every path except one: an exception escaping the run itself. Ending
+it with `commit=True` there would persist a half-applied pass and report "APPLIED" for it, which is
+the same failure the paragraph above describes, arrived at from the other direction. So the commit is
+conditional on the run completing — which is also what `scripts/quality_gate.py` enforces repo-wide.
 
 ### 11. Population cycle — close the loop inside Ghidra (`populate_cycle.py`)
 The forward import, the widening (10), the propagation (10) and the discovery (8) are stages; this
@@ -310,7 +315,7 @@ fragmentation artifact in the component count. VR: applies ~14 fields (`CombatGr
 `BSSynchronizedClipGenerator +0xE0 → hkQsTransform`) then converges. SE is richer — cycle 1 applies **41
 fields** (`TESObjectCELL +0xB0 → TESForm*`, `TES +0x2A8 → NavMeshInfoMap*`, `BGSCameraShot +0xA8 →
 NiPointer<NiAVObject>`), converging in 3 cycles. Non-destructive: only fills unknown slots with same-size
-types, never creates a type, one always-committed transaction (never `commit=False`).
+types, never creates a type, one transaction that no individual anomaly rolls back.
 
 ### 12. Optional LLM review — break the convergence plateau (`apply_review.py`)
 The automated cycle (11) converges against rules it can express; what's left sits in skip buckets,

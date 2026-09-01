@@ -132,6 +132,7 @@ def run(start=0, end=0, dry=True):
         snap_src = df.getSignatureSource()
         tx = dp.startTransaction('apply sig ' + row['dst_name'])
         result = None
+        success = False
         try:
             # a fresh ReturnParameterImpl per call -- a Variable cannot be reused across
             # updateFunction calls (the second call silently misbehaves otherwise).
@@ -161,9 +162,11 @@ def run(start=0, end=0, dry=True):
                     tally['sanitized'] += 1
                 if coerced:
                     tally['coerced'] += 1
+            success = True
         except Exception as e:
             result = 'ERR ' + str(e)
             tally['err'] += 1
-        dp.endTransaction(tx, True)
+        finally:
+            dp.endTransaction(tx, success)
         log.append('%s :: %s' % (row['dst_name'], result))
     return {'range': (start, end), 'tally': tally, 'log': log}

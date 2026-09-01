@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project("C:/GhidraProjects", "Combined", create=False) as project:
+    with pyghidra.open_project("C:/GhidraProjects", "ExampleProject", create=False) as project:
         vr_df = project.getProjectData().getFile("/Skyrim/SkyrimVR_1_4_15.exe")
         consumer = java.lang.Object()
         program = vr_df.getDomainObject(consumer, False, False, monitor)

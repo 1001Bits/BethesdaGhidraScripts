@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Parse libxse/commonlibf4 headers and generate Ghidra import scripts for
-Fallout 4 OG / NG / AE / VR.
+Fallout 4 OG / NG / AE / 1.11.221 / 1.11.240 / VR.
 
 Pipeline:
   Types:        core/clang_types.py  (clang AST dump + record layouts)
   Relocations:  reloc_parser.py      (IDs.h map + ID::Class::Method references)
   Address lib:  address_library.py   (OG / NG / AE / VR)
-  Fallback:     ida_names.py         (extras/IDAImportNames_1.11.191.0.py)
+  Fallback:     ida_name_archive.py  (local normalized exact-version evidence)
+                ida_names.py         (legacy byte-pinned 1.11.191 input only)
   Script gen:   core/ghidra_import_gen.py
 
 Generates:
@@ -19,7 +20,7 @@ Generates:
 Symbol resolution
 -----------------
 CommonLibF4's desktop IDs are managed by meh321 with one ID space across
-OG / NG / AE / 1.11.221.  The community VR database uses a different ID
+OG / NG / AE / 1.11.221 / 1.11.240.  The community VR database uses a different ID
 space.  Desktop IDs must therefore never be looked up in ``vr_db``: a
 numeric hit there is only a coincidental collision, not the same symbol.
 Each desktop symbol carries the offsets that resolve in its shared ID
@@ -51,6 +52,7 @@ FALLOUT_H         = os.path.join(COMMONLIB_INCLUDE, 'RE', 'Fallout.h')
 RE_INCLUDE        = os.path.join(COMMONLIB_INCLUDE, 'RE')
 OUTPUT_DIR        = os.path.join(PROJECT_DIR, 'ghidrascripts')
 ADDRLIB_DIR       = os.path.join(PROJECT_DIR, 'addresslibrary', 'f4')
+IDA_NORMALIZED_DIR = os.path.join(PROJECT_DIR, 'extras', 'normalized')
 IDA_CORPUS_SHA256 = 'b0c327619f1a4e71fb3061c571d44a9d4de9154ab641dcc1932414dcbca639c0'
 IDA_SOURCE_SHA256 = {
     # AE 1.11.191 packed Steam exe ...
@@ -68,12 +70,35 @@ _TARGET_EXE_DIRS = {
     'a': os.path.join(PROJECT_DIR, 'exes', 'f4', 'ae'),
     'v': os.path.join(PROJECT_DIR, 'exes', 'f4', 'vr'),
     '221': os.path.join(PROJECT_DIR, 'exes', 'f4', '221'),
+    '240': os.path.join(PROJECT_DIR, 'exes', 'f4', '240'),
 }
 _EXPECTED_TARGET_VERSIONS = {
     'og': (1, 10, 163, 0), 'ng': (1, 10, 984, 0),
     'a': (1, 11, 191, 0), 'v': (1, 2, 72, 0),
     '221': (1, 11, 221, 0),
+    '240': (1, 11, 240, 0),
 }
+
+
+def _load_normalized_ida(version, layout):
+    """Load local normalized IDA evidence for one exact PE, or ``None``.
+
+    Presence plus invalidity is a hard error.  Silently falling back to a raw
+    corpus when a normalized artifact is stale would defeat its target and
+    content binding.
+    """
+    if layout is None:
+        return None
+    from binary_identity import inspect_pe
+    from ida_name_archive import (
+        load_normalized_evidence, select_normalized_evidence_path)
+    path = select_normalized_evidence_path(
+        version, layout.sha256, IDA_NORMALIZED_DIR)
+    if path is None:
+        return None
+    manifest = inspect_pe(layout.path)
+    return load_normalized_evidence(
+        path, manifest, expected_version=version)
 
 
 def _source_executable(key):
@@ -132,7 +157,7 @@ def _load_target_layouts():
 
 def _validate_symbol_offsets(symbol, declared_kind, layouts):
     """Remove target offsets that contradict the PE's mapped section kind."""
-    for key in ('og', 'ng', 'a', 'v', '221'):
+    for key in ('og', 'ng', 'a', 'v', '221', '240'):
         layout = layouts.get(key)
         if key not in symbol or layout is None:
             continue
@@ -237,6 +262,7 @@ F4_TARGETS = (
     # symbol; AE->221 byte-sig porting (run_bytesig_port.py) still fills
     # in IDA-name extras whose source pool is AE-only.
     ('f4_221', 'CommonLibImport_F4_221.py', '[]',  '221.csv', []),
+    ('f4_240', 'CommonLibImport_F4_240.py', None,  '240.csv', []),
 )
 
 
@@ -269,7 +295,7 @@ def main():
 
     ap = _argparse.ArgumentParser(description='Generate CommonLibF4 importers.')
     ap.add_argument('--only', action='append', metavar='VERSION',
-                    help='generate just this runtime (og, ng, ae, vr, 221; '
+                    help='generate just this runtime (og, ng, ae, vr, 221, 240; '
                          'repeatable).  Default: every F4 runtime.')
     cli = ap.parse_args()
     selected = None
@@ -293,10 +319,13 @@ def main():
 
     # --- Address library (OG / NG / AE / VR) ---
     addr_lib = F4AddressLibrary()
-    addr_lib.load_all(ADDRLIB_DIR)
+    addr_lib.load_all(
+        ADDRLIB_DIR,
+        require_240=(selected is not None and 'f4_240' in selected))
     print(f'Address libraries — OG: {len(addr_lib.og_db):,}, '
           f'NG: {len(addr_lib.ng_db):,}, AE: {len(addr_lib.ae_db):,}, '
-          f'VR: {len(addr_lib.vr_db):,}, 221: {len(addr_lib.db_221):,}')
+          f'VR: {len(addr_lib.vr_db):,}, 221: {len(addr_lib.db_221):,}, '
+          f'240: {len(addr_lib.db_240):,}')
     target_layouts = _load_target_layouts()
     if target_layouts:
         print('PE section validation: {}'.format(', '.join(
@@ -347,8 +376,10 @@ def main():
     n_ae = sum(1 for s in symbols if 'a'  in s)
     n_vr = sum(1 for s in symbols if 'v'  in s)
     n_221 = sum(1 for s in symbols if '221' in s)
+    n_240 = sum(1 for s in symbols if '240' in s)
     print(f'\nTotal symbols: {len(symbols)} '
-          f'(OG: {n_og}, NG: {n_ng}, AE: {n_ae}, VR: {n_vr}, 221: {n_221})')
+          f'(OG: {n_og}, NG: {n_ng}, AE: {n_ae}, VR: {n_vr}, '
+          f'221: {n_221}, 240: {n_240})')
 
     # --- Type parsing setup (per-version below) ---
     print('\n=== Parsing types (clang AST) — per version ===')
@@ -370,14 +401,21 @@ def main():
     # parse, which does not fail cleanly: it yields thousands of redefinition and
     # deprecated-rename errors.  Only reach for the shared headers when the
     # selected CommonLib does not carry its own.
-    shared_include = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4',
-                                  'lib', 'commonlib-shared', 'include')
     self_contained = all(
         os.path.isdir(os.path.join(COMMONLIB_INCLUDE, sub))
         for sub in ('REL', 'REX'))
-    use_shared = not self_contained and os.path.isdir(shared_include)
+    shared_include = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4',
+                                  'lib', 'commonlib-shared', 'include')
+    use_shared = not self_contained and all(
+        os.path.isdir(os.path.join(shared_include, sub))
+        for sub in ('REL', 'REX'))
+    if not self_contained and not use_shared:
+        print('ERROR: CommonLibF4 requires REL/REX headers; restore its '
+              'commonlib-shared submodule or a packaged CommonLibSSE tree')
+        sys.exit(1)
     if use_shared:
         base_parse_args = ['-I' + shared_include] + base_parse_args
+        print('Using CommonLibF4 shared REL/REX headers from', shared_include)
 
     # Capture types from REL/, REX/, F4SE/ as well as RE/ — they're sibling
     # namespaces under CommonLibF4 whose AST methods would otherwise be skipped.
@@ -386,37 +424,79 @@ def main():
     if use_shared:
         extra_scopes.append(shared_include)                  # REL/ + REX/
 
-    # --- IDAImportNames_1.11.191.0.py fallback symbols (AE only) ---
-    print('\n=== Loading IDAImportNames_1.11.191.0.py fallback symbols ===')
+    # --- Exact, identity-bound F4 1.11.191 IDA-name fallback (AE source) ---
+    print('\n=== Loading exact Fallout 4 1.11.191 IDA-name evidence ===')
     from ida_names import load_ida_import_names as _load_ida
     f4_ida_path = os.path.join(PROJECT_DIR, 'extras', 'IDAImportNames_1.11.191.0.py')
     ae_layout_for_ida = target_layouts.get('a')
-    ida_hash = None
-    if os.path.isfile(f4_ida_path):
-        with open(f4_ida_path, 'rb') as ida_stream:
-            ida_hash = hashlib.sha256(ida_stream.read()).hexdigest()
-    if (ida_hash == IDA_CORPUS_SHA256 and ae_layout_for_ida is not None and
-            ae_layout_for_ida.sha256 in IDA_SOURCE_SHA256):
-        ida_names = _load_ida(f4_ida_path)
+    normalized_ae = _load_normalized_ida(
+        '1.11.191.0', ae_layout_for_ida)
+    if normalized_ae is not None:
+        ida_rows = [{
+            'rva': int(row['rva']),
+            'name': row['name'],
+            'kind': row['kind'],
+            'src': 'F4IDAExact-1.11.191',
+        } for row in normalized_ae]
+        print('Using content- and PE-bound normalized evidence')
     else:
-        ida_names = {}
+        # Historical compatibility only.  The new user-provided archive has a
+        # different hash and cannot enter through this raw-script branch.
+        ida_hash = None
         if os.path.isfile(f4_ida_path):
-            print('WARNING: IDA name corpus is unbound to the exact AE source; skipped.')
-    print(f'IDA names: {len(ida_names):,} entries')
+            with open(f4_ida_path, 'rb') as ida_stream:
+                ida_hash = hashlib.sha256(ida_stream.read()).hexdigest()
+        if (ida_hash == IDA_CORPUS_SHA256 and ae_layout_for_ida is not None and
+                ae_layout_for_ida.sha256 in IDA_SOURCE_SHA256):
+            legacy_names = _load_ida(f4_ida_path)
+            ida_rows = [{
+                'rva': rva, 'name': name, 'kind': 'func',
+                'src': 'IDAImportNames-legacy-pinned',
+            } for rva, name in legacy_names.items()]
+            print('Using legacy byte-for-byte pinned raw corpus')
+        else:
+            ida_rows = []
+            if os.path.isfile(f4_ida_path):
+                print('WARNING: raw IDA name corpus is not the pinned legacy '
+                      'input; normalize it before use.')
+
+    # Cross-version matching requires a reciprocal name<->RVA relation.
+    # Exact application could tolerate overloads, but selecting the first RVA
+    # for a repeated cleaned name is not acceptable evidence.
+    ida_name_counts = {}
+    for row in ida_rows:
+        ida_name_counts[row['name']] = ida_name_counts.get(row['name'], 0) + 1
+    ambiguous_ida_names = {
+        name for name, count in ida_name_counts.items() if count > 1}
+    if ambiguous_ida_names:
+        ida_rows = [
+            row for row in ida_rows if row['name'] not in ambiguous_ida_names]
+        print('Quarantined {:,} ambiguous cleaned IDA names'.format(
+            len(ambiguous_ida_names)))
+    print(f'IDA names: {len(ida_rows):,} accepted entries')
 
     primary_rvas = {s['a'] for s in symbols if s.get('a')}
+    primary_names = {s['n'] for s in symbols if s.get('a') and s.get('n')}
     # Inverse AE address-library map (RVA -> ID) for back-referencing IDA-named
     # functions to a stable CommonLibF4 ID where one exists.  Built from
     # addr_lib.ae_db ({id: rva}) so a CommonLib upgrade that renumbers IDs
     # invalidates the cache automatically.
     ae_rva_to_id = {rva: id_val for id_val, rva in addr_lib.ae_db.items()}
     ida_fallback = []
-    n_ng_resolved = n_og_resolved = n_221_resolved = 0
-    for rva, name in ida_names.items():
-        entry = {'n': name, 't': 'func', 'sig': '', 'a': rva, 'src': 'IDAImportNames'}
+    n_ng_resolved = n_og_resolved = n_221_resolved = n_240_resolved = 0
+    n_primary_conflicts = 0
+    for row in ida_rows:
+        rva, name = int(row['rva']), row['name']
+        if rva in primary_rvas or name in primary_names:
+            n_primary_conflicts += 1
+            continue
+        declared_kind = row.get('kind') or 'func'
+        entry = {'n': name, 't': declared_kind, 'sig': '', 'a': rva,
+                 'src': row.get('src') or 'F4IDAExact'}
         ae_layout = target_layouts.get('a')
         if ae_layout is not None:
-            if not attach_section(entry, 'a', ae_layout, declared_kind='func'):
+            if not attach_section(
+                    entry, 'a', ae_layout, declared_kind=declared_kind):
                 continue
             entry.setdefault('target_sha256', {})['a'] = ae_layout.sha256
         ae_id = ae_rva_to_id.get(rva)
@@ -429,6 +509,7 @@ def main():
             ng = addr_lib.ng_db.get(ae_id)
             og = addr_lib.og_db.get(ae_id)
             v221 = addr_lib.db_221.get(ae_id)
+            v240 = addr_lib.db_240.get(ae_id)
             if ng:
                 entry['ng'] = ng
                 n_ng_resolved += 1
@@ -438,14 +519,17 @@ def main():
             if v221 and '221' not in entry:
                 entry['221'] = v221
                 n_221_resolved += 1
+            if v240 and '240' not in entry:
+                entry['240'] = v240
+                n_240_resolved += 1
         _validate_symbol_offsets(entry, entry['t'], target_layouts)
         if 'a' not in entry:
             continue
         ida_fallback.append(entry)
-    not_in_primary = sum(1 for s in ida_fallback if s['a'] not in primary_rvas)
     print(f'IDA fallback symbols: {len(ida_fallback):,} loaded '
-          f'({not_in_primary:,} not in primary; cross-resolved: '
-          f'NG {n_ng_resolved:,}, OG {n_og_resolved:,}, 221 {n_221_resolved:,})')
+          f'({n_primary_conflicts:,} primary conflicts quarantined; cross-resolved: '
+          f'NG {n_ng_resolved:,}, OG {n_og_resolved:,}, '
+          f'221 {n_221_resolved:,}, 240 {n_240_resolved:,})')
 
     fallback_json_ae = _json.dumps(ida_fallback, separators=(',', ':'))
 
@@ -472,15 +556,120 @@ def main():
     print(f'F4 1.11.221 PDB publics: {len(f4_221_publics):,} loaded, '
           f'{len(f4_221_fallback):,} new ({n_221_func:,} funcs, '
           f'{n_221_label:,} labels)')
-    # Merge IDA names that cross-resolved to a 221 RVA (PDB publics win on
-    # collision -- they're authoritative for this build).
+
+    # Exact 1.11.221 IDA evidence supplements the richer PDB corpus.  Both an
+    # occupied RVA and an already-used name are conflicts: the higher-priority
+    # CommonLib/PDB source always wins and the IDA claim never overwrites it.
     used_221 = {s['221'] for s in f4_221_fallback}
+    used_221_names = {s['n'] for s in f4_221_fallback if s.get('n')}
+    primary_221_names = {
+        s['n'] for s in symbols if s.get('221') and s.get('n')}
+    normalized_221 = _load_normalized_ida('1.11.221.0', layout_221)
+    direct_221 = []
+    direct_221_conflicts = 0
+    for row in normalized_221 or []:
+        rva, name = int(row['rva']), row['name']
+        if (rva in primary_221_rvas or rva in used_221 or
+                name in primary_221_names or name in used_221_names):
+            direct_221_conflicts += 1
+            continue
+        entry = {
+            'n': name, 't': row['kind'], 'sig': '', '221': rva,
+            'src': 'F4IDAExact-1.11.221',
+        }
+        if (layout_221 is None or not attach_section(
+                entry, '221', layout_221, declared_kind=row['kind'])):
+            continue
+        entry.setdefault('target_sha256', {})['221'] = layout_221.sha256
+        direct_221.append(entry)
+        used_221.add(rva)
+        used_221_names.add(name)
+    if normalized_221 is not None:
+        print('  + exact 1.11.221 IDA names: {:,} '
+              '({:,} higher-priority conflicts quarantined)'.format(
+                  len(direct_221), direct_221_conflicts))
+
+    # Finally merge AE names resolved through a shared address-library ID.
+    # These are cross-version evidence and therefore remain last priority.
     ida_into_221 = [e for e in ida_fallback
-                    if e.get('221') and e['221'] not in used_221]
+                    if (e.get('221') and e['221'] not in used_221 and
+                        e.get('n') not in used_221_names)]
     print(f'  + IDA names cross-resolved into 221 pool: {len(ida_into_221):,}')
-    fallback_json_221 = _json.dumps(f4_221_fallback + ida_into_221,
+    fallback_json_221 = _json.dumps(
+        f4_221_fallback + direct_221 + ida_into_221,
                                     separators=(',', ':'))
-    fallback_json_by_ver = {'f4_221': fallback_json_221}
+    # --- F4 1.11.240 community-generated public-symbol corpus ---
+    # This is direct evidence for the newest executable.  It must take
+    # precedence over names inherited from 1.11.191/1.11.221 through address
+    # IDs or byte signatures.
+    print('\n=== Loading Fallout4 1.11.240 community PDB publics ===')
+    from pdb_publics_f4_240 import load_publics as _load_f4_240_publics
+    layout_240 = target_layouts.get('240')
+    f4_240_publics = (_load_f4_240_publics(layout_240.path, layout_240.sha256)
+                      if layout_240 is not None else [])
+    if layout_240 is not None:
+        classified_publics = []
+        for entry in f4_240_publics:
+            if not attach_section(entry, '240', layout_240,
+                                  declared_kind=entry['t']):
+                continue
+            entry.setdefault('target_sha256', {})['240'] = layout_240.sha256
+            classified_publics.append(entry)
+        f4_240_publics = classified_publics
+    primary_240_rvas = {s['240'] for s in symbols if s.get('240')}
+    primary_240_names = {
+        s['n'] for s in symbols if s.get('240') and s.get('n')}
+    f4_240_fallback = [
+        s for s in f4_240_publics
+        if s['240'] not in primary_240_rvas and
+        s.get('n') not in primary_240_names]
+    n_240_func = sum(1 for s in f4_240_fallback if s['t'] == 'func')
+    n_240_label = sum(1 for s in f4_240_fallback if s['t'] == 'label')
+    print(f'F4 1.11.240 PDB publics: {len(f4_240_publics):,} loaded, '
+          f'{len(f4_240_fallback):,} new ({n_240_func:,} funcs, '
+          f'{n_240_label:,} labels)')
+
+    # Exact IDA names, when present, are lower priority than CommonLib and
+    # the identity-matched PDB.  Cross-version names resolved by address ID
+    # remain last because they are indirect evidence.
+    used_240 = {s['240'] for s in f4_240_fallback}
+    used_240_names = {s['n'] for s in f4_240_fallback if s.get('n')}
+    normalized_240 = _load_normalized_ida('1.11.240.0', layout_240)
+    direct_240 = []
+    direct_240_conflicts = 0
+    for row in normalized_240 or []:
+        rva, name = int(row['rva']), row['name']
+        if (rva in primary_240_rvas or rva in used_240 or
+                name in primary_240_names or name in used_240_names):
+            direct_240_conflicts += 1
+            continue
+        entry = {
+            'n': name, 't': row['kind'], 'sig': '', '240': rva,
+            'src': 'F4IDAExact-1.11.240',
+        }
+        if (layout_240 is None or not attach_section(
+                entry, '240', layout_240, declared_kind=row['kind'])):
+            continue
+        entry.setdefault('target_sha256', {})['240'] = layout_240.sha256
+        direct_240.append(entry)
+        used_240.add(rva)
+        used_240_names.add(name)
+    if normalized_240 is not None:
+        print('  + exact 1.11.240 IDA names: {:,} '
+              '({:,} higher-priority conflicts quarantined)'.format(
+                  len(direct_240), direct_240_conflicts))
+
+    ida_into_240 = [e for e in ida_fallback
+                    if (e.get('240') and e['240'] not in used_240 and
+                        e.get('n') not in used_240_names)]
+    print(f'  + IDA names cross-resolved into 240 pool: {len(ida_into_240):,}')
+    fallback_json_240 = _json.dumps(
+        f4_240_fallback + direct_240 + ida_into_240,
+        separators=(',', ':'))
+    fallback_json_by_ver = {
+        'f4_221': fallback_json_221,
+        'f4_240': fallback_json_240,
+    }
 
     # --- Per-version: parse → build vtable structs → verify anchors → generate ---
     # One AST parse per target so a VR-aware overlay can change the layout for
@@ -492,12 +681,12 @@ def main():
     # Per-version RVA key used both by the generated script's version_key
     # map and by the persisted-bytesig merge below.
     _ver_rva_key = {'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a',
-                    'f4_vr': 'v', 'f4_221': '221'}
+                    'f4_vr': 'v', 'f4_221': '221', 'f4_240': '240'}
 
     def _merge_bytesig_csv(fb_json, ver):
         """Merge refs/bytesig_ported_<short>.csv into a fallback pool.
 
-        Written by bytesig_port_combined.py / run_bytesig_port.py; makes
+        Written by run_bytesig_port.py; makes
         ported names survive regeneration instead of living only inside
         the previously-generated script.
         """
@@ -567,6 +756,9 @@ def main():
 
     for ver, fname, fb_json, anchors_name, parse_defines in F4_TARGETS:
         if selected is not None and ver not in selected:
+            continue
+        if ver == 'f4_240' and not addr_lib.db_240:
+            print('\nSKIP F4_240: version-1-11-240-0.bin is missing')
             continue
         print(f'\n--- {ver} ---')
         rva_key = _ver_rva_key[ver]

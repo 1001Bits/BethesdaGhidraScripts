@@ -21,7 +21,7 @@ Usage:
       [--dry-run]
 
 Example:
-  python run_vtable_pipeline.py C:/GhidraProjects Combined /Fallout4/Fallout4VR_1_2_72.exe
+  python run_vtable_pipeline.py C:/GhidraProjects ExampleProject /Fallout4/Fallout4VR_1_2_72.exe
 
 The scan is binary-derived and requires no CommonLib headers.  Every mutation
 is still tied to the loaded Program's exact backing PE identity.
@@ -40,7 +40,7 @@ from pathlib import Path
 from ghidra_project import open_user_project
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 DEFAULT_MAX_SLOTS = 65536  # corruption guard; real bound is containing block
 

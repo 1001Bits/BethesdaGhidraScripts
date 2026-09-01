@@ -25,8 +25,11 @@ from sf_shift_manifest import (
     ANCHOR_VERSION,
     bind_generated_map,
     _rebuild_semantic_map,
+    _write_json_atomic,
     load_layout_identity,
     load_validated,
+    map_path,
+    read_json_maybe_gzip,
     write_layout_identity,
 )
 from sf_vtable_policy import strict_patch_vtable_structs
@@ -318,6 +321,135 @@ def test_shift_map_is_version_hash_and_layout_bound(tmp_path):
     target.write_bytes(b'changed')
     with pytest.raises(ValueError, match='layout content'):
         load_validated(out, (1, 16, 244, 0), sha, ref, target)
+
+
+def test_shift_map_ships_compressed_and_reproducibly(tmp_path):
+    """The map is stored gzipped, because plain JSON is too big to ship.
+
+    A full Starfield map carries per-slot evidence for ~233k slots and reaches
+    ~111 MB uncompressed -- over the 100 MB file limit GitHub enforces, so the
+    pre-built map could not be distributed at all.  Only the container changes.
+    """
+    assert map_path(tmp_path, (1, 16, 244, 0)).name == \
+        'shift_sf_1-16-244-0.json.gz'
+
+    doc = {'schema_version': 3, 'classes': {'Actor': {'ref_to_target': {}}}}
+    compressed = tmp_path / 'shift.json.gz'
+    plain = tmp_path / 'shift.json'
+    _write_json_atomic(compressed, doc)
+    _write_json_atomic(plain, doc)
+
+    # Same document either way.
+    assert read_json_maybe_gzip(compressed) == doc
+    assert read_json_maybe_gzip(plain) == doc
+    assert gzip.decompress(compressed.read_bytes()) == plain.read_bytes()
+
+    # The artifact is hashed by its consumers, so writing it twice must produce
+    # identical bytes -- gzip stores an mtime unless told not to.
+    first = compressed.read_bytes()
+    _write_json_atomic(compressed, doc)
+    assert compressed.read_bytes() == first
+
+
+def test_id_matched_map_binds_and_revalidates(tmp_path):
+    """A map built with Address Library ID matching must survive binding.
+
+    ``_rebuild_semantic_map`` independently re-runs the matcher to prove the
+    stored map really is the deterministic diff of the two bound layouts.  It
+    therefore has to reproduce what the builder actually did: rebuilding
+    without the version libraries yields only the weaker fingerprint-only
+    result and rejects an honest map.  This is the real 1.16.244 case -- every
+    function moved, so no prologue matches and ID identity is the only signal.
+    """
+    header = ['class', 'vtable_id', 'subobject_offset', 'is_primary',
+              'vtable_addr', 'slot', 'func_addr', 'func_name', 'fingerprint']
+    tables = [
+        ('Actor', 1, 0x140010000),
+        ('TESForm', 1, 0x140100000),
+        ('PlayerCharacter', 1, 0x140110000),
+    ] + [
+        ('Synthetic{}'.format(index), 10, 0x141000000 + index * 0x100)
+        for index in range(1000)
+    ]
+
+    def write_layout(path, base_rva, include_names, fill):
+        """Write a layout where every slot holds a distinct function."""
+        rvas = [0]                      # index 0 == "no address for this ID"
+        with gzip.open(path, 'wt', encoding='utf-8', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(header)
+            index = 0
+            for cls, count, vt in tables:
+                for slot in range(count):
+                    rva = base_rva + index * 0x20
+                    rvas.append(rva)
+                    writer.writerow([
+                        cls, cls + '|primary|0x0', '0x0', 1, hex(vt), slot,
+                        hex(0x140000000 + rva),
+                        ('{}::Method{}'.format(cls, slot) if include_names else ''),
+                        ' '.join(['{:02X}'.format(fill)] * 32)])
+                    index += 1
+        return rvas
+
+    ref = tmp_path / 'ref.csv.gz'
+    target = tmp_path / 'target.csv.gz'
+    # Target: every function relocated, no names, and different prologue bytes.
+    # Neither the name stage nor the fingerprint stage can match anything.
+    ref_rvas = write_layout(ref, 0x200000, True, 0xAA)
+    target_rvas = write_layout(target, 0x500000, False, 0xBB)
+
+    ref_bin = tmp_path / 'versionlib-1-16-236-0.bin'
+    target_bin = tmp_path / 'versionlib-1-16-244-0.bin'
+    ref_bin.write_bytes(_v5((1, 16, 236, 0), tuple(ref_rvas)))
+    target_bin.write_bytes(_v5((1, 16, 244, 0), tuple(target_rvas)))
+
+    without_ids = _rebuild_semantic_map(ref, target, (1, 16, 244, 0))
+    assert not any(item['ref_to_target']
+                   for item in without_ids['vtables'].values())
+
+    built = _rebuild_semantic_map(ref, target, (1, 16, 244, 0),
+                                  ref_bin, target_bin)
+    matched = sum(len(item['ref_to_target'])
+                  for item in built['vtables'].values())
+    assert matched == len(ref_rvas) - 1 == 10003
+    assert {evidence['method']
+            for item in built['vtables'].values()
+            for evidence in item['match_evidence'].values()} == {
+                'address_library_id'}
+
+    out = tmp_path / 'shift.json'
+    out.write_text(json.dumps(built), encoding='utf-8')
+    sha = 'a' * 64
+    write_layout_identity(ref, ANCHOR_VERSION, 'c' * 64,
+                          versionlib_path=ref_bin,
+                          function_names_included=True,
+                          fingerprint_mode='raw-bytes-32')
+    write_layout_identity(target, (1, 16, 244, 0), sha,
+                          versionlib_path=target_bin,
+                          function_names_included=False,
+                          fingerprint_mode='raw-bytes-32')
+
+    # Without the version libraries the rebuild cannot reproduce the map, and
+    # must say so rather than blame the map's contents.
+    with pytest.raises(ValueError, match='Address Library ID matching'):
+        bind_generated_map(out, (1, 16, 244, 0), sha, ref, target)
+
+    bind_generated_map(out, (1, 16, 244, 0), sha, ref, target,
+                       reference_versionlib=ref_bin,
+                       target_versionlib=target_bin)
+    assert load_validated(out, (1, 16, 244, 0), sha, ref, target,
+                          reference_versionlib=ref_bin,
+                          target_versionlib=target_bin)['classes']
+
+    # Tampering must still be caught with the ID stage active.
+    bound = json.loads(out.read_text(encoding='utf-8'))
+    tampered = json.loads(json.dumps(bound))
+    tampered['classes']['Actor']['ref_to_target']['0x0'] = '0x9'
+    out.write_text(json.dumps(tampered), encoding='utf-8')
+    with pytest.raises(ValueError, match='semantic content'):
+        load_validated(out, (1, 16, 244, 0), sha, ref, target,
+                       reference_versionlib=ref_bin,
+                       target_versionlib=target_bin)
 
 
 def test_same_version_layout_from_another_binary_is_rejected(tmp_path):

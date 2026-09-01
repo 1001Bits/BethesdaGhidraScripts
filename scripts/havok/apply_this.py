@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR = REPO / "tools" / "ghidra"
+GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO / "tools" / "ghidra"))
 LEAD_RE = re.compile(r'^((?:hk|bhk)[A-Za-z0-9_]+)::')
 OVERRIDE = {'void *', 'pointer', 'undefined8 *', 'undefined4 *',
             'undefined', 'undefined *', 'void'}

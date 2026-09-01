@@ -108,6 +108,7 @@ def apply():
     applied = skipped = conflicts = 0
     samples = []
     tx = cp.startTransaction('cross-version propagate') if APPLY else None
+    success = False
     try:
         for (cls, off), typenames in merged.items():
             struct = struct_by_class.get(cls)
@@ -172,9 +173,10 @@ def apply():
             if len(samples) < 20:
                 samples.append('%s +0x%X(cl 0x%X) %s -> %s%s'
                                % (cls, toff, off, cur, best, ' [CONFLICT]' if conflict else ''))
+        success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, True)
+            cp.endTransaction(tx, success)
 
     print('xver apply (%s): %s' % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN'))
     print('  %s=%d  skipped=%d  type-conflicts=%d'

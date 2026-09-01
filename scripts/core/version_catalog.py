@@ -17,11 +17,13 @@ from typing import Optional, Tuple
 VERSION_CATALOG = [
     ("se",    "skyrim",    "Skyrim SE 1.5.97",     "skyrim/se",    "CommonLibImport_SE.py",    "upstream"),
     ("ae",    "skyrim",    "Skyrim AE 1.6.1170",   "skyrim/ae",    "CommonLibImport_AE.py",    "upstream"),
+    ("ae17104", "skyrim",  "Skyrim AE 1.7.104",    "skyrim/17104", "CommonLibImport_AE_1_7_104.py", "fork"),
     ("svr",   "skyrim",    "Skyrim VR 1.4.15",     "skyrim/vr",    "CommonLibImport_VR.py",    "fork"),
     ("f4og",  "f4",        "Fallout 4 OG 1.10.163","f4/og",        "CommonLibImport_F4_OG.py", "fork"),
     ("f4ng",  "f4",        "Fallout 4 NG 1.10.984","f4/ng",        "CommonLibImport_F4_NG.py", "fork"),
     ("f4ae",  "f4",        "Fallout 4 AE 1.11.191","f4/ae",        "CommonLibImport_F4_AE.py", "upstream"),
     ("f4221", "f4",        "Fallout 4 1.11.221",   "f4/221",       "CommonLibImport_F4_221.py","fork"),
+    ("f4240", "f4",        "Fallout 4 1.11.240",   "f4/240",       "CommonLibImport_F4_240.py","fork"),
     ("f4vr",  "f4",        "Fallout 4 VR 1.2.72",  "f4/vr",        "CommonLibImport_F4_VR.py", "fork"),
     ("fnv",   "fnv",       "Fallout NV 1.4.0.525", "fnv/og",       "CommonLibImport_FNV.py",   "fork"),
     ("sf",    "starfield", "Starfield 1.16.236 / 1.16.242 / 1.16.244", "starfield/sf", "CommonLibImport_SF.py",    "fork"),
@@ -56,8 +58,8 @@ def target_for_importer(script_name: str) -> Optional[Tuple[str, str]]:
 # The ``--only`` selector each game's parser understands, keyed by catalog key.
 # Fallout NV and Starfield are single-runtime, so they take no selector.
 _ONLY_VERSION = {
-    "se": "se", "ae": "ae", "svr": "vr",
-    "f4og": "og", "f4ng": "ng", "f4ae": "ae", "f4221": "221", "f4vr": "vr",
+    "se": "se", "ae": "ae", "ae17104": "17104", "svr": "vr",
+    "f4og": "og", "f4ng": "ng", "f4ae": "ae", "f4221": "221", "f4240": "240", "f4vr": "vr",
     "fnv": None, "sf": None,
 }
 

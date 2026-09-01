@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the exact F4 1.11.221 public-symbol corpus from a PDB.
+"""Regenerate an exact, identity-bound Fallout 4 public-symbol corpus.
 
 The raw community PDB is deliberately not required at import time.  This tool
 turns it into a reviewable, deterministic text corpus and a sidecar that binds
@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -33,6 +34,8 @@ from pe_unwind import validated_runtime_function_starts  # noqa: E402
 
 DEFAULT_OUTPUT = SCRIPT_DIR / "refs" / "f4_221_pdb_publics.txt"
 CANONICAL_PDB_NAME = "Fallout4_1_11_221_for_debug.pdb"
+_PUBLIC_RE = re.compile(
+    r"^\s*public\s+\[0x([0-9A-Fa-f]+)\]\s+(\S.*?)\s*$")
 
 
 def _sha256(path: Path) -> str:
@@ -56,6 +59,31 @@ def _write_atomic(path: Path, content: str) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _read_bound_public_corpus(path: Path) -> tuple[set[tuple[int, str]], dict]:
+    """Load a prior generated corpus only after validating its sidecar."""
+    sidecar = Path(str(path) + ".identity.json")
+    try:
+        identity = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("previous corpus has no valid identity sidecar") from exc
+    if (identity.get("schema_version") != 2 or
+            identity.get("artifact") != path.name or
+            identity.get("artifact_sha256") != _sha256(path)):
+        raise ValueError("previous corpus identity does not bind its artifact")
+    pairs = set()
+    records = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = _PUBLIC_RE.match(line)
+        if match is None:
+            continue
+        records += 1
+        pairs.add((int(match.group(1), 16), match.group(2)))
+    expected = int(identity.get("counts", {}).get("publics", -1))
+    if records != expected or len(pairs) != records:
+        raise ValueError("previous corpus count or uniqueness differs from identity")
+    return pairs, identity
 
 
 def _verify_sections(corpus: PDBPublicCorpus, target: dict) -> None:
@@ -102,7 +130,16 @@ def _ambiguity_counts(corpus: PDBPublicCorpus) -> dict[str, int]:
 def regenerate(pdb_path: Path, target_paths: list[Path], output: Path,
                source_author: str = "unknown",
                source_license: str = "unknown",
-               previous_pdb: Path | None = None) -> dict:
+               previous_pdb: Path | None = None,
+               previous_corpus: Path | None = None,
+               source_origin: str | None = None,
+               source_retrieved_utc: str | None = None,
+               source_attribution_note: str | None = None,
+               canonical_pdb_name: str = CANONICAL_PDB_NAME) -> dict:
+    if Path(canonical_pdb_name).name != canonical_pdb_name:
+        raise ValueError("canonical PDB name must not contain a path")
+    if previous_pdb is not None and previous_corpus is not None:
+        raise ValueError("choose either a previous PDB or previous corpus")
     corpus = read_pdb_publics(pdb_path)
     if not corpus.publics:
         raise ValueError("PDB contains no public symbols")
@@ -130,7 +167,7 @@ def regenerate(pdb_path: Path, target_paths: list[Path], output: Path,
     if len(pairs) != len(corpus.publics):
         raise ValueError("PDB contains duplicate public records")
     lines = [
-        "Summary for {}".format(CANONICAL_PDB_NAME),
+        "Summary for {}".format(canonical_pdb_name),
         "  Size: {} bytes".format(pdb_path.stat().st_size),
         "  Guid: {{{}}}".format(corpus.guid),
         "  Age: {}".format(corpus.age),
@@ -139,7 +176,6 @@ def regenerate(pdb_path: Path, target_paths: list[Path], output: Path,
     ]
     lines.extend("  public [0x{:08x}] {}".format(rva, name)
                  for rva, name in pairs)
-    _write_atomic(output, "\n".join(lines) + "\n")
     ambiguity = _ambiguity_counts(corpus)
     supersedes = None
     if previous_pdb is not None:
@@ -153,28 +189,59 @@ def regenerate(pdb_path: Path, target_paths: list[Path], output: Path,
         if not previous_pairs < current_pairs:
             raise ValueError("new PDB is not a strict public-symbol superset")
         supersedes = {
+            "kind": "source-pdb",
             "sha256": _sha256(previous_pdb),
             "size": previous_pdb.stat().st_size,
             "publics": len(previous_pairs),
             "added_publics": len(current_pairs - previous_pairs),
             "removed_publics": len(previous_pairs - current_pairs),
         }
+    elif previous_corpus is not None:
+        previous_pairs, previous_identity = _read_bound_public_corpus(
+            previous_corpus)
+        current_pairs = set(pairs)
+        previous_pdb_identity = previous_identity.get("pdb", {})
+        if (previous_pdb_identity.get("guid") != corpus.guid or
+                int(previous_pdb_identity.get("age", -1)) != corpus.age or
+                int(previous_pdb_identity.get("machine", -1)) !=
+                corpus.machine):
+            raise ValueError("previous corpus has a different target identity")
+        if not previous_pairs < current_pairs:
+            raise ValueError("new PDB is not a strict public-symbol superset")
+        previous_source = previous_identity.get("source", {})
+        supersedes = {
+            "kind": "public-symbol-corpus",
+            "artifact": previous_corpus.name,
+            "artifact_sha256": previous_identity["artifact_sha256"],
+            "source_pdb_sha256": previous_source.get("sha256"),
+            "publics": len(previous_pairs),
+            "added_publics": len(current_pairs - previous_pairs),
+            "removed_publics": len(previous_pairs - current_pairs),
+        }
+    _write_atomic(output, "\n".join(lines) + "\n")
+    source = {
+        "canonical_filename": canonical_pdb_name,
+        "original_filename": pdb_path.name,
+        "sha256": _sha256(pdb_path),
+        "size": pdb_path.stat().st_size,
+        "author": source_author,
+        "license": source_license,
+        "redistribution": (
+            "raw PDB not bundled; obtain author permission/license before "
+            "redistribution"),
+        "kind": "community-generated public-symbol-only PDB",
+    }
+    if source_origin:
+        source["origin"] = source_origin
+    if source_retrieved_utc:
+        source["retrieved_utc"] = source_retrieved_utc
+    if source_attribution_note:
+        source["attribution_note"] = source_attribution_note
     identity = {
         "schema_version": 2,
         "artifact": output.name,
         "artifact_sha256": _sha256(output),
-        "source": {
-            "canonical_filename": CANONICAL_PDB_NAME,
-            "original_filename": pdb_path.name,
-            "sha256": _sha256(pdb_path),
-            "size": pdb_path.stat().st_size,
-            "author": source_author,
-            "license": source_license,
-            "redistribution": (
-                "raw PDB not bundled; obtain author permission/license before "
-                "redistribution"),
-            "kind": "community-generated public-symbol-only PDB",
-        },
+        "source": source,
         "pdb": {
             "guid": corpus.guid,
             "age": corpus.age,
@@ -221,12 +288,33 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--source-author", default="unknown")
     parser.add_argument("--source-license", default="unknown")
-    parser.add_argument("--previous-pdb", type=Path,
-                        help="verify and record a strict-superset predecessor")
+    parser.add_argument("--source-origin",
+                        help="stable acquisition URL or provenance locator")
+    parser.add_argument("--source-retrieved-utc",
+                        help="UTC acquisition timestamp recorded as supplied")
+    parser.add_argument("--source-attribution-note",
+                        help="provenance caveat that cannot be encoded as author")
+    parser.add_argument(
+        "--canonical-pdb-name", default=CANONICAL_PDB_NAME,
+        help="stable source filename recorded in the generated corpus")
+    predecessor = parser.add_mutually_exclusive_group()
+    predecessor.add_argument(
+        "--previous-pdb", type=Path,
+        help="verify and record a strict-superset source-PDB predecessor")
+    predecessor.add_argument(
+        "--previous-corpus", type=Path,
+        help="verify a strict superset of an identity-bound generated corpus")
     args = parser.parse_args()
-    identity = regenerate(args.pdb, args.targets, args.output,
-                          args.source_author, args.source_license,
-                          args.previous_pdb)
+    identity = regenerate(
+        args.pdb, args.targets, args.output,
+        source_author=args.source_author,
+        source_license=args.source_license,
+        previous_pdb=args.previous_pdb,
+        previous_corpus=args.previous_corpus,
+        source_origin=args.source_origin,
+        source_retrieved_utc=args.source_retrieved_utc,
+        source_attribution_note=args.source_attribution_note,
+        canonical_pdb_name=args.canonical_pdb_name)
     print("Wrote {} publics to {}".format(
         identity["counts"]["publics"], args.output))
     print("Quarantined ambiguity records: {}".format(

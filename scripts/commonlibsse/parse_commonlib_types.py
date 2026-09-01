@@ -14,7 +14,7 @@ Pipeline:
   AE names:     skyrimae.rename  (AE address ID → name mapping, fallback)
   Script gen:   ghidra_import_gen.py  (Ghidra Jython script emitter)
 
-Generates two scripts: CommonLibImport_SE.py and CommonLibImport_AE.py.
+Generates importers for Skyrim SE, AE 1.6.1170, AE 1.7.104, and VR.
 """
 
 import os
@@ -56,10 +56,11 @@ SKYRIM_H = os.path.join(COMMONLIB_INCLUDE, 'RE', 'Skyrim.h')
 RE_INCLUDE = os.path.join(COMMONLIB_INCLUDE, 'RE')
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'ghidrascripts')
 
-_TARGET_DIRS = {'se': 'se', 'ae': 'ae', 'svr': 'vr'}
-_TARGET_KEYS = {'se': 's', 'ae': 'a', 'svr': 'v'}
+_TARGET_DIRS = {'se': 'se', 'ae': 'ae', '17104': '17104', 'svr': 'vr'}
+_TARGET_KEYS = {'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v'}
 _EXPECTED_VERSIONS = {
     'se': (1, 5, 97, 0), 'ae': (1, 6, 1170, 0),
+    '17104': (1, 7, 104, 0),
     'svr': (1, 4, 15, 0),
 }
 SE_PDB_SHA256 = 'c7c168e9d7bbe481418bbca6749064687ede714f3b3e2468081f10ac59bbf252'
@@ -131,7 +132,7 @@ def _load_target_layouts():
 
 
 def _validate_symbol_offsets(symbol, declared_kind, layouts):
-    for key in ('s', 'a', 'v'):
+    for key in _TARGET_KEYS.values():
         layout = layouts.get(key)
         if key not in symbol or layout is None:
             continue
@@ -180,6 +181,10 @@ VERSIONS = {
     'ae': {
         'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE.py'),
+    },
+    '17104': {
+        'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
+        'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE_1_7_104.py'),
     },
     'svr': {
         # Skyrim VR (1.4.15) — same headers as SE; symbols come from VR
@@ -458,16 +463,16 @@ def main():
 
     ap = _argparse.ArgumentParser(description='Generate CommonLibSSE importers.')
     ap.add_argument('--only', action='append', metavar='VERSION',
-                    help='generate just this runtime (se, ae, svr/vr; '
+                    help='generate just this runtime (se, ae, 17104, svr/vr; '
                          'repeatable).  Default: every Skyrim runtime.')
     cli = ap.parse_args()
     selected = None
     if cli.only:
         alias = {'vr': 'svr'}
         selected = {alias.get(v.lower(), v.lower()) for v in cli.only}
-        unknown = selected - {'se', 'ae', 'svr'}
+        unknown = selected - {'se', 'ae', '17104', 'svr'}
         if unknown:
-            ap.error('unknown runtime(s): {} (known: se, ae, vr)'.format(
+            ap.error('unknown runtime(s): {} (known: se, ae, 17104, vr)'.format(
                 ', '.join(sorted(unknown))))
 
     # Detect exe versions for address library selection
@@ -490,8 +495,11 @@ def main():
     # SE 1.5.97, AE 1.6.1170, VR 1.4.15 -- detected exe versions are
     # logged for diagnostics but don't currently feed the loader).
     addr_lib = AddressLibrary()
-    addr_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'))
-    print('SE entries: {}, AE entries: {}'.format(len(addr_lib.se_db), len(addr_lib.ae_db)))
+    addr_lib.load_all(
+        os.path.join(PROJECT_DIR, 'addresslibrary'),
+        require_17104=(selected is not None and '17104' in selected))
+    print('SE entries: {}, AE entries: {}, 1.7.104 entries: {}'.format(
+        len(addr_lib.se_db), len(addr_lib.ae_db), len(addr_lib.db_17104)))
     target_layouts = _load_target_layouts()
 
     print('\n=== Collecting symbols via regex relocation parser ===')
@@ -733,8 +741,14 @@ def main():
             s['si'] = se_id
         if ae_id is not None:
             s['ai'] = ae_id
+        shared_id = ae_id if ae_id is not None else se_id
+        if shared_id is not None:
+            rva_17104 = addr_lib.db_17104.get(shared_id)
+            if rva_17104:
+                s['17104'] = rva_17104
         if se_id is not None or ae_id is not None:
             id_count += 1
+        _validate_symbol_offsets(s, s['t'], target_layouts)
     print('Attached address-library IDs to {} of {} symbols'.format(id_count, len(symbols)))
 
     funcs = [s for s in symbols if s['t'] == 'func']
@@ -766,11 +780,12 @@ def main():
     fb_for = {
         'se':  se_fallback_json,
         'ae':  ae_fallback_json,
+        '17104': ae_fallback_json,
         'svr': '[]',
     }
 
     # --- Persisted bytesig-port results (refs/bytesig_ported_<ver>.csv) ---
-    # Written by commonlibsse/bytesig_port_combined.py --write-back-script.
+    # Written by the reviewed byte-signature port workflow.
     # Merging here makes the ported names survive regeneration: previously
     # they only lived inside the generated scripts and every regen wiped
     # them until the ~42-min port was re-run.
@@ -830,6 +845,8 @@ def main():
         return _json.dumps(existing, separators=(',', ':'))
 
     fb_for['ae']  = _merge_bytesig_csv(fb_for['ae'],  'bytesig_ported_ae.csv', 'a')
+    fb_for['17104'] = _merge_bytesig_csv(
+        fb_for['17104'], 'bytesig_ported_17104.csv', '17104')
     fb_for['svr'] = _merge_bytesig_csv(fb_for['svr'], 'bytesig_ported_vr.csv', 'v')
     fb_for['se']  = _merge_bytesig_csv(fb_for['se'],  'bytesig_ported_se.csv', 's')
 
@@ -906,7 +923,7 @@ def main():
                 print('Loaded relib build {}: {:,} entries'.format(
                     '.'.join(str(x) for x in build), len(db)))
 
-    for version in ('se', 'ae', 'svr'):
+    for version in ('se', 'ae', '17104', 'svr'):
         if selected is not None and version not in selected:
             continue
         binding, _artifact = _target_binding(version)

@@ -54,7 +54,7 @@ from typing import Dict, List, Optional, Tuple
 from ghidra_project import open_user_project
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 # Slot names the RTTI pass invents when it has no method name for a slot.
 # They are machine output, never analyst work, so they stay reconcilable no

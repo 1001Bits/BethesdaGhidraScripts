@@ -6,7 +6,7 @@ Usage:
       --target-sha256 <sha256> [--commit-msg "msg"]
 
   project_dir   e.g. C:/GhidraProjects
-  project_name  e.g. Combined
+  project_name  e.g. ExampleProject
   program_path  forward-slash path inside the project, e.g. /Starfield/Starfield 1.16.236
                 or just the program name to search-and-find anywhere
   csv           CSV with target_va,name columns (extra columns ignored)
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))

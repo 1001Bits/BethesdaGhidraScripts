@@ -1,0 +1,7 @@
+# Identity-bound reference artifacts must reach the working tree byte-for-byte.
+# Git line-ending conversion would invalidate the SHA-256 recorded in each
+# sibling *.identity.json and can make generation silently lose symbol pools.
+scripts/commonlibf4/refs/f4_221_pdb_publics.txt -text
+scripts/commonlibf4/refs/f4_240_pdb_publics.txt -text
+scripts/commonlibf4/refs/bytesig_ported_221.csv -text
+scripts/commonlibf4/refs/bytesig_ported_og.csv -text

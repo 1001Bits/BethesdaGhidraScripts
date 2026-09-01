@@ -187,6 +187,8 @@ def test_sse_pdb_merge_uses_multimap_and_unique_decorated_evidence():
 def test_tracked_skyrim_relib_gog_counts_and_structure():
     path = (Path(__file__).parents[2] / 'extern' /
             'AddressLibraryDatabase' / 'skyrimae.relib')
+    if not path.is_file():
+        pytest.skip('local Skyrim reverse-engineering RELIB is not bundled')
     first = (1, 6, 1179, 0)
     second = (1, 6, 1170, 0, 1)
     versions, retained = _MODULE._parse_relib(str(path), {first, second})

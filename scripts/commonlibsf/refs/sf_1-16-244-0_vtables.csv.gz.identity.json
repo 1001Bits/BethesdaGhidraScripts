@@ -1,0 +1,18 @@
+{
+  "artifact": "sf_1-16-244-0_vtables.csv.gz",
+  "enumeration_method": "versionlib/CommonLib VTABLE IDs",
+  "fingerprint_mode": "raw-bytes-32",
+  "function_names_included": false,
+  "layout_sha256": "38e240c51dc0e578bd11e65f924b3bae695046f5f43e6480ecca9817dbd66d5e",
+  "program_path": "/starfield/sf/Starfield.exe.unpacked.exe",
+  "schema_version": 2,
+  "target_sha256": "a100fcf3982047e29ae79d5f04a4cb0011641e08292f3431ccb9ac81fc63d3ac",
+  "target_version": [
+    1,
+    16,
+    244,
+    0
+  ],
+  "versionlib": "versionlib-1-16-244-0.bin",
+  "versionlib_sha256": "299ea1b4da35b42e9bf1b8ed94fa980694a4dcbebfc7693201619c4c08fa49d8"
+}

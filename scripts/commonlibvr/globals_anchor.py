@@ -15,7 +15,8 @@ the discovery pipeline wholesale: clvr_ghidra_util for the surface/helpers, disc
 for consensus, populate_plan for the improve-or-nop apply, review_plan for the queue.
 
 NON-DESTRUCTIVE: processStructure with createNewStructure=TRUE (throwaway, read-only),
-copy-validated apply (length unchanged, no RE lost), one always-committed transaction.
+copy-validated apply (length unchanged, no RE lost), one transaction that no
+individual anomaly rolls back.
 Dry-run by default; CLVR_ANCHOR_APPLY=go. Knobs: CLVR_ANCHOR_SAMPLES (referrers
 decompiled per global, default 16), CLVR_ANCHOR_MAX_GLOBALS (0 = all). Run programs
 SEQUENTIALLY (shared os.environ).

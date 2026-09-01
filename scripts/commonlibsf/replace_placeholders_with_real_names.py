@@ -5,7 +5,7 @@ method names extracted from SF 1.7 vtables.
 Pipeline:
   - Load sf17_vtable_slot_names.csv -> mapping (class, slot) -> real_name
   - Skip any 'real_name' that is itself FuncN-style (placeholder noise)
-  - In Combined.gpr/Starfield 1.16.236, for each function whose name is
+  - In ExampleProject.gpr/Starfield 1.16.236, for each function whose name is
     'Class::FuncN', look up (class, N).  If we have a real_name, rename.
 
 Output:
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
-GHIDRA_DIR  = REPO_DIR / "tools" / "ghidra"
+GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 SF17_SLOTS = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf17_vtable_slot_names.csv"
 

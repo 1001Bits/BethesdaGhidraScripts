@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "scope": "existing runtimes plus Fallout 4 1.11.240 and Skyrim AE 1.7.104",
+  "generator_sources": {
+    "commonlib_release_archive": "BethesdaGhidraScripts-v1.2.0.zip",
+    "commonlib_shared": {
+      "archive_sha256": "d9a81364d33235df9680715e370b13a843b316a5df95db449fb42c33a93cdeb6",
+      "origin": "https://github.com/libxse/commonlib-shared/archive/refs/heads/main.zip",
+      "reason": "the local release archive omitted CommonLibF4's declared git submodule"
+    }
+  },
+  "targets": {
+    "ae17104": {
+      "address_library": {
+        "archive": "Address Library All in One (1.7.104.0) v13 32444 13 2026-08-27T15-29Z Ae46W7Fw2.zip",
+        "archive_sha256": "be0c7c07fb63fd1c1403690d4797c7a8fdf8799118acceB605f285d7b0ee055f",
+        "artifact": "addresslibrary/sse/versionlib-1-7-104-0.bin",
+        "artifact_sha256": "8aab3dd251d135b849bd983f86a4a205c920fa3e81f8e30c0e63ccfef9423842",
+        "embedded_version": [1, 7, 104, 0]
+      },
+      "executable": {
+        "artifact": "exes/skyrim/17104/SkyrimSE.exe",
+        "file_version": [1, 7, 104, 0],
+        "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+      }
+    },
+    "f4240": {
+      "address_library": {
+        "archive": "Address Library - All In One 47327 1.11.240 2026-08-21T23-48Z Hbu6377Rl.zip",
+        "archive_sha256": "385ceddcf7c44d6c50cbf67eea82387f1e036447e1aabc7832ad690ce5c8bb56",
+        "artifact": "addresslibrary/f4/version-1-11-240-0.bin",
+        "artifact_sha256": "65985cc2259384a13cffb538d74776e422e62b0cd3766485a000620242b72b06",
+        "entry_count": 652306
+      },
+      "executable": {
+        "artifact": "exes/f4/240/Fallout4.exe",
+        "file_version": [1, 11, 240, 0],
+        "sha256": "fdcef37ac1230af6d0b0050eb2142b139ef3a867b37b9211fb6edfcc646072f8"
+      },
+      "public_symbols": {
+        "artifact": "scripts/commonlibf4/refs/f4_240_pdb_publics.txt",
+        "canonical_source_name": "Fallout4_1_11_240_for_debug.pdb",
+        "source_pdb_sha256": "76fbdedad3546ca2acbfd7a512a8a840fab02b0cdf85a384348074b90a7c7d13"
+      }
+    }
+  },
+  "quarantined": {
+    "Fallout 4 1.11.240 IDA-derived address database": {
+      "filename": "version-1-11-240-0.bin",
+      "sha256": "e4431cf5332efcf0ba5b33e8e4d490e91518fac24b470ef8fe8cb60240d7dc52",
+      "entry_count": 892341,
+      "official_overlap": 576947,
+      "matching_overlap": 576866,
+      "mismatching_overlap": 81,
+      "status": "evidence-only; never load as the canonical address library"
+    }
+  }
+}

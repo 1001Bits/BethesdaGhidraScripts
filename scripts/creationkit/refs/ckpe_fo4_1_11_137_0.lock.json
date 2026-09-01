@@ -1,0 +1,199 @@
+{
+  "schema": "bgs-ckpe-evidence-lock-v1",
+  "source": {
+    "commit": "cfd8533d7522822242d0b0602fe77d17bc929cea",
+    "database": {
+      "canonical_tree_sha256": "0e42fa72021012e12403f9cbb63e13c6bc85cc5764e487053d27fff5f1aafd54",
+      "file_count": 87,
+      "path": "Database/FO4/1_11_137_0"
+    },
+    "license": "LGPL-3.0",
+    "patch_sources": {
+      "canonical_tree_sha256": "ade689c2f29a281025ac80217c96889d757b94651a4e46319250c1d3abd3fa62",
+      "file_count": 76,
+      "path": "CKPE.Fallout4/Src/Patches"
+    },
+    "repository": "https://github.com/Perchik71/Creation-Kit-Platform-Extended"
+  },
+  "target": {
+    "anchors": [
+      {
+        "bytes": "cccccccccce966809202e9815d7602e9",
+        "rva": 4096,
+        "section": ".text"
+      },
+      {
+        "bytes": "4c8d0564191302bae7000000488d0d58",
+        "rva": 16540325,
+        "section": ".text"
+      },
+      {
+        "bytes": "8b56380f1f004863ca8d420141894638",
+        "rva": 33076554,
+        "section": ".text"
+      },
+      {
+        "bytes": "488bc444894018555356574154415541",
+        "rva": 49614848,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "0000498b52204885d20f84d300000048",
+        "rva": 49634128,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "0a4c8bc949c1e1044d03cbc1eb0881e3",
+        "rva": 49653408,
+        "section": ".interpr"
+      },
+      {
+        "bytes": "00000000000000001900000000000801",
+        "rva": 53923664,
+        "section": ".rdata"
+      },
+      {
+        "bytes": "c544c700609e770300000000010a0400",
+        "rva": 58171040,
+        "section": ".rdata"
+      }
+    ],
+    "file_size": 69017440,
+    "file_version": [
+      1,
+      11,
+      137,
+      0
+    ],
+    "image_base": 5368709120,
+    "image_size": 139173888,
+    "machine": 34404,
+    "pointer_size": 8,
+    "sections": [
+      {
+        "characteristics": 1610612768,
+        "executable": true,
+        "name": ".text",
+        "raw_offset": 1536,
+        "raw_size": 49608704,
+        "readable": true,
+        "rva": 4096,
+        "virtual_size": 49608629,
+        "writable": false
+      },
+      {
+        "characteristics": 1610612768,
+        "executable": true,
+        "name": ".interpr",
+        "raw_offset": 49610240,
+        "raw_size": 57856,
+        "readable": true,
+        "rva": 49614848,
+        "virtual_size": 57478,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rdata",
+        "raw_offset": 49668096,
+        "raw_size": 12742144,
+        "readable": true,
+        "rva": 49676288,
+        "virtual_size": 12741655,
+        "writable": false
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".data",
+        "raw_offset": 62410240,
+        "raw_size": 1617920,
+        "readable": true,
+        "rva": 62418944,
+        "virtual_size": 71760569,
+        "writable": true
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".pdata",
+        "raw_offset": 64028160,
+        "raw_size": 2341376,
+        "readable": true,
+        "rva": 134180864,
+        "virtual_size": 2341056,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".idata",
+        "raw_offset": 66369536,
+        "raw_size": 60928,
+        "readable": true,
+        "rva": 136523776,
+        "virtual_size": 60547,
+        "writable": false
+      },
+      {
+        "characteristics": 3221225536,
+        "executable": false,
+        "name": ".tls",
+        "raw_offset": 66430464,
+        "raw_size": 18944,
+        "readable": true,
+        "rva": 136585216,
+        "virtual_size": 18629,
+        "writable": true
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".00cfg",
+        "raw_offset": 66449408,
+        "raw_size": 512,
+        "readable": true,
+        "rva": 136605696,
+        "virtual_size": 283,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": "_RDATA",
+        "raw_offset": 66449920,
+        "raw_size": 2560,
+        "readable": true,
+        "rva": 136609792,
+        "virtual_size": 2368,
+        "writable": false
+      },
+      {
+        "characteristics": 1073741888,
+        "executable": false,
+        "name": ".rsrc",
+        "raw_offset": 66452480,
+        "raw_size": 1700864,
+        "readable": true,
+        "rva": 136613888,
+        "virtual_size": 1700752,
+        "writable": false
+      },
+      {
+        "characteristics": 1107296320,
+        "executable": false,
+        "name": ".reloc",
+        "raw_offset": 68153344,
+        "raw_size": 853504,
+        "readable": true,
+        "rva": 138317824,
+        "virtual_size": 853021,
+        "writable": false
+      }
+    ],
+    "sha256": "222fd0aad949e76721d85c922ae508ada6816ba2f3e1fc11647c7239c24c2e13",
+    "timestamp": 1761523466,
+    "version_string": "1.11.137.0"
+  }
+}

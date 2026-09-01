@@ -39,6 +39,11 @@ from symbol_export import (  # noqa: E402
 
 DEFAULT_TARGET = REPO_DIR / "exes" / "f4" / "221" / "Fallout4.exe"
 DEFAULT_OUTPUT = REPO_DIR / "symbols" / "f4" / "1.11.221"
+# r2 is the 2026-08-02 community-corpus revision (source SHA-256
+# 18887658...).  Keep the revision explicit because every synthetic PDB for
+# this executable intentionally shares its CodeView GUID/age; archive names
+# are the only safe way to distinguish revisions before extraction.
+CORPUS_REVISION = 2
 
 
 def build(target: Path, output_dir: Path) -> dict:
@@ -72,11 +77,17 @@ def build(target: Path, output_dir: Path) -> dict:
         Path(IDENTITY_JSON).read_text(encoding="utf-8"))
     source_provenance = {
         "kind": "identity-bound F4 1.11.221 community corpus",
+        "corpus_revision": CORPUS_REVISION,
         "artifact": Path(PUBLICS_TXT).name,
         "artifact_sha256": corpus_identity["artifact_sha256"],
         "source_pdb_sha256": corpus_identity["source"]["sha256"],
         "source_author": corpus_identity["source"]["author"],
         "source_license": corpus_identity["source"]["license"],
+        "source_origin": corpus_identity["source"].get("origin"),
+        "source_attribution_note": corpus_identity["source"].get(
+            "attribution_note"),
+        "source_redistribution": corpus_identity["source"].get(
+            "redistribution"),
         "records_before_quarantine": corpus_identity["counts"]["publics"],
         "records_after_quarantine": len(records),
     }
@@ -88,7 +99,8 @@ def build(target: Path, output_dir: Path) -> dict:
         safe_functions, safe_labels, manifest, selection,
         source_provenance=source_provenance)
     bundle = package_symbol_bundle(
-        output_dir, module, pdb_path, pdb_identity, json_path, manifest)
+        output_dir, module, pdb_path, pdb_identity, json_path, manifest,
+        revision=CORPUS_REVISION)
     result = {
         "pdb": str(pdb_path), "pdb_identity": str(pdb_identity),
         "symbols_json": str(json_path), "map": str(map_path),
