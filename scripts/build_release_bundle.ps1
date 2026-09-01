@@ -223,7 +223,7 @@ try {
     }
 
     $binaryPatterns = @(
-        '*.pdb', '*.relib', '*.rar', '*.7z', '*.exe', '*.dll', '*.pyc',
+        '.git', '*.pdb', '*.relib', '*.rar', '*.7z', '*.exe', '*.dll', '*.pyc',
         '*.bgs-ed25519-private.pem', '.last_run_state', '*.last_*.log'
     )
     foreach ($pattern in $binaryPatterns) {
