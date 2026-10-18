@@ -17,6 +17,7 @@ Output: ``ghidrascripts/CommonLibImport_SF.py``.
 """
 
 import json as _json
+import hashlib
 import os
 import re
 import sys
@@ -90,7 +91,7 @@ def _detect_sf_target():
 
 def _target_binding(source_path):
     """Return ``(lineage/manifest, analyzed path)`` prepared by run.py."""
-    from binary_identity import artifact_is_fresh, inspect_pe, read_manifest
+    from binary_identity import inspect_pe, load_fresh_lineage
     directory = os.path.dirname(source_path)
     stem = os.path.splitext(os.path.basename(source_path))[0]
     for name in sorted(os.listdir(directory)):
@@ -99,8 +100,11 @@ def _target_binding(source_path):
                 not name.lower().startswith(stem.lower()) or
                 name.lower().endswith('.identity.json')):
             continue
-        if artifact_is_fresh(source_path, artifact):
-            return read_manifest(artifact + '.identity.json'), artifact
+        # Recomputes function_starts: an old sidecar's set predates the
+        # chained-.pdata fix and would gate function creation mid-body.
+        lineage = load_fresh_lineage(source_path, artifact)
+        if lineage is not None:
+            return lineage, artifact
     return inspect_pe(source_path), source_path
 
 
@@ -186,49 +190,194 @@ def _make_symbols(funcs, labels, layout):
     return symbols
 
 
-def _build_fallback_symbols(addr_lib, sf_version, layout, verbose=True):
-    """Assemble FALLBACK_SYMBOLS from meh321's starfield.rename database.
+SF_IMAGE_BASE = 0x140000000
+# The offline naming corpus in refs/ was produced against this binary.
+CORPUS_SOURCE_VERSION = (1, 16, 236, 0)
+CORPUS_SOURCE_SHA256 = '1d1409ca898ca596a3a605f3ebc5347f72cfd6e47e38020dec158ec9bdd7d351'
+CORPUS_ARTIFACT_SHA256 = 'fb4c781ffcd5ecf58b5750c04289c1a125326d429693516df58a31e50db8774f'
 
-    The database is ID-keyed, so it resolves against any supported
-    versionlib without relying on a private Ghidra-project name dump.
+# meh321's starfield.rename (last changed Nov 2024) is keyed by the OLD
+# Starfield address-library ID numbering.  libxse/commonlibsf renumbered for
+# 1.16.x (MemoryManager::GetSingleton 33961 -> 35721, Allocate 33962 ->
+# 123792, Free 34032 -> 123793) and all 76 names the two databases share
+# disagree, so looking the old IDs up in a 1.16 versionlib lands on unrelated
+# functions.  The pool is only emitted for builds whose ID space has been
+# verified against it; none is today, so it fails closed.
+RENAME_VERIFIED_SF_VERSIONS = frozenset()
+
+
+def _read_rename_rows(rename_path):
+    """Return ``[(id, name)]`` from a meh321 ``.rename`` file."""
+    rows = []
+    if not os.path.isfile(rename_path):
+        return rows
+    with open(rename_path, 'r', encoding='utf-8', errors='replace') as f:
+        for ln in f:
+            parts = ln.split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue  # version header / malformed
+            name = parts[1].strip()
+            # meh321 wildcard convention: trailing _* means "append
+            # address" -- drop it; Ghidra names must be unique anyway
+            # and the apply path suffixes on collision.
+            if name.endswith('_*'):
+                name = name[:-2]
+            if name:
+                rows.append((int(parts[0]), name))
+    return rows
+
+
+def _build_fallback_symbols(addr_lib, sf_version, layout, verbose=True):
+    """Assemble FALLBACK_SYMBOLS from the two on-disk name pools:
+
+      1. ``extern/AddressLibraryDatabase/starfield.rename`` -- meh321's
+         curated ID->name database (~974 entries).  Its IDs predate the
+         1.16 renumbering, so it is only used for builds listed in
+         ``RENAME_VERIFIED_SF_VERSIONS`` (currently none).
+      2. ``refs/sf116_named_from_combined_final.csv`` -- the offline
+         improvement corpus (~64k ``0xVA,name`` rows: byte-sig + BSim +
+         RTTI-walk names harvested from the user's Combined project).
+         VA-keyed against 1.16.236; when the detected exe is a different
+         patch the RVAs are remapped 236-RVA -> ID -> detected-RVA via
+         the two versionlibs.  Rows that merely echo a starfield.rename
+         name at the RVA its old ID resolved to in 1.16.236 are dropped:
+         they are earlier wrong applications harvested back from Ghidra.
 
     Fallback symbols only ever rename FUN_/sub_ placeholders at apply
     time, so lower-confidence corpus names are safe to ship.
     """
     out = []
     by_rva = set()
+    det = tuple(sf_version) + (0,) * (4 - len(sf_version))
 
-    # starfield.rename (curated and ID-keyed)
+    # --- 1. starfield.rename (ID-keyed, verified ID spaces only) ---
     rename_path = os.path.join(PROJECT_DIR, 'extern',
                                'AddressLibraryDatabase', 'starfield.rename')
+    rename_rows = _read_rename_rows(rename_path)
     n_rename = 0
-    if os.path.isfile(rename_path):
-        with open(rename_path, 'r', encoding='utf-8', errors='replace') as f:
+    if det[:4] in RENAME_VERIFIED_SF_VERSIONS:
+        for rename_id, name in rename_rows:
+            rva = addr_lib.sf_db.get(rename_id)
+            if not rva or rva in by_rva:
+                continue
+            entry = {'n': name, 't': 'func', 'sig': '',
+                     'sf': rva, 'src': 'starfield.rename',
+                     'target_sha256': layout.sha256}
+            if not attach_section(entry, 'sf', layout, declared_kind='func'):
+                continue
+            out.append(entry)
+            by_rva.add(rva)
+            n_rename += 1
+        if verbose:
+            print('Fallback pool 1 (starfield.rename): {} resolved'.format(n_rename))
+    elif verbose and rename_rows:
+        print('Fallback pool 1 (starfield.rename): skipped -- its IDs use the '
+              'pre-1.16 numbering and no verified remap exists for {}'.format(
+                  '.'.join(str(x) for x in det[:4])))
+
+    # --- 2. offline corpus (VA-keyed at 1.16.236) ---
+    corpus_path = os.path.join(SCRIPT_DIR, 'refs',
+                               'sf116_named_from_combined_final.csv')
+    n_corpus = n_remap_miss = n_rename_echo = 0
+    corpus_hash = None
+    if os.path.isfile(corpus_path):
+        digest = hashlib.sha256()
+        with open(corpus_path, 'rb') as corpus_stream:
+            for chunk in iter(lambda: corpus_stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        corpus_hash = digest.hexdigest()
+    if corpus_hash == CORPUS_ARTIFACT_SHA256:
+        same_build = (det[:4] == CORPUS_SOURCE_VERSION and
+                      layout.sha256.lower() == CORPUS_SOURCE_SHA256)
+        rev_236 = None
+        det_db = None
+        src_db = addr_lib.sf_db if same_build else {}
+        if not same_build:
+            # Remap chain: corpus 236-RVA -> versionlib ID -> detected RVA.
+            try:
+                src_lib = AddressLibrary()
+                src_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'),
+                                 pe_version=CORPUS_SOURCE_VERSION)
+                rev_236 = {}
+                src_db = src_lib.sf_db
+                for id_value, source_rva in src_lib.sf_db.items():
+                    rev_236.setdefault(source_rva, set()).add(id_value)
+                det_db = addr_lib.sf_db
+                if verbose:
+                    print('Corpus remap active: 1.16.236 -> {} via versionlib IDs'
+                          .format('.'.join(str(x) for x in det[:4])))
+            except FileNotFoundError:
+                print('WARNING: no versionlib for 1.16.236 -- corpus names '
+                      'skipped (cannot remap to detected build).')
+                rev_236 = {}
+        # 1.16.236 RVAs the old-numbered rename IDs resolve to, by name.
+        rename_echo = {}
+        for rename_id, rename_name in rename_rows:
+            echo_rva = src_db.get(rename_id)
+            if echo_rva:
+                rename_echo.setdefault(echo_rva, set()).add(rename_name)
+        with open(corpus_path, 'r', encoding='utf-8', errors='replace') as f:
             for ln in f:
-                parts = ln.split(None, 1)
-                if len(parts) != 2 or not parts[0].isdigit():
-                    continue  # version header / malformed
-                rva = addr_lib.sf_db.get(int(parts[0]))
-                if not rva or rva in by_rva:
+                ln = ln.strip()
+                if not ln or ln.startswith('target_va'):
+                    continue
+                parts = ln.split(',', 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    va = int(parts[0], 16)
+                except ValueError:
+                    continue
+                rva236 = va - SF_IMAGE_BASE
+                if rva236 <= 0:
+                    continue
+                echoed = rename_echo.get(rva236)
+                if echoed:
+                    corpus_name = parts[1].strip()
+                    if any(corpus_name == n or corpus_name.startswith(n + '_')
+                           for n in echoed):
+                        n_rename_echo += 1
+                        continue
+                if same_build:
+                    rva = rva236
+                else:
+                    ids = rev_236.get(rva236, set()) if rev_236 else set()
+                    candidates = {det_db[id_value] for id_value in ids
+                                  if det_db and id_value in det_db}
+                    rva = next(iter(candidates)) if len(candidates) == 1 else None
+                    if rva is None:
+                        n_remap_miss += 1
+                        continue
+                if rva in by_rva:
                     continue
                 name = parts[1].strip()
-                # meh321 wildcard convention: trailing _* means "append
-                # address" -- drop it; Ghidra names must be unique anyway
-                # and the apply path suffixes on collision.
-                if name.endswith('_*'):
-                    name = name[:-2]
                 if not name:
                     continue
-                entry = {'n': name, 't': 'func', 'sig': '',
-                         'sf': rva, 'src': 'starfield.rename',
-                         'target_sha256': layout.sha256}
+                entry = {
+                    'n': name, 't': 'func', 'sig': '', 'sf': rva,
+                    'src': 'sf116_corpus',
+                    'source_version': '.'.join(str(x) for x in CORPUS_SOURCE_VERSION),
+                    'source_sha256': CORPUS_SOURCE_SHA256,
+                    'target_sha256': layout.sha256,
+                }
+                # This corpus claims to contain functions harvested from a
+                # Ghidra project.  Rows landing outside executable memory are
+                # contaminated evidence, not data labels; discard them.
                 if not attach_section(entry, 'sf', layout, declared_kind='func'):
+                    continue
+                if entry['t'] != 'func':
                     continue
                 out.append(entry)
                 by_rva.add(rva)
-                n_rename += 1
+                n_corpus += 1
+    elif corpus_hash is not None:
+        print('WARNING: SF116 naming corpus hash mismatch; refusing unbound evidence.')
     if verbose:
-        print('Fallback pool (starfield.rename): {} resolved'.format(n_rename))
+        print('Fallback pool 2 (sf116 corpus): {} loaded{}{}'.format(
+            n_corpus,
+            ', {} dropped (no ID remap)'.format(n_remap_miss) if n_remap_miss else '',
+            ', {} dropped (starfield.rename echoes)'.format(n_rename_echo)
+            if n_rename_echo else ''))
         print('Total fallback symbols: {}'.format(len(out)))
     return out
 
@@ -241,6 +390,7 @@ def _try_clang_types(verbose=True):
     empty type containers so the rest of the pipeline still produces a
     usable labels-only script.
     """
+    from clang_types import ToolchainMismatchError
     try:
         from clang_types import collect_types, _setup_include_paths
         from ghidra_import_gen import (
@@ -286,11 +436,21 @@ def _try_clang_types(verbose=True):
             print('  structs:  {}'.format(len(structs)))
             print('  vtables:  {}'.format(len(vtable_structs)))
         return enums, structs, vtable_structs, template_source
+    except ToolchainMismatchError:
+        # An unpinned compiler must stop generation, not degrade it.
+        raise
     except (Exception, SystemExit) as e:
         # clang_types.collect_types() calls sys.exit() when clang.exe isn't
         # on PATH, so catch SystemExit too.
-        print('WARNING: CommonLibSF AST parse failed ({}: {})'.format(type(e).__name__, e))
-        print('         Falling back to labels-only output (no struct/enum types).')
+        print('ERROR: CommonLibSF AST parse failed ({}: {})'.format(type(e).__name__, e))
+        # A silent labels-only importer once hid a missing commonlib-shared
+        # submodule: a "successful" run then shipped zero types.  Fail closed
+        # unless labels-only output is explicitly requested.
+        if os.environ.get('BGS_ALLOW_LABELS_ONLY') != '1':
+            raise RuntimeError(
+                'CommonLibSF types could not be parsed; fix the headers/submodules '
+                'or set BGS_ALLOW_LABELS_ONLY=1 to emit a labels-only importer') from e
+        print('         BGS_ALLOW_LABELS_ONLY=1: labels-only output (no struct/enum types).')
         return {}, {}, {}, ''
 
 
@@ -416,7 +576,8 @@ def main():
               '(labels-only run -- needs clang.exe for AST-based vtable '
               'inference to produce anchorable structs).')
 
-    # 6. Fallback symbols: starfield.rename + the offline naming corpus.
+    # 6. Fallback symbols: the offline naming corpus (+ starfield.rename only
+    # for builds in RENAME_VERIFIED_SF_VERSIONS -- none today).
     # Primary CommonLibSF symbols win on RVA collision at apply time
     # (fallbacks only rename FUN_/sub_ placeholders).
     print()

@@ -21,7 +21,7 @@ Usage:
       [--dry-run]
 
 Example:
-  python run_vtable_pipeline.py C:/GhidraProjects ExampleProject /Fallout4/Fallout4VR_1_2_72.exe
+  python run_vtable_pipeline.py C:/GhidraProjects Combined /Fallout4/Fallout4VR_1_2_72.exe
 
 The scan is binary-derived and requires no CommonLib headers.  Every mutation
 is still tied to the loaded Program's exact backing PE identity.
@@ -37,7 +37,7 @@ import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
-from ghidra_project import open_user_project
+from ghidra_project import open_program, open_user_project
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
@@ -820,8 +820,11 @@ def apply_naming(program, slot_pairs, monitor, dry_run=False,
                 continue
             try:
                 target_ns = get_or_create_namespace(ns_path)
-                func.setParentNamespace(target_ns)
-                func.setName(leaf, SourceType.ANALYSIS)
+                # ONE symbol update: Ghidra validates the name, the namespace
+                # and duplicates before it writes either.  setParentNamespace
+                # followed by a failing setName left ``Class::FUN_x`` behind.
+                func.getSymbol().setNameAndNamespace(
+                    leaf, target_ns, SourceType.ANALYSIS)
                 stats["renamed"] += 1
             except Exception as e:
                 stats["errors"] += 1
@@ -900,7 +903,7 @@ def main():
             # present on a retry.
             sys.exit(4)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, not dry_run, False, monitor)
+        program = open_program(df, consumer, monitor, write=not dry_run)
         try:
             try:
                 backing_manifest = resolve_backing_manifest(

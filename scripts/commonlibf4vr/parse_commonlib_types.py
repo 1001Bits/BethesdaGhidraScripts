@@ -83,8 +83,10 @@ base.SCRIPT_DIR = SCRIPT_DIR
 _MSVC_PARSE_FLAGS = ['-fdelayed-template-parsing']
 
 # One target: VR, parsed VR-exclusive.  The '[]' fallback pool is kept from the
-# CommonLibF4 entry -- F4VR's community address-library ID namespace is disjoint
-# from meh321's, so an OG/AE fallback would resolve to mislabeled functions.
+# CommonLibF4 entry: VR shares the legacy (< 1.6M) ID range with OG/NG/AE (see
+# scripts/commonlibf4/address_library.py) but has none of the NG-era function
+# IDs (>= 2M) the IDA/PDB fallback names are keyed on.  CommonLibF4VR's own
+# REL::ID(og) / REL::RelocationID(og, ng) symbols resolve through vr_db.
 base.F4_TARGETS = (
     ('f4_vr', 'CommonLibImport_CLF4VR_VR.py', '[]', 'vr.csv',
      ['-DENABLE_FALLOUT_VR=1'] + _MSVC_PARSE_FLAGS),
@@ -183,9 +185,10 @@ def _preflight_parse(parse_args):
     """Refuse to generate unless clang parses CommonLibF4VR cleanly."""
     import re
     import subprocess
-    from clang_types import find_clang_binary
+    from clang_types import find_clang_binary, require_pinned_clang
 
     clang = find_clang_binary()
+    require_pinned_clang(clang)
     result = subprocess.run(
         [clang] + list(parse_args) + ['-fsyntax-only', '-ferror-limit=0',
                                       base.FALLOUT_H.replace('\\', '/')],

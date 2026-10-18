@@ -19,12 +19,14 @@ Generates:
 
 Symbol resolution
 -----------------
-CommonLibF4's desktop IDs are managed by meh321 with one ID space across
-OG / NG / AE / 1.11.221 / 1.11.240.  The community VR database uses a different ID
-space.  Desktop IDs must therefore never be looked up in ``vr_db``: a
-numeric hit there is only a coincidental collision, not the same symbol.
-Each desktop symbol carries the offsets that resolve in its shared ID
-namespace; VR addresses come only from explicitly VR-authored evidence.
+Fallout 4 has ONE address-library ID namespace (authoritative statement:
+``address_library.py``).  Legacy IDs < 1,600,000 mean the same thing in
+OG 1.10.163, NG, AE, 1.11.221, 1.11.240 AND VR 1.2.72 (the community VR CSV is
+keyed on OG IDs); IDs >= 2,000,000 were introduced with NG and exist only in
+NG and later, so they can never resolve in OG or VR.  Each symbol carries the
+offsets of every database its ID exists in.  A VR offset is attached only when
+the VR executable is staged, and every VTABLE_/RTTI_ label must then be
+confirmed by that executable's own RTTI (core/vtable_label_check.py).
 
 Function-name coverage for IDs that exist only in AE (the remaining 17%)
 is recovered post-generation via masked byte-signature porting — see
@@ -46,6 +48,7 @@ sys.path.append(os.path.join(os.path.dirname(SCRIPT_DIR), 'commonlibsf'))
 
 from pe_layout import PELayout, attach_section, x64_runtime_function_starts
 from bytesig_evidence import load_validated as _load_bytesig_evidence
+from vtable_label_check import validate_vtable_labels_for_layouts
 
 COMMONLIB_INCLUDE = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4', 'include')
 FALLOUT_H         = os.path.join(COMMONLIB_INCLUDE, 'RE', 'Fallout.h')
@@ -112,7 +115,7 @@ def _source_executable(key):
 
 def _target_binding(key):
     """Return ``(manifest_or_lineage, analyzed_path)`` for one exact target."""
-    from binary_identity import artifact_is_fresh, inspect_pe, read_manifest
+    from binary_identity import inspect_pe, load_fresh_lineage
     source = _source_executable(key)
     if source is None:
         return None, None
@@ -121,12 +124,15 @@ def _target_binding(key):
     artifacts = [os.path.join(directory, n) for n in sorted(os.listdir(directory))
                  if 'unpacked' in n.lower() and n.lower().startswith(stem.lower())
                  and not n.lower().endswith('.identity.json')]
-    fresh = [p for p in artifacts if artifact_is_fresh(source, p)]
+    # load_fresh_lineage recomputes the advisory function_starts from the
+    # proven files: an old sidecar's start set predates the extractor fixes.
+    fresh = [(p, lineage) for p, lineage in
+             ((p, load_fresh_lineage(source, p)) for p in artifacts)
+             if lineage is not None]
     if len(fresh) > 1:
         raise RuntimeError('multiple fresh Steamless artifacts for {}'.format(source))
     if fresh:
-        binding = read_manifest(fresh[0] + '.identity.json')
-        analyzed = fresh[0]
+        analyzed, binding = fresh[0]
     else:
         binding = inspect_pe(source)
         analyzed = source
@@ -177,9 +183,106 @@ def _validate_symbol_offsets(symbol, declared_kind, layouts):
         symbol.setdefault('target_sha256', {})[key] = layout.sha256
 
 
-def _resolve_desktop_offsets(symbol, id_val, addr_lib):
-    """Resolve only the shared desktop ID namespace (never community VR)."""
-    symbol.update(addr_lib.resolve_desktop(id_val))
+# Legacy IDs end at 1,583,368 (OG) / 1,583,245 (VR); NG-era IDs start at ~2.16M.
+LEGACY_ID_LIMIT = 1600000
+_NG_KEYS = ('ng', 'a', '221', '240')
+
+
+def _resolve_desktop_offsets(symbol, id_val, addr_lib, allow_vr=False):
+    """Resolve one ID in every database of the single F4 ID namespace.
+
+    An NG-range ID (>= LEGACY_ID_LIMIT) never yields an OG or VR offset, even
+    if a database happened to contain that number.  ``allow_vr`` (the VR
+    executable is staged, so labels can be RTTI-checked) adds ``vr_db`` for
+    legacy IDs.
+    """
+    if not id_val:
+        return
+    resolved = addr_lib.resolve_desktop(id_val)
+    if id_val >= LEGACY_ID_LIMIT:
+        resolved.pop('og', None)
+    elif allow_vr:
+        vr = addr_lib.vr_db.get(id_val)
+        if vr:
+            resolved['v'] = vr
+    symbol.update(resolved)
+
+
+def resolve_parsed_offsets(symbol, parsed, addr_lib, allow_vr=False):
+    """Attach offsets for a ``reloc_parser`` symbol.
+
+    ``REL::RelocationID(og, ng)`` (CommonLibF4VR): the legacy ``og_id``
+    resolves OG + VR, the ``ng_id`` resolves NG / AE / 1.11.221 / 1.11.240.
+    A single ``id`` resolves wherever the one namespace has it.
+    """
+    og_id, ng_id = parsed.get('og_id'), parsed.get('ng_id')
+    if not og_id and not ng_id:
+        _resolve_desktop_offsets(symbol, parsed.get('id'), addr_lib, allow_vr)
+        return
+    if og_id and og_id < LEGACY_ID_LIMIT:
+        legacy = {}
+        _resolve_desktop_offsets(legacy, og_id, addr_lib, allow_vr)
+        for key in ('og', 'v'):
+            if key in legacy:
+                symbol[key] = legacy[key]
+    if ng_id:
+        modern = addr_lib.resolve_desktop(ng_id)
+        for key in _NG_KEYS:
+            if key in modern:
+                symbol[key] = modern[key]
+
+
+def build_primary_symbols(func_syms, label_syms, addr_lib, target_layouts):
+    """``reloc_parser`` output -> importer symbols + ``{label: vtable class}``."""
+    allow_vr = target_layouts.get('v') is not None
+    symbols = []
+    vtable_classes = {}
+    for fs in func_syms:
+        full_name = '{}::{}'.format(fs['class_'], fs['name']) if fs['class_'] else fs['name']
+        kind = fs.get('kind') or 'func'
+        sym = {'n': full_name, 't': kind, 'sig': '', 'src': 'CommonLibF4'}
+        for field in ('id', 'og_id'):
+            if fs.get(field):
+                sym[field] = fs[field]
+        resolve_parsed_offsets(sym, fs, addr_lib, allow_vr)
+        _validate_symbol_offsets(sym, kind, target_layouts)
+        symbols.append(sym)
+
+    for lbl in label_syms:
+        sym = {'n': lbl['name'], 't': 'label', 'sig': '', 'src': 'CommonLibF4'}
+        for field in ('id', 'og_id'):
+            if lbl.get(field):
+                sym[field] = lbl[field]
+        if lbl.get('vtable_class'):
+            vtable_classes[lbl['name']] = lbl['vtable_class']
+        resolve_parsed_offsets(sym, lbl, addr_lib, allow_vr)
+        _validate_symbol_offsets(sym, 'label', target_layouts)
+        symbols.append(sym)
+    return symbols, vtable_classes
+
+
+def _report_dir():
+    """Dropped-label reports are evidence: gitignored build/, never the source
+    tree (``basename(SCRIPT_DIR)`` keeps the VR forks' reports apart)."""
+    return os.path.join(PROJECT_DIR, 'build', 'evidence', 'vtable_labels',
+                        os.path.basename(SCRIPT_DIR))
+
+
+def validate_vtable_labels(symbols, layouts, class_labels=None):
+    """Drop VTABLE_* offsets refuted by the staged executable's own RTTI.
+
+    Upstream ``IDs_VTABLE.h`` lists one ID under several class names; without
+    this check >= 1,600 labels of the 1.11.240 importer named the wrong class
+    and the importer's vtable walk then named functions ``<WrongClass>::FuncN``.
+    Fallout 4 VR is strict (only RTTI-confirmed VTABLE_/RTTI_/NiRTTI_ labels
+    survive): its ID mapping is established statistically, not by the library
+    author.  A NiRTTI object is filled at runtime, so zero bytes in the image
+    leave it unverifiable -- dropped, never confirmed.
+    """
+    return validate_vtable_labels_for_layouts(
+        symbols, layouts, class_labels,
+        report_dir=_report_dir(),
+        strict_keys=('v',), rtti_keys=('v',))
 
 
 # A descriptor that ends in a single-letter uppercase qualified path is an
@@ -236,9 +339,9 @@ def _enrich_symbols(symbols_list, structs):
         print(f'Skipped {skipped} symbols with uninstantiated template params in signature')
 
 
-# Per-version output config.  OG/VR have no fallback symbol pool — their
-# IDs are in disjoint namespaces, so an AE-namespace fallback would
-# poison the import with mislabeled functions.
+# Per-version output config.  VR has no fallback symbol pool: the IDA/PDB
+# fallback names are functions, whose NG-era IDs (>= 2M) do not exist in the
+# legacy-only VR database.
 #
 # Each entry is (version_key, output_filename, fallback_symbols_json_or_None,
 # anchors_basename, parse_defines).
@@ -249,10 +352,10 @@ def _enrich_symbols(symbols_list, structs):
 # exists so a VR-aware overlay can add (e.g.) `-DBGS_FALLOUT4_VR=1` and emit
 # a correctly-shifted vtable layout for F4VR without affecting OG/NG/AE.
 F4_TARGETS = (
-    # OG/NG inherit the IDA fallback pool: meh321's ID namespace is shared
-    # across OG/NG/AE/221, so IDA entries cross-resolve via their 'ai' ID
-    # (see the n_ng_resolved/n_og_resolved loop in main).  VR keeps '[]'
-    # -- its community ID namespace is disjoint, nothing would resolve.
+    # OG/NG inherit the IDA fallback pool: the ID namespace is shared, so IDA
+    # entries cross-resolve via their 'ai' ID (see the n_ng_resolved /
+    # n_og_resolved loop in main).  VR keeps '[]': it shares the namespace too,
+    # but only legacy IDs (< 1.6M) exist there and the pool is NG-era functions.
     ('f4_og', 'CommonLibImport_F4_OG.py', None,  'og.csv', []),
     ('f4_ng', 'CommonLibImport_F4_NG.py', None,  'ng.csv', []),
     ('f4_ae', 'CommonLibImport_F4_AE.py', None,  'ae.csv', []),
@@ -344,27 +447,14 @@ def main():
             if (fs['class_'], fs['name']) in static_methods:
                 fs['is_static'] = True
 
-    # OG / NG / AE / 221 share a relocation-ID namespace.  VR explicitly
-    # does not.  Never probe vr_db with one of these IDs: low integer IDs
-    # collide frequently and used to place confidently wrong VR names.
+    # One ID namespace: legacy IDs (< 1.6M) resolve in OG / NG / AE / 221 /
+    # 240 and VR alike, NG-era IDs (>= 2M) only in NG and later.  VR offsets
+    # are attached only with the VR exe staged, because every VTABLE_/RTTI_
+    # label is then checked against that executable's own RTTI.
     # The 'a' key stays as AE for backward compatibility with the generator.
-    symbols = []
-    for fs in func_syms:
-        full_name = '{}::{}'.format(fs['class_'], fs['name']) if fs['class_'] else fs['name']
-        sym = {'n': full_name, 't': 'func', 'sig': '', 'src': 'CommonLibF4'}
-        if fs.get('id'):
-            sym['id'] = fs['id']
-        _resolve_desktop_offsets(sym, fs.get('id'), addr_lib)
-        _validate_symbol_offsets(sym, 'func', target_layouts)
-        symbols.append(sym)
-
-    for lbl in label_syms:
-        sym = {'n': lbl['name'], 't': 'label', 'sig': '', 'src': 'CommonLibF4'}
-        if lbl.get('id'):
-            sym['id'] = lbl['id']
-        _resolve_desktop_offsets(sym, lbl.get('id'), addr_lib)
-        _validate_symbol_offsets(sym, 'label', target_layouts)
-        symbols.append(sym)
+    symbols, vtable_classes = build_primary_symbols(
+        func_syms, label_syms, addr_lib, target_layouts)
+    validate_vtable_labels(symbols, target_layouts, vtable_classes)
 
     # Do not reinterpret ``__`` as a namespace separator.  Bethesda rename
     # corpora also use it to encode template arguments, inheritance paths,
@@ -502,10 +592,11 @@ def main():
         ae_id = ae_rva_to_id.get(rva)
         if ae_id is not None:
             entry['ai'] = ae_id
-            # The meh321 ID namespace is shared across OG/NG/AE/221, so an
-            # AE-derived ID resolves directly in the sibling DBs.  This is
-            # what lets NG and OG (previously fallback='[]') inherit the
-            # IDA name pool.  VR stays out: its community IDs are disjoint.
+            # The ID namespace is shared across OG/NG/AE/221/240 (and VR),
+            # so an AE-derived ID resolves directly in the sibling DBs.  This
+            # is what lets NG and OG (previously fallback='[]') inherit the
+            # IDA name pool.  VR stays out: these are name-only evidence with
+            # nothing in the VR binary to confirm them.
             ng = addr_lib.ng_db.get(ae_id)
             og = addr_lib.og_db.get(ae_id)
             v221 = addr_lib.db_221.get(ae_id)
@@ -686,7 +777,7 @@ def main():
     def _merge_bytesig_csv(fb_json, ver):
         """Merge refs/bytesig_ported_<short>.csv into a fallback pool.
 
-        Written by run_bytesig_port.py; makes
+        Written by bytesig_port_combined.py / run_bytesig_port.py; makes
         ported names survive regeneration instead of living only inside
         the previously-generated script.
         """

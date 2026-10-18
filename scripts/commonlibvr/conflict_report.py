@@ -38,26 +38,12 @@ from layout_diff import (  # noqa: E402
 import ghidra.program.model.data as D
 
 from clvr_config import IMPORT_PATH  # noqa: E402
+from gen_tuples import extract_list, legacy_structs  # noqa: E402
 
 CSV_PATH = os.environ.get('CLVR_CSV', IMPORT_PATH + '.conflicts.csv')
 
 
-def _extract_list(text, var):
-    """Return the python source of ``VAR = [ ... ]`` (bracket-balanced)."""
-    start = text.find(var + ' = [')
-    if start < 0:
-        return None
-    i = text.find('[', start)
-    depth = 0
-    for j in range(i, len(text)):
-        c = text[j]
-        if c == '[':
-            depth += 1
-        elif c == ']':
-            depth -= 1
-            if depth == 0:
-                return text[i:j + 1]
-    return None
+_extract_list = extract_list    # moved to gen_tuples (importable without Ghidra)
 
 
 def _gen_namespace(category):
@@ -250,7 +236,9 @@ def load_generated_structs(import_path=None):
     structs_src = _extract_list(text, 'STRUCTS')
     if not structs_src:
         raise RuntimeError('STRUCTS list not found in ' + (import_path or IMPORT_PATH))
-    return eval(structs_src)   # noqa: S307 (trusted generated file)
+    # The generator emits 8-field records; classify() below unpacks the
+    # older 6-field shape.  Unions/namespaces are not sequential layouts.
+    return legacy_structs(eval(structs_src))   # noqa: S307 (trusted generated file)
 
 
 def build_live(dtm):

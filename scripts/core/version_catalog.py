@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 VERSION_CATALOG = [
     ("se",    "skyrim",    "Skyrim SE 1.5.97",     "skyrim/se",    "CommonLibImport_SE.py",    "upstream"),
     ("ae",    "skyrim",    "Skyrim AE 1.6.1170",   "skyrim/ae",    "CommonLibImport_AE.py",    "upstream"),
+    ("ae16640", "skyrim",  "Skyrim AE 1.6.640",    "skyrim/16640", "CommonLibImport_AE_1_6_640.py", "fork"),
     ("ae17104", "skyrim",  "Skyrim AE 1.7.104",    "skyrim/17104", "CommonLibImport_AE_1_7_104.py", "fork"),
     ("svr",   "skyrim",    "Skyrim VR 1.4.15",     "skyrim/vr",    "CommonLibImport_VR.py",    "fork"),
     ("f4og",  "f4",        "Fallout 4 OG 1.10.163","f4/og",        "CommonLibImport_F4_OG.py", "fork"),
@@ -58,7 +59,7 @@ def target_for_importer(script_name: str) -> Optional[Tuple[str, str]]:
 # The ``--only`` selector each game's parser understands, keyed by catalog key.
 # Fallout NV and Starfield are single-runtime, so they take no selector.
 _ONLY_VERSION = {
-    "se": "se", "ae": "ae", "ae17104": "17104", "svr": "vr",
+    "se": "se", "ae": "ae", "ae16640": "16640", "ae17104": "17104", "svr": "vr",
     "f4og": "og", "f4ng": "ng", "f4ae": "ae", "f4221": "221", "f4240": "240", "f4vr": "vr",
     "fnv": None, "sf": None,
 }

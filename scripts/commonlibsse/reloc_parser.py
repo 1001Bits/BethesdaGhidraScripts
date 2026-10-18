@@ -3,7 +3,8 @@
 Parses raw C++ source files (headers and .cpp) with regex to extract:
   - REL::Relocation<T> vars with RELOCATION_ID(SE, AE) → function symbols
   - REL::Relocation<T> vars with Offset:: references  → function symbols
-  - RTTI_* / VTABLE_* labels from Offsets_RTTI.h / Offsets_VTABLE.h
+  - RTTI_* / NiRTTI_* / VTABLE_* labels from Offsets_RTTI.h /
+    Offsets_NiRTTI.h / Offsets_VTABLE.h
   - Offset:: namespace IDs from Offsets.h (handles #ifdef SE/AE sections)
   - Static method declarations in class bodies
 
@@ -37,9 +38,15 @@ _RELOC_VAR_RE = re.compile(
     r'(?:static\s+)?(?:const\s+)?REL::Relocation<[^>]+>\s+(\w+)\s*[\{(]'
 )
 
-# RTTI label: inline constexpr REL::ID RTTI_Name{ id };
+# RTTI / NiRTTI label.  The AE half of the headers is brace-initialised, the
+# SE half is call-initialised; both must parse or a whole runtime loses its
+# labels (group 2 = brace form, group 3 = paren form):
+#   inline constexpr REL::ID RTTI_Name{ id };
+#   inline constexpr REL::ID RTTI_Name(static_cast<std::uint64_t>(id));
 _RTTI_RE = re.compile(
-    r'inline\s+constexpr\s+REL::ID\s+(RTTI_\w+)\s*\{\s*(\d+)\s*\}'
+    r'inline\s+constexpr\s+REL::ID\s+((?:Ni)?RTTI_\w+)\s*'
+    r'(?:\{\s*(\d+)\s*\}'
+    r'|\(\s*(?:static_cast<std::uint64_t>\s*\(\s*)?(\d+)\s*\)?\s*\))'
 )
 
 # VTABLE label: inline constexpr std::array<REL::ID, N> VTABLE_Name{ REL::ID(x), ... };
@@ -56,9 +63,13 @@ _OFFSET_ID_RE = re.compile(
 _NS_OPEN_RE = re.compile(r'\bnamespace\s+(\w+)\s*\{')
 _NS_DECL_NOPAREN_RE = re.compile(r'^\s*namespace\s+(\w+)\s*$')
 
-# Class/struct opening (with or without same-line brace)
-_CLASS_RE = re.compile(r'\b(?:class|struct)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*?)?\{')
-_CLASS_DECL_RE = re.compile(r'^\s*(?:class|struct)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{;]*?)?\s*$')
+# Class/struct opening (with or without same-line brace).  ``alignas(16)`` /
+# ``__declspec(novtable)`` may sit between the keyword and the name.
+_DECLSPEC = r'(?:(?:__declspec|alignas)\s*\([^)]*\)\s*)*'
+_CLASS_RE = re.compile(r'\b(?:class|struct)\s+' + _DECLSPEC +
+                       r'(\w+)\s*(?:final\s*)?(?::\s*[^{]*?)?\{')
+_CLASS_DECL_RE = re.compile(r'^\s*(?:class|struct)\s+' + _DECLSPEC +
+                            r'(\w+)\s*(?:final\s*)?(?::\s*[^{;]*?)?\s*$')
 
 # Method definition inside a class body (for header inline methods)
 # Matches with same-line brace: void GetSingleton() {
@@ -215,10 +226,13 @@ def _scan_header_relocations(
 
     Returns (func_syms, label_syms, static_methods).
     """
+    # The merged ``offset_id_map`` mixes both ID namespaces; resolving one
+    # half through it would hand an AE ID to the SE database (or vice versa).
+    # A missing per-namespace map resolves nothing.
     if se_offset_map is None:
-        se_offset_map = offset_id_map
+        se_offset_map = {}
     if ae_offset_map is None:
-        ae_offset_map = offset_id_map
+        ae_offset_map = {}
     func_syms: List[dict] = []
     label_syms: List[dict] = []
     static_methods: Set[Tuple[str, str]] = set()
@@ -267,7 +281,8 @@ def _scan_header_relocations(
             # SkyrimVR (1.4.15) shares the SE-derived ID namespace, so the
             # VR DB is keyed on se_id.
             vr_off = addr_lib.vr_db.get(se_id) if hasattr(addr_lib, 'vr_db') else None
-            if not se_off and not ae_off and not vr_off:
+            if (not se_off and not ae_off and not vr_off
+                    and not _ae_id_known(addr_lib, ae_id)):
                 prev_line = line
                 continue
 
@@ -295,6 +310,7 @@ def _scan_header_relocations(
                 'ret': '', 'params': '',
                 'is_static': False,
                 'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
+                'se_id': se_id or None, 'ae_id': ae_id or None,
             })
 
         # REL::Relocation using Offset:: reference (no RELOCATION_ID)
@@ -320,7 +336,8 @@ def _scan_header_relocations(
             ae_off = addr_lib.ae_db.get(ae_id) if ae_id else None
             vr_off = (addr_lib.vr_db.get(se_id) if (se_id and hasattr(addr_lib, 'vr_db'))
                       else None)
-            if not se_off and not ae_off and not vr_off:
+            if (not se_off and not ae_off and not vr_off
+                    and not _ae_id_known(addr_lib, ae_id)):
                 prev_line = line
                 continue
 
@@ -344,6 +361,7 @@ def _scan_header_relocations(
                 'ret': '', 'params': '',
                 'is_static': False,
                 'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
+                'se_id': se_id or None, 'ae_id': ae_id or None,
             })
 
         prev_line = line
@@ -363,35 +381,10 @@ def _scan_offsets_file(file_path: str) -> Tuple[Dict[str, int], Dict[str, int]]:
     except OSError:
         return {}, {}
 
-    has_ifdef = 'SKYRIM_SUPPORT_AE' in content
-
+    ae_text, se_text, has_ifdef = _split_ae_se_sections(content)
     if has_ifdef:
-        lines = content.split('\n')
-        section = None
-        ae_lines = []
-        se_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('#ifdef') and 'SKYRIM_SUPPORT_AE' in stripped:
-                section = 'ae'
-                continue
-            elif stripped.startswith('#else') and section == 'ae':
-                section = 'se'
-                continue
-            elif stripped.startswith('#endif') and section == 'se':
-                section = None
-                continue
-            if section == 'ae':
-                ae_lines.append(line)
-            elif section == 'se':
-                se_lines.append(line)
-
-        ae_map = _parse_offset_section('\n'.join(ae_lines))
-        se_map = _parse_offset_section('\n'.join(se_lines))
-        return se_map, ae_map
-    else:
-        m = _parse_offset_section(content)
-        return m, {}
+        return _parse_offset_section(se_text), _parse_offset_section(ae_text)
+    return _parse_offset_section(content), {}
 
 
 _NS_DECL_RE = re.compile(r'\bnamespace\s+(\w+)')
@@ -449,17 +442,101 @@ def _parse_offset_section(text: str) -> Dict[str, int]:
     return offset_map
 
 
+def _split_ae_se_sections(content: str) -> Tuple[str, str, bool]:
+    """Split a header on its ``SKYRIM_SUPPORT_AE`` conditional.
+
+    Returns ``(ae_text, se_text, has_conditional)``.  The two halves are
+    DIFFERENT address-library ID namespaces (SE 1.5.97 + VR 1.4.15 share one,
+    AE 1.6.x / 1.7.x share another), so an ID must be looked up only in the
+    databases of the half it was written in.
+    """
+    if 'SKYRIM_SUPPORT_AE' not in content:
+        return '', content, False
+    ae_lines: List[str] = []
+    se_lines: List[str] = []
+    section = None   # None | 'ae' | 'se' | 'other' (an #elif branch: neither)
+    first = None     # the half the opening #ifdef/#ifndef selected
+    nested = 0       # unrelated #if blocks inside the conditional
+    for line in content.split('\n'):
+        stripped = line.strip()
+        directive = re.match(r'#\s*(ifdef|ifndef|if|else|elif|endif)\b', stripped)
+        if directive:
+            word = directive.group(1)
+            if section is None:
+                if word in ('ifdef', 'ifndef') and 'SKYRIM_SUPPORT_AE' in stripped:
+                    section = first = 'ae' if word == 'ifdef' else 'se'
+                    nested = 0
+                    continue
+            elif word in ('ifdef', 'ifndef', 'if'):
+                nested += 1
+            elif word == 'endif':
+                if nested:
+                    nested -= 1
+                else:
+                    section = None
+                    continue
+            elif word == 'elif' and not nested:
+                # Its condition is something else entirely: the lines belong
+                # to neither half (fail closed rather than stay in the first).
+                section = 'other'
+                continue
+            elif word == 'else' and not nested:
+                section = 'se' if first == 'ae' else 'ae'
+                continue
+        if section == 'ae':
+            ae_lines.append(line)
+        elif section == 'se':
+            se_lines.append(line)
+    return '\n'.join(ae_lines), '\n'.join(se_lines), True
+
+
+# Databases keyed on the AE ID namespace (1.6.1170 is the primary ``ae_db``).
+_AE_NAMESPACE_DBS = ('ae_db', 'db_16640', 'db_17104')
+
+
+def _ae_id_known(addr_lib, ae_id) -> bool:
+    """True when ``ae_id`` resolves in ANY AE-namespace runtime.
+
+    An ID that 1.6.1170 dropped can still exist in 1.6.640; the symbol must
+    survive the scan so the generator can resolve that runtime from the ID.
+    """
+    if not ae_id:
+        return False
+    return any(ae_id in (getattr(addr_lib, attr, None) or {})
+               for attr in _AE_NAMESPACE_DBS)
+
+
+def _new_label(name: str) -> dict:
+    return {'name': name, 'se_off': None, 'ae_off': None, 'vr_off': None,
+            'se_id': None, 'ae_id': None}
+
+
+def _iter_label_ids(text: str):
+    """Yield ``(label_name, id, vtable_class, vtable_index)`` for one section."""
+    for m in _RTTI_RE.finditer(text):
+        yield m.group(1), int(m.group(2) or m.group(3)), None, None
+    for m in _VTABLE_RE.finditer(text):
+        base_name = m.group(2)
+        ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
+        for idx, id_ in enumerate(ids):
+            lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
+            yield lname, id_, base_name[len('VTABLE_'):], idx
+
+
 def _scan_rtti_vtable_file(
     file_path: str,
     addr_lib,
 ) -> List[dict]:
-    """Parse Offsets_RTTI.h or Offsets_VTABLE.h for label symbols.
+    """Parse Offsets_RTTI.h / Offsets_NiRTTI.h / Offsets_VTABLE.h for labels.
 
     These files have the structure:
         #ifdef SKYRIM_SUPPORT_AE   (AE IDs)
         #else                      (SE IDs)
         #endif
-    We need to track which section each entry is in.
+    AE-section IDs are resolved ONLY in AE-namespace databases and SE-section
+    IDs ONLY in ``se_db`` / ``vr_db``.  Each label carries the ID it was
+    declared with (``se_id`` / ``ae_id``) so later stages never have to
+    recover it from an RVA.
     """
     labels: Dict[str, dict] = {}
 
@@ -469,101 +546,32 @@ def _scan_rtti_vtable_file(
     except OSError:
         return list(labels.values())
 
-    has_ifdef = 'SKYRIM_SUPPORT_AE' in content
+    ae_text, se_text, _has_ifdef = _split_ae_se_sections(content)
+    has_vr = hasattr(addr_lib, 'vr_db')
 
-    if has_ifdef:
-        lines = content.split('\n')
-        section = None  # None until we hit the ifdef
-        ae_chunk = []
-        se_chunk = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('#ifdef') and 'SKYRIM_SUPPORT_AE' in stripped:
-                section = 'ae'
-                continue
-            elif stripped.startswith('#else') and section == 'ae':
-                section = 'se'
-                continue
-            elif stripped.startswith('#endif') and section == 'se':
-                section = None
-                continue
+    for name, id_, vt_class, vt_index in _iter_label_ids(ae_text):
+        if not _ae_id_known(addr_lib, id_):
+            continue
+        entry = labels.setdefault(name, _new_label(name))
+        entry['ae_id'] = id_
+        off = addr_lib.ae_db.get(id_)
+        if off:
+            entry['ae_off'] = off
+        if vt_class is not None:
+            entry['vtable_class'], entry['vtable_index'] = vt_class, vt_index
 
-            if section == 'ae':
-                ae_chunk.append(line)
-            elif section == 'se':
-                se_chunk.append(line)
-
-        ae_text = '\n'.join(ae_chunk)
-        se_text = '\n'.join(se_chunk)
-
-        for m in _RTTI_RE.finditer(ae_text):
-            name = m.group(1)
-            off = addr_lib.ae_db.get(int(m.group(2)))
-            if off:
-                labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
-                labels[name]['ae_off'] = off
-
-        for m in _RTTI_RE.finditer(se_text):
-            name = m.group(1)
-            sid = int(m.group(2))
-            off = addr_lib.se_db.get(sid)
-            vr_off = addr_lib.vr_db.get(sid) if hasattr(addr_lib, 'vr_db') else None
-            if off or vr_off:
-                labels.setdefault(name, {'name': name, 'se_off': None,
-                                         'ae_off': None, 'vr_off': None})
-                if off:    labels[name]['se_off'] = off
-                if vr_off: labels[name]['vr_off'] = vr_off
-
-        for m in _VTABLE_RE.finditer(ae_text):
-            base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
-            for idx, id_ in enumerate(ids):
-                off = addr_lib.ae_db.get(id_)
-                if not off:
-                    continue
-                lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None,
-                                          'ae_off': None, 'vr_off': None})
-                labels[lname]['ae_off'] = off
-
-        for m in _VTABLE_RE.finditer(se_text):
-            base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
-            for idx, id_ in enumerate(ids):
-                off = addr_lib.se_db.get(id_)
-                vr_off = addr_lib.vr_db.get(id_) if hasattr(addr_lib, 'vr_db') else None
-                if not off and not vr_off:
-                    continue
-                lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None,
-                                          'ae_off': None, 'vr_off': None})
-                if off:    labels[lname]['se_off'] = off
-                if vr_off: labels[lname]['vr_off'] = vr_off
-    else:
-        for m in _RTTI_RE.finditer(content):
-            name = m.group(1)
-            sid = int(m.group(2))
-            off = addr_lib.se_db.get(sid)
-            vr_off = addr_lib.vr_db.get(sid) if hasattr(addr_lib, 'vr_db') else None
-            if off or vr_off:
-                labels.setdefault(name, {'name': name, 'se_off': None,
-                                         'ae_off': None, 'vr_off': None})
-                if off:    labels[name]['se_off'] = off
-                if vr_off: labels[name]['vr_off'] = vr_off
-
-        for m in _VTABLE_RE.finditer(content):
-            base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
-            for idx, id_ in enumerate(ids):
-                off = addr_lib.se_db.get(id_)
-                vr_off = addr_lib.vr_db.get(id_) if hasattr(addr_lib, 'vr_db') else None
-                if not off and not vr_off:
-                    continue
-                lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None,
-                                          'ae_off': None, 'vr_off': None})
-                if off:    labels[lname]['se_off'] = off
-                if vr_off: labels[lname]['vr_off'] = vr_off
+    # A header without the conditional is SE-namespace (powerof3 default).
+    for name, id_, vt_class, vt_index in _iter_label_ids(se_text):
+        off = addr_lib.se_db.get(id_)
+        vr_off = addr_lib.vr_db.get(id_) if has_vr else None
+        if not off and not vr_off:
+            continue
+        entry = labels.setdefault(name, _new_label(name))
+        entry['se_id'] = id_
+        if off:    entry['se_off'] = off
+        if vr_off: entry['vr_off'] = vr_off
+        if vt_class is not None:
+            entry['vtable_class'], entry['vtable_index'] = vt_class, vt_index
 
     return list(labels.values())
 
@@ -581,10 +589,13 @@ def _scan_src_relocations(
     root_namespace: str = 'RE',
 ) -> List[dict]:
     """Scan CommonLibSSE src/**/*.cpp for REL::Relocation + RELOCATION_ID."""
+    # The merged ``offset_id_map`` mixes both ID namespaces; resolving one
+    # half through it would hand an AE ID to the SE database (or vice versa).
+    # A missing per-namespace map resolves nothing.
     if se_offset_map is None:
-        se_offset_map = offset_id_map
+        se_offset_map = {}
     if ae_offset_map is None:
-        ae_offset_map = offset_id_map
+        ae_offset_map = {}
     func_syms: List[dict] = []
 
     cpp_files = sorted(glob.glob(os.path.join(src_dir, '**', '*.cpp'), recursive=True))
@@ -638,7 +649,11 @@ def _scan_src_relocations(
                 ae_id = int(reloc_m.group(2))
                 se_off = addr_lib.se_db.get(se_id)
                 ae_off = addr_lib.ae_db.get(ae_id)
-                if not se_off and not ae_off:
+                # SkyrimVR (1.4.15) shares the SE ID namespace: key on se_id,
+                # exactly like the header scanner.
+                vr_off = addr_lib.vr_db.get(se_id) if hasattr(addr_lib, 'vr_db') else None
+                if (not se_off and not ae_off and not vr_off
+                        and not _ae_id_known(addr_lib, ae_id)):
                     prev_line = line
                     continue
 
@@ -664,7 +679,8 @@ def _scan_src_relocations(
                     'class_': sym_class,
                     'ret': '', 'params': '',
                     'is_static': False,
-                    'se_off': se_off, 'ae_off': ae_off,
+                    'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
+                    'se_id': se_id or None, 'ae_id': ae_id or None,
                 })
 
             # Offset:: reference
@@ -685,7 +701,10 @@ def _scan_src_relocations(
                     continue
                 se_off = addr_lib.se_db.get(se_id) if se_id else None
                 ae_off = addr_lib.ae_db.get(ae_id) if ae_id else None
-                if not se_off and not ae_off:
+                vr_off = (addr_lib.vr_db.get(se_id)
+                          if (se_id and hasattr(addr_lib, 'vr_db')) else None)
+                if (not se_off and not ae_off and not vr_off
+                        and not _ae_id_known(addr_lib, ae_id)):
                     prev_line = line
                     continue
 
@@ -707,7 +726,8 @@ def _scan_src_relocations(
                     'class_': sym_class,
                     'ret': '', 'params': '',
                     'is_static': False,
-                    'se_off': se_off, 'ae_off': ae_off,
+                    'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
+                    'se_id': se_id or None, 'ae_id': ae_id or None,
                 })
 
             prev_line = line
@@ -718,6 +738,19 @@ def _scan_src_relocations(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+_LABEL_HEADERS = ('Offsets_RTTI.h', 'Offsets_NiRTTI.h', 'Offsets_VTABLE.h')
+
+
+def _func_dedup_key(func_sym: dict):
+    """``(se_off, ae_off)``; symbols that resolve in neither primary database
+    (VR-only, or an AE ID that only 1.6.640 still has) are keyed by their IDs
+    so they do not all collapse into one ``(None, None)`` entry."""
+    key = (func_sym.get('se_off'), func_sym.get('ae_off'))
+    if key == (None, None):
+        return ('ids', func_sym.get('se_id'), func_sym.get('ae_id'))
+    return key
+
 
 def collect_relocations(
     re_include: str,
@@ -744,8 +777,8 @@ def collect_relocations(
     if verbose:
         print(f'  Parsed {len(se_offset_map)} SE + {len(ae_offset_map)} AE offset IDs from Offsets.h')
 
-    # 2. Parse RTTI/VTABLE offset headers
-    for fname in ('Offsets_RTTI.h', 'Offsets_VTABLE.h'):
+    # 2. Parse RTTI/NiRTTI/VTABLE offset headers
+    for fname in _LABEL_HEADERS:
         fpath = os.path.join(re_include, fname)
         if os.path.isfile(fpath):
             labels = _scan_rtti_vtable_file(fpath, addr_lib)
@@ -757,7 +790,7 @@ def collect_relocations(
     h_files = sorted(glob.glob(os.path.join(re_include, '**', '*.h'), recursive=True))
     for h_path in h_files:
         basename = os.path.basename(h_path)
-        if basename in ('Offsets.h', 'Offsets_RTTI.h', 'Offsets_VTABLE.h'):
+        if basename == 'Offsets.h' or basename in _LABEL_HEADERS:
             continue
         funcs, labels, statics = _scan_header_relocations(h_path, addr_lib, offset_id_map,
                                                             se_offset_map=se_offset_map,
@@ -775,7 +808,7 @@ def collect_relocations(
     seen = set()
     deduped_funcs = []
     for f in all_func_syms:
-        key = (f.get('se_off'), f.get('ae_off'))
+        key = _func_dedup_key(f)
         if key not in seen:
             seen.add(key)
             deduped_funcs.append(f)
@@ -815,7 +848,7 @@ def collect_src_relocations(
     seen = set()
     deduped = []
     for f in func_syms:
-        key = (f.get('se_off'), f.get('ae_off'))
+        key = _func_dedup_key(f)
         if key not in seen:
             seen.add(key)
             deduped.append(f)

@@ -8,7 +8,7 @@ AE (1.11.191) / VR (1.2.72) / 1.11.221 / 1.11.240.  Pick the version with
 file and disambiguates the binary inside a combined project by its
 version-tagged filename.
 
-The combined ``ExampleProject.gpr`` / ``F4VR.gpr`` projects under
+The combined ``Combined.gpr`` / ``F4VR.gpr`` projects under
 ``C:/GhidraProjects`` typically hold several Fallout4 binaries imported
 as ``Fallout4_<VER>_<patch>.exe`` (e.g. ``Fallout4_AE_1_11_191.exe``,
 ``Fallout4VR_1_2_72.exe``).  ``--version`` matches the version tag.
@@ -32,7 +32,7 @@ CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
 from importer_binding import ImporterBindingError, verify_importer_for_program
 from pyghidra_result import end_outer_transaction, require_script_success
-from ghidra_project import open_user_project
+from ghidra_project import open_program, open_user_project
 
 PROJECT_DIR  = Path(r"C:/GhidraProjects/Fallout")
 PROJECT_NAME = "F4VR"
@@ -154,7 +154,7 @@ def main():
         print(f"Found program: {domain_file.getPathname()}")
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
             try:
                 verify_importer_for_program(script_path, program)

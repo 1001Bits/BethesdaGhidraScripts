@@ -15,7 +15,6 @@ The classify/aggregate functions are pure (no Ghidra, no I/O); the runner at the
 bottom does the file join. Unit-tested.
 """
 import csv
-import json
 import os
 
 RUNTIMES = ('se', 'ae', 'vr')
@@ -96,11 +95,10 @@ _VERDICT_ORDER = {'RUNTIME_SPECIFIC': 0, 'RECONCILE': 1, 'APPLY_GAP': 2, 'MATCH'
 
 
 def _load_symbols(import_path):
-    with open(import_path) as f:
-        for line in f:
-            if line.startswith('SYMBOLS = '):
-                return json.loads(line[len('SYMBOLS = '):])
-    raise RuntimeError('SYMBOLS not found in ' + import_path)
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from generated_symbols import load_symbols
+    return load_symbols(import_path)
 
 
 def _load_deltas(csv_path):

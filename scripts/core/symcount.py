@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 
 def main():
@@ -25,7 +26,7 @@ def main():
     if "/" in pname:
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         root = project.getProjectData().getRootFolder()
         match = []
 
@@ -40,7 +41,7 @@ def main():
             print("not found")
             return
         consumer = java.lang.Object()
-        program = match[0].getDomainObject(consumer, True, False, monitor)
+        program = open_program(match[0], consumer, monitor, write=False)
         try:
             fm = program.getFunctionManager()
             total = named = 0

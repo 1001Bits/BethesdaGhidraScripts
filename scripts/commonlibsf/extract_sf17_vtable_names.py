@@ -22,6 +22,10 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parent.parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 DEFAULT_IDS_VTABLE = (
     REPO_DIR / "extern" / "CommonLibSF" / "include" / "RE" /
     "IDs_VTABLE.h"
@@ -218,8 +222,7 @@ def main():
     monitor = ConsoleTaskMonitor()
     rows = []
     program_path = ""
-    with pyghidra.open_project(
-            args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         # The pathname is explicit; unlike the old script there is no name or
         # Steamless-prefix fallback that could select another Starfield build.
         domain_file = project.getProjectData().getFile(args.program)
@@ -228,7 +231,7 @@ def main():
                 args.program
             ))
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, False, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         try:
             actual_sha = (program.getExecutableSHA256() or "").lower()
             if not actual_sha:

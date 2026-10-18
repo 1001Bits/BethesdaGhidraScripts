@@ -23,6 +23,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO / "tools" / "ghidra"))
+import sys  # noqa: E402
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 LEAD_RE = re.compile(r'^((?:hk|bhk)[A-Za-z0-9_]+)::')
 OVERRIDE = {'void *', 'pointer', 'undefined8 *', 'undefined4 *',
             'undefined', 'undefined *', 'void'}
@@ -154,7 +159,8 @@ def run(program, dry_run, monitor):
         commit = True
     finally:
         if tx is not None:
-            program.endTransaction(tx, commit)
+            if not program.endTransaction(tx, commit) and commit:
+                raise RuntimeError("transaction did not commit; nothing was saved")
 
     print("havok-this (%s): %d funcs matched (names + %d vtable methods in "
           "%d labelled vtables), %d this-typed, %d skipped, %d conflicts%s"
@@ -186,7 +192,7 @@ def main():
     if "/" in pname:
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         root = project.getProjectData().getRootFolder()
         match = []
 
@@ -200,7 +206,7 @@ def main():
         if not match:
             print("not found:", args.program_path); return
         consumer = java.lang.Object()
-        program = match[0].getDomainObject(consumer, not args.dry_run, False, monitor)
+        program = open_program(match[0], consumer, monitor, write=not args.dry_run)
         try:
             run(program, args.dry_run, monitor)
         finally:

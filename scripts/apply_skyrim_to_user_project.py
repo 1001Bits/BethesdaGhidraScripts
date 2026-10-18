@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Apply a CommonLibImport_<SE|AE|AE_1_7_104|VR>.py script to the matching Skyrim
-binary in the user's Ghidra project via pyghidra.
+"""Apply a CommonLibImport_<SE|AE|AE_1_6_640|AE_1_7_104|VR>.py script to the
+matching Skyrim binary in the user's Ghidra project via pyghidra.
 
-Supports SE / AE 1.6.1170 / AE 1.7.104 / VR.  Picks the CommonLibImport file by ``--version``
-and disambiguates the binary inside a combined project by its
-version-tagged filename.
+Supports SE / AE 1.6.640 / AE 1.6.1170 / AE 1.7.104 / VR.  Picks the
+CommonLibImport file by ``--version`` and disambiguates the binary inside a
+combined project by its version-tagged filename.
 
 Defaults to the C:/GhidraProjects/Skyrim/<SkyrimSE|SkyrimAE|skyrimvr>.gpr
 project layout but accepts ``--project-dir`` + ``--project-name`` for
@@ -28,7 +28,7 @@ CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
 from importer_binding import ImporterBindingError, verify_importer_for_program
 from pyghidra_result import end_outer_transaction, require_script_success
-from ghidra_project import open_user_project
+from ghidra_project import open_program, open_user_project
 
 
 # Version → (CommonLibImport filename, default program basename,
@@ -39,6 +39,8 @@ VERSIONS = {
             ['skyrimse_1_5_97', '1_5_97', '1.5.97', '_se_', '_se.']),
     'ae':  ('CommonLibImport_AE.py',  'SkyrimSE.exe', 'SkyrimAE',
             ['skyrimae', '1_6_1170', '1.6.1170', 'gog edition', '_ae_', '_ae.']),
+    '16640': ('CommonLibImport_AE_1_6_640.py', 'SkyrimSE.exe', 'SkyrimAE16640',
+              ['skyrimae_1_6_640', '1_6_640', '1.6.640', '_16640.exe', '_16640_']),
     '17104': ('CommonLibImport_AE_1_7_104.py', 'SkyrimSE.exe', 'SkyrimAE17104',
               ['skyrimae_1_7_104', '1_7_104', '1.7.104', '_17104.exe', '_17104_']),
     'vr':  ('CommonLibImport_VR.py',  'SkyrimVR.exe', 'skyrimvr',
@@ -49,7 +51,7 @@ VERSIONS = {
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--version', required=True, choices=sorted(VERSIONS),
-                    help="Skyrim variant to apply (se/ae/17104/vr)")
+                    help="Skyrim variant to apply (se/ae/16640/17104/vr)")
     ap.add_argument('--project-dir',  default=None,
                     help="Directory containing the .gpr (default: "
                          "C:/GhidraProjects/Skyrim)")
@@ -148,7 +150,7 @@ def main():
         print(f"Found program: {domain_file.getPathname()}")
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
             try:
                 verify_importer_for_program(script_path, program)

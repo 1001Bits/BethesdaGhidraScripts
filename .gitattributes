@@ -5,3 +5,8 @@ scripts/commonlibf4/refs/f4_221_pdb_publics.txt -text
 scripts/commonlibf4/refs/f4_240_pdb_publics.txt -text
 scripts/commonlibf4/refs/bytesig_ported_221.csv -text
 scripts/commonlibf4/refs/bytesig_ported_og.csv -text
+# Sidecar-bound / SHA-pinned evidence CSVs (*.identity.json or a pinned
+# digest in the consuming generator) need the same byte-for-byte checkout.
+scripts/core/refs/*.csv -text
+scripts/commonlibsf/**/sf116_named_from_combined_final.csv -text
+scripts/commonlibsf/refs/*.csv.gz -text

@@ -34,16 +34,81 @@ def _parser_module():
     return module
 
 
-def test_desktop_resolution_never_uses_coincidental_vr_id():
+def _namespace_lib():
     lib = _module().F4AddressLibrary()
-    lib.og_db = {7: 0x1000}
-    lib.ng_db = {7: 0x2000}
-    lib.ae_db = {7: 0x3000}
-    lib.db_221 = {7: 0x4000}
-    lib.vr_db = {7: 0xDEADBEEF}
-    assert lib.resolve_desktop(7) == {
-        'og': 0x1000, 'ng': 0x2000, 'a': 0x3000, '221': 0x4000,
-    }
+    legacy, ng_era = 7, 2230121
+    lib.og_db = {legacy: 0x1000, ng_era: 0xBAD1}      # a real OG db has no id >= 2M
+    lib.vr_db = {legacy: 0x5000, ng_era: 0xBAD2}
+    lib.ng_db = {legacy: 0x2000, ng_era: 0x2100}
+    lib.ae_db = {legacy: 0x3000, ng_era: 0x3100}
+    lib.db_221 = {legacy: 0x4000, ng_era: 0x4100}
+    return lib, legacy, ng_era
+
+
+def test_ng_range_ids_never_resolve_in_og_or_vr():
+    # Fallout 4 has ONE ID namespace: legacy IDs (< 1.6M) mean the same thing
+    # in OG / NG / AE / VR (the VR CSV is keyed on OG IDs); IDs >= 2M exist
+    # only in NG and later.  The belief this test used to encode -- "a desktop
+    # ID found in vr_db is a coincidental collision" -- was numerically false
+    # and cost ~9.9k valid VR vtable labels.
+    lib, legacy, ng_era = _namespace_lib()
+    parser = _parser_module()
+
+    # the desktop half never reads vr_db on its own ...
+    assert lib.resolve_desktop(legacy) == {
+        'og': 0x1000, 'ng': 0x2000, 'a': 0x3000, '221': 0x4000}
+
+    # ... VR is opt-in (the generator enables it only with the VR exe staged)
+    conservative, staged = {}, {}
+    parser._resolve_desktop_offsets(conservative, legacy, lib)
+    parser._resolve_desktop_offsets(staged, legacy, lib, allow_vr=True)
+    assert 'v' not in conservative
+    assert staged == {'og': 0x1000, 'ng': 0x2000, 'a': 0x3000,
+                      '221': 0x4000, 'v': 0x5000}
+
+    # the rule that stays true: an NG-range ID yields no OG and no VR offset
+    modern = {}
+    parser._resolve_desktop_offsets(modern, ng_era, lib, allow_vr=True)
+    assert modern == {'ng': 0x2100, 'a': 0x3100, '221': 0x4100}
+
+
+def test_relocation_id_pair_resolves_each_half_in_its_own_range():
+    lib, legacy, ng_era = _namespace_lib()
+    parser = _parser_module()
+    pair = {'id': ng_era, 'og_id': legacy, 'ng_id': ng_era}
+
+    staged = {}
+    parser.resolve_parsed_offsets(staged, pair, lib, allow_vr=True)
+    # og id -> OG + VR only; ng id -> NG / AE / 1.11.221 (/240) only
+    assert staged == {'og': 0x1000, 'v': 0x5000,
+                      'ng': 0x2100, 'a': 0x3100, '221': 0x4100}
+
+    unstaged = {}
+    parser.resolve_parsed_offsets(unstaged, pair, lib)
+    assert 'v' not in unstaged and unstaged['og'] == 0x1000
+
+    # an og slot that carries an NG-range number is not a legacy ID
+    swapped = {}
+    parser.resolve_parsed_offsets(
+        swapped, {'id': ng_era, 'og_id': ng_era, 'ng_id': 0}, lib, allow_vr=True)
+    assert swapped == {}
+
+
+def test_vr_offsets_are_not_attached_without_the_staged_vr_exe():
+    lib, legacy, ng_era = _namespace_lib()
+    parser = _parser_module()
+    labels = [{'name': 'VTABLE_Actor', 'id': legacy, 'vtable_class': 'Actor',
+               'vtable_index': 0}]
+    funcs = [{'name': 'AddPerk', 'class_': 'Actor', 'id': ng_era}]
+
+    symbols, classes = parser.build_primary_symbols(funcs, labels, lib, {})
+    assert classes == {'VTABLE_Actor': 'Actor'}
+    assert all('v' not in s for s in symbols)       # VR exe not staged: as before
+    by_name = {s['n']: s for s in symbols}
+    assert by_name['Actor::AddPerk'] == {
+        'n': 'Actor::AddPerk', 't': 'func', 'sig': '', 'src': 'CommonLibF4',
+        'id': ng_era, 'ng': 0x2100, 'a': 0x3100, '221': 0x4100}
+    assert by_name['VTABLE_Actor']['og'] == 0x1000
 
 
 def test_flat_database_rejects_truncation_and_unsorted_ids(tmp_path):

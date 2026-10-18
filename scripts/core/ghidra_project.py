@@ -75,8 +75,11 @@ def lock_message(project_dir, project_name) -> str:
         lines.extend('  {}'.format(path) for path in held)
         lines.append('')
         lines.append('Close any open Ghidra window, then retry.  If no Ghidra is')
-        lines.append('running, the session that made these files crashed: delete')
-        lines.append('them and retry.')
+        lines.append('running, the session that made these files crashed.  Open the')
+        lines.append('project in the Ghidra GUI FIRST and accept or discard any')
+        lines.append('"recover unsaved changes?" offer -- a script that opens the')
+        lines.append('program discards that recovery data -- then delete the lock')
+        lines.append('files and retry.')
     else:
         lines.append('No lock file is present, so the holder is a JVM that has not')
         lines.append('exited yet.  Nothing is wrong and nothing was written --')
@@ -101,6 +104,87 @@ def open_user_project(project_dir, project_name):
         print('ERROR: ' + lock_message(project_dir, project_name))
         print()
         raise SystemExit(PROJECT_LOCKED_EXIT) from exc
+
+
+class UnsavedRecoveryError(RuntimeError):
+    """The program has crash-recovery data that opening it would destroy."""
+
+
+def open_program(domain_file, consumer, monitor, write):
+    """Open a program without ever destroying the user's crash-recovery data.
+
+    ``DomainFile.getDomainObject(consumer, okToUpgrade, okToRecover, monitor)``
+    with ``okToRecover=False`` silently DELETES any recovery snapshot Ghidra
+    kept for unsaved GUI work (``DBHandle``: "if false, any existing recovery
+    data will be deleted").  So refuse while a snapshot exists, and open
+    dry-run / read-only consumers through ``getReadOnlyDomainObject``, which
+    touches neither recovery data nor the database version.
+    """
+    if domain_file.canRecover():
+        raise UnsavedRecoveryError(
+            "{} has unsaved crash-recovery data from a Ghidra session that did "
+            "not exit cleanly.  Open it in the Ghidra GUI and accept or discard "
+            "the recovery, save, close Ghidra, then retry.  Nothing was "
+            "touched.".format(domain_file.getPathname()))
+    if write:
+        return domain_file.getDomainObject(consumer, True, False, monitor)
+    from ghidra.framework.model import DomainFile
+    return domain_file.getReadOnlyDomainObject(
+        consumer, DomainFile.DEFAULT_VERSION, monitor)
+
+
+def find_program(root, program_path):
+    """The one domain file at exactly ``program_path``; ambiguity is an error."""
+    wanted = "/" + str(program_path).strip("/")
+    hits = []
+
+    def walk(folder, prefix=""):
+        for domain_file in folder.getFiles():
+            if prefix + "/" + str(domain_file.getName()) == wanted:
+                hits.append(domain_file)
+        for child in folder.getFolders():
+            walk(child, prefix + "/" + str(child.getName()))
+
+    walk(root)
+    if len(hits) > 1:
+        raise RuntimeError("ambiguous project path {}".format(wanted))
+    return hits[0] if hits else None
+
+
+class AmbiguousProgramError(RuntimeError):
+    """More than one project file matches a by-name program lookup."""
+
+
+def find_program_by_name(root, program_name, program_path=None):
+    """The one program to import into; never "whichever came first".
+
+    With ``program_path`` this is :func:`find_program` (exact path).  Without
+    it, files named ``program_name`` -- or Steamless-style variants such as
+    ``Game.exe.unpacked.exe`` -- are collected across the WHOLE tree, and more
+    than one hit raises :class:`AmbiguousProgramError` listing them: a project
+    that holds several builds must be addressed by exact path.
+    """
+    if program_path is not None:
+        return find_program(root, program_path)
+    stem = str(program_name).rsplit('.', 1)[0]
+    hits = []
+
+    def walk(folder, prefix=""):
+        for domain_file in folder.getFiles():
+            name = str(domain_file.getName())
+            if name == program_name or (
+                    name.startswith(stem) and name.lower().endswith('.exe')):
+                hits.append((prefix + "/" + name, domain_file))
+        for child in folder.getFolders():
+            walk(child, prefix + "/" + str(child.getName()))
+
+    walk(root)
+    if len(hits) > 1:
+        raise AmbiguousProgramError(
+            "{} programs match {!r}; pass --program-path with the exact one:"
+            "\n  {}".format(len(hits), program_name,
+                            "\n  ".join(sorted(path for path, _ in hits))))
+    return hits[0][1] if hits else None
 
 
 def ensure_ghidra_env(ghidra_dir=None) -> None:

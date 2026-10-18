@@ -26,5 +26,9 @@ def run(program=None):
     return run_shared(program=program, lock_path=LOCK_PATH)
 
 
-if "currentProgram" in globals():
-    run(currentProgram)  # noqa: F821
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run(script_program(globals()))
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line("apply_fallout4_ckpe_evidence"))

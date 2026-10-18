@@ -13,6 +13,7 @@ Usage:
 Layout:
   exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
   exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
+  exes/skyrim/16640/SkyrimSE.exe           -> CommonLibImport_AE_1_6_640.py
   exes/skyrim/17104/SkyrimSE.exe           -> CommonLibImport_AE_1_7_104.py
   exes/skyrim/vr/SkyrimVR.exe              -> CommonLibImport_VR.py
   exes/f4/og/Fallout4.exe                  -> CommonLibImport_F4_OG.py
@@ -142,6 +143,7 @@ SPOT_CHECKS_OVERRIDES = {
 
 
 sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
+from ghidra_project import open_program  # noqa: E402
 from binary_identity import (  # noqa: E402
     canonical_identity,
     inspect_pe,
@@ -192,6 +194,8 @@ def _enrichment_stage_action(stage: str, script_sha: str,
 def script_for(game: str, version: str) -> Path:
     if game == 'f4':
         return SCRIPTS_DIR / f"CommonLibImport_F4_{version.upper()}.py"
+    if game == 'skyrim' and version == '16640':
+        return SCRIPTS_DIR / "CommonLibImport_AE_1_6_640.py"
     if game == 'skyrim' and version == '17104':
         return SCRIPTS_DIR / "CommonLibImport_AE_1_7_104.py"
     if game == 'starfield':
@@ -516,7 +520,7 @@ def _run_one(project, game, version, binary, script_path, monitor,
         print(f"Program '{domain_file.getName()}' already in project, skipping import.")
 
     consumer = java.lang.Object()
-    program  = domain_file.getDomainObject(consumer, True, False, monitor)
+    program  = open_program(domain_file, consumer, monitor, write=True)
     try:
         setup_tx = program.startTransaction("Bind exact pipeline target")
         setup_commit = False

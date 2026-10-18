@@ -19,7 +19,7 @@ def test_project_listing_fails_early_with_install_guidance(
         tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(run, "GHIDRA_DIR", tmp_path / "missing-ghidra")
     monkeypatch.setattr(run, "_project_lock_files", lambda *_: [])
-    assert run._list_programs_in_project(tmp_path, "ExampleProject") is None
+    assert run._list_programs_in_project(tmp_path, "Combined") is None
     output = capsys.readouterr().out
     assert "menu option 1" in output
     assert "GHIDRA_INSTALL_DIR" in output

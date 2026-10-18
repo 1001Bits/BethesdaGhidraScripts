@@ -26,6 +26,7 @@ GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" /
 CORE_DIR    = REPO_DIR / "scripts" / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 from evidence_identity import read_binding, validate_evidence  # noqa: E402
 
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_<>$~?@-]")
@@ -82,7 +83,7 @@ def main():
     print(f"PROGRAM: {program_path}")
     print(f"CSV:     {csv_path}")
 
-    with pyghidra.open_project(project_dir, project_name, create=False) as project:
+    with open_user_project(project_dir, project_name) as project:
         domain_file = None
         if program_path.startswith("/"):
             domain_file = project.getProjectData().getFile(program_path)
@@ -105,7 +106,7 @@ def main():
         print(f"Found program: {domain_file.getPathname()}")
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
             actual_sha256 = (program.getExecutableSHA256() or '').lower()
             if not actual_sha256 or actual_sha256 != expected_sha256:
@@ -240,7 +241,8 @@ def main():
                                   flush=True)
                 commit = True
             finally:
-                program.endTransaction(txid, commit)
+                if not program.endTransaction(txid, commit) and commit:
+                    raise RuntimeError("transaction did not commit; nothing was saved")
 
             if commit:
                 print(f"\nSaving program ...")

@@ -16,19 +16,36 @@ path becomes a real Ghidra namespace, giving ``BGSAIWorldLocation::~...`` in
 the decompiler rather than one flat string.
 
 Identity-gated like the other appliers: ``--apply`` requires an
-``<csv>.identity.json`` evidence sidecar bound to the exact target executable::
+``<csv>.identity.json`` evidence sidecar bound to the exact target executable.
+The CSV carries TWO address columns, so the sidecar must also say WHICH column
+belongs to that executable -- the evidence ``kind`` names it::
 
-  python scripts/core/bind_evidence.py <csv> --exe <target_exe> \
-      --kind ida_og_ae_names --coordinate RVA
+  python scripts/core/bind_evidence.py <csv> --exe <og_exe> \
+      --kind ida_og_ae_names_og --coordinate RVA
+  python scripts/core/bind_evidence.py <csv> --exe <ae_exe> \
+      --kind ida_og_ae_names_ae --coordinate RVA
+
+``--version`` must agree with the bound column: a CSV bound to the AE
+executable and run with ``--version og`` would otherwise stamp OG RVAs onto the
+AE program with every identity check passing.  (``port_names_by_id.py`` writes
+target RVAs into ``AE_Addr`` and binds kind ``<game>_<src>_to_<tgt>``: column
+``ae``.)  A kind that names no column is refused.
+
+``--create-missing`` never creates inside an existing function (Ghidra would
+split it), disassembles first and requires an instruction at the address, and
+-- when the target executable is available (``--target-pe`` or the program's
+recorded import path, verified against ``--target-sha256``) -- requires the
+address to be a linker ``.pdata`` function start.
 
 Usage:
   python apply_ida_csv_names.py <project_dir> <project_name> <program_path> \
       <csv> --version {og,ae} --target-sha256 <sha> \
-      [--apply] [--create-missing] [--overwrite] [--max N]
+      [--apply] [--create-missing [--target-pe EXE]] [--overwrite] [--max N]
 """
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import os
 import re
@@ -45,6 +62,109 @@ _IMAGE_BASE = 0x140000000
 _COLUMNS = {"og": "OG_Addr", "ae": "AE_Addr"}
 # Ghidra rejects these in symbol names; the demangled corpus is full of them.
 _BAD_CHARS = re.compile(r"[\s'\"]+")
+_COLUMN_KIND = re.compile(r"^ida_og_ae_names_(og|ae)$")
+_PORT_BY_ID_KIND = re.compile(r"^[a-z0-9]+_[A-Za-z0-9]+_to_[A-Za-z0-9]+$")
+
+
+def bound_column(kind):
+    """Address column an evidence ``kind`` binds (``'og'``/``'ae'``), or None."""
+    kind = str(kind or "")
+    match = _COLUMN_KIND.match(kind)
+    if match:
+        return match.group(1)
+    if _PORT_BY_ID_KIND.match(kind):
+        return "ae"      # port_names_by_id.py: AE_Addr carries the target RVA
+    return None
+
+
+def require_bound_column(binding, version):
+    """Refuse unless the sidecar binds exactly the column ``--version`` reads."""
+    column = bound_column(binding.get("kind"))
+    if column is None:
+        raise RuntimeError(
+            "CSV evidence kind %r does not say which address column belongs to "
+            "the bound executable; re-bind with --kind ida_og_ae_names_og or "
+            "ida_og_ae_names_ae" % (binding.get("kind"),))
+    if column != version:
+        raise RuntimeError(
+            "CSV evidence binds the %s address column to this executable, but "
+            "--version %s was requested" % (column.upper(), version))
+    return column
+
+
+def create_refusal(program, addr, function_starts=None):
+    """Why no function may be created at ``addr`` (None: allowed).
+
+    Pure inspection.  ``CreateFunctionCmd`` at an address inside an existing
+    function returns True and SPLITS that function, so a containing function
+    refuses; ``function_starts`` (linker ``.pdata`` begin RVAs of the verified
+    target executable, when available) must contain the address.
+    """
+    block = program.getMemory().getBlock(addr)
+    if block is None or not block.isExecute() or not block.isInitialized():
+        return "not-executable"
+    if program.getFunctionManager().getFunctionContaining(addr) is not None:
+        return "inside-function"
+    if function_starts is not None:
+        rva = addr.getOffset() - program.getImageBase().getOffset()
+        if rva not in function_starts:
+            return "not-pdata-start"
+    return None
+
+
+def create_missing_function(program, addr, monitor, function_starts=None):
+    """``(function, outcome)``; mirrors ``port_ae_family_by_id``: refuse
+    (``create_refusal``), disassemble first, and require an instruction at
+    ``addr`` -- on undefined bytes ``CreateFunctionCmd`` alone makes a 1-byte
+    function with no instruction."""
+    refusal = create_refusal(program, addr, function_starts)
+    if refusal is not None:
+        return None, refusal
+    from ghidra.app.cmd.disassemble import DisassembleCommand
+    from ghidra.app.cmd.function import CreateFunctionCmd
+    listing = program.getListing()
+    if listing.getInstructionAt(addr) is None:
+        DisassembleCommand(addr, None, True).applyTo(program, monitor)
+        if listing.getInstructionAt(addr) is None:
+            return None, "no-instruction"
+    if not CreateFunctionCmd(addr).applyTo(program, monitor):
+        return None, "create-failed"
+    function = program.getFunctionManager().getFunctionAt(addr)
+    return function, ("created" if function is not None else "create-failed")
+
+
+def verified_function_starts(program, target_sha256, target_pe=None):
+    """Linker function starts of the target executable, or None when no
+    executable is available.  The file must carry ``target_sha256`` (the
+    evidence-bound hash) and match the program."""
+    from binary_identity import verify_ghidra_program
+    from target_pe import TargetPEError, select_target_pe
+    try:
+        path, manifest = select_target_pe(
+            program, [target_pe] if target_pe else ())
+    except TargetPEError as exc:
+        if target_pe:
+            raise
+        print("WARNING: no target executable for .pdata function starts "
+              "({}); --create-missing keeps only the structural checks".format(
+                  str(exc).splitlines()[0]))
+        return None
+    if str(manifest.get("sha256") or "").lower() != target_sha256.lower():
+        raise RuntimeError("{} is not the --target-sha256 executable".format(path))
+    verify_ghidra_program(program, [manifest])
+    starts = manifest.get("function_starts") or ()
+    return frozenset(int(rva) for rva in starts) or None
+
+
+def rename_function(func, namespace, leaf, source_type):
+    """Move + rename in ONE symbol operation.
+
+    ``setParentNamespace`` followed by ``setName`` is two mutations: when the
+    rename fails (duplicate / invalid name) the function has already been
+    moved and is left as ``Namespace::FUN_x``.  ``setNameAndNamespace``
+    either does both or neither.
+    """
+    func.getSymbol().setNameAndNamespace(leaf, namespace, source_type)
 
 
 def parse_csv(path, version, limit=0):
@@ -155,7 +275,11 @@ def main():
                     help="exact analyzed executable SHA-256")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--create-missing", action="store_true",
-                    help="create a function where Ghidra has none")
+                    help="create a function where Ghidra has none (never "
+                         "inside an existing one; see above)")
+    ap.add_argument("--target-pe",
+                    help="exact target executable for --create-missing's "
+                         ".pdata check (default: the recorded import path)")
     ap.add_argument("--overwrite", action="store_true",
                     help="replace any existing name, not just placeholders")
     ap.add_argument("--max", type=int, default=0)
@@ -167,6 +291,7 @@ def main():
             raise RuntimeError("CSV evidence targets another executable")
         if binding.get("address_coordinate") != "RVA":
             raise RuntimeError("CSV evidence must use RVA coordinates")
+        require_bound_column(binding, args.version)
 
     rows = parse_csv(args.csv_file, args.version, args.max)
     print("parsed %d %s names from CSV" % (len(rows), args.version.upper()))
@@ -175,7 +300,6 @@ def main():
     import pyghidra
     pyghidra.start(install_dir=GHIDRA_DIR)
     from ghidra.util.task import ConsoleTaskMonitor
-    from ghidra.app.cmd.function import CreateFunctionCmd
     from ghidra.program.model.symbol import SourceType
     import java.lang
     monitor = ConsoleTaskMonitor()
@@ -185,13 +309,15 @@ def main():
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
 
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    from ghidra_project import open_program, open_user_project
+    with open_user_project(pdir, pname) as project:
         df = _resolve_program(project, args.program_path)
         if df is None:
             print("ERROR: program not found: %s" % args.program_path)
             sys.exit(3)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, True, False, monitor)
+        # Read-only for a dry run; never destroys crash-recovery data.
+        program = open_program(df, consumer, monitor, write=bool(args.apply))
         try:
             actual = (program.getExecutableSHA256() or "").lower()
             if actual != args.target_sha256.lower():
@@ -199,6 +325,10 @@ def main():
             if args.apply:
                 validate_evidence(args.csv_file, program, binding.get("kind"),
                                   require_content=True)
+            function_starts = None
+            if args.apply and args.create_missing:
+                function_starts = verified_function_starts(
+                    program, args.target_sha256, args.target_pe)
 
             base = program.getImageBase()
             fm = program.getFunctionManager()
@@ -207,6 +337,7 @@ def main():
             global_ns = program.getGlobalNamespace()
             st = {"total": 0, "named": 0, "created": 0, "no_func": 0,
                   "skip_named": 0, "oob": 0, "fail": 0}
+            refused = collections.Counter()
             ns_cache = {}
 
             def namespace_for(parts):
@@ -236,13 +367,13 @@ def main():
                         continue
                     func = fm.getFunctionAt(addr)
                     if func is None:
-                        block = mem.getBlock(addr)
-                        if (args.apply and args.create_missing and block is not None
-                                and block.isExecute() and block.isInitialized()):
-                            if CreateFunctionCmd(addr).applyTo(program, monitor):
-                                func = fm.getFunctionAt(addr)
-                                if func is not None:
-                                    st["created"] += 1
+                        if args.apply and args.create_missing:
+                            func, outcome = create_missing_function(
+                                program, addr, monitor, function_starts)
+                            if func is not None:
+                                st["created"] += 1
+                            else:
+                                refused[outcome] += 1
                         if func is None:
                             st["no_func"] += 1
                             continue
@@ -254,8 +385,8 @@ def main():
                         st["named"] += 1
                         continue
                     try:
-                        func.setParentNamespace(namespace_for(ns_parts))
-                        func.setName(leaf, SourceType.IMPORTED)
+                        rename_function(func, namespace_for(ns_parts), leaf,
+                                        SourceType.IMPORTED)
                         st["named"] += 1
                     except Exception:  # noqa: BLE001
                         # duplicate/invalid name: skip this one, keep the batch
@@ -263,7 +394,8 @@ def main():
                 commit = True
             finally:
                 if tx is not None:
-                    program.endTransaction(tx, commit)
+                    if not program.endTransaction(tx, commit) and commit:
+                        raise RuntimeError("transaction did not commit; nothing was saved")
             if args.apply and commit and (st["named"] or st["created"]):
                 program.save("apply IDA CSV names (%s)" % args.version, monitor)
         finally:
@@ -274,6 +406,9 @@ def main():
           "oob %d, fail %d)"
           % (mode, st["named"], st["created"], st["no_func"], st["skip_named"],
              st["oob"], st["fail"]))
+    if refused:
+        print("  creation refused: " + ", ".join(
+            "{}={}".format(k, v) for k, v in sorted(refused.items())))
     if not args.apply:
         print("  re-run with --apply --create-missing to write + save.")
 

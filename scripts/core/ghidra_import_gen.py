@@ -63,7 +63,9 @@ def _type_str_size(type_str: str) -> int:
             return elem_size * count
         return 0
     if type_str.startswith('enum:'):
-        return 4
+        # ``enum:<E>:<width>``: an EnumSet field at its storage width.
+        width = re.match(r'^enum:.*:(\d+)$', type_str)
+        return int(width.group(1)) if width else 4
     if type_str.startswith('struct:'):
         return 8
     return 0
@@ -103,6 +105,21 @@ def _resolve_base(by_name: dict, name: str):
 # ---------------------------------------------------------------------------
 # Vtable struct building
 # ---------------------------------------------------------------------------
+
+def _overloaded_slot_names(slots: dict) -> set:
+    """Method names that occupy more than one slot of a single vtable.
+
+    ``vmethods`` holds ONE signature per method *name*, so for an overloaded
+    virtual it is right for at most one of the slots.  Typing every ``Foo``
+    slot with the first overload's prototype is worse than leaving the slots
+    as plain pointers, so overloaded names get no signature here (a real fix
+    needs per-overload keys from the clang layer).
+    """
+    counts: Dict[str, int] = {}
+    for name in slots.values():
+        counts[name] = counts.get(name, 0) + 1
+    return {name for name, count in counts.items() if count > 1}
+
 
 def build_vtable_structs(structs: dict) -> dict:
     """Build vtable type descriptors from virtual class hierarchies.
@@ -180,8 +197,9 @@ def build_vtable_structs(structs: dict) -> dict:
                     all_slots[off] = 'fn_{:03X}'.format(off)
         sigs = get_sigs(st['full_name'])
         sorted_slots = []
+        overloaded = _overloaded_slot_names(all_slots)
         for off, name in sorted(all_slots.items()):
-            sig = sigs.get(name)
+            sig = None if name in overloaded else sigs.get(name)
             sorted_slots.append((off, name, sig[0] if sig else None, sig[1] if sig else None))
         vname = st['name'] + '_vtbl'
         vtable_structs[st['full_name']] = {
@@ -210,8 +228,9 @@ def build_vtable_structs(structs: dict) -> dict:
                         if off not in sec_all:
                             sec_all[off] = 'fn_{:03X}'.format(off)
                 sec_sorted = []
+                sec_overloaded = _overloaded_slot_names(sec_all)
                 for off, sname in sorted(sec_all.items()):
-                    sig = sigs.get(sname)
+                    sig = None if sname in sec_overloaded else sigs.get(sname)
                     sec_sorted.append((off, sname,
                                        sig[0] if sig else None,
                                        sig[1] if sig else None))
@@ -598,6 +617,191 @@ def embed_structs(structs: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Version keys (ONE map, shared by the generator and every generated pass)
+# ---------------------------------------------------------------------------
+#
+# VERSION -> (per-symbol RVA key, per-symbol address-library ID key).
+# Skyrim VR resolves through the *SE* ID namespace ('si'): pairing its RVAs
+# with AE ids ('ai') produced wrong ``REL::ID`` comments.  An unknown VERSION is
+# an error -- never a silent fall back to another runtime's offsets.
+VERSION_KEYS = {
+    'se': ('s', 'si'),
+    'svr': ('v', 'si'),
+    'ae': ('a', 'ai'),
+    '16640': ('16640', 'ai'),
+    '17104': ('17104', 'ai'),
+    'f4_og': ('og', 'ai'),
+    'f4_ng': ('ng', 'ai'),
+    'f4_ae': ('a', 'ai'),
+    'f4_vr': ('v', 'ai'),
+    'f4_221': ('221', 'ai'),
+    'f4_240': ('240', 'ai'),
+    'sf': ('sf', 'ai'),
+    'fnv': ('fnv', 'ai'),
+}
+
+
+def version_keys(version: str) -> Tuple[str, str]:
+    '''Return ``(rva_key, id_key)`` for *version* or raise ``ValueError``.'''
+    try:
+        return VERSION_KEYS[version]
+    except KeyError:
+        raise ValueError(
+            'unknown importer VERSION {!r}; known: {}'.format(
+                version, ', '.join(sorted(VERSION_KEYS))))
+
+
+# Address-library reverse map record: u32 RVA + u64 ID.  Skyrim VR ids exceed
+# 2**32 (e.g. 5375528368), so the id must not be packed as a u32.
+ADDRLIB_RECORD = '<IQ'
+
+
+# ---------------------------------------------------------------------------
+# Symbol-name sanitiser (same source runs in the generator AND the importer)
+# ---------------------------------------------------------------------------
+
+_NAME_SANITIZER_SOURCE = r'''
+_MSVC_CALLCONVS = ('__cdecl', '__stdcall', '__fastcall', '__thiscall',
+                   '__vectorcall', '__clrcall', '__pascal')
+_MSVC_PREFIX_WORDS = ('public:', 'private:', 'protected:', 'virtual', 'static',
+                      'const', 'volatile', 'extern', 'inline', '[thunk]:')
+_MSVC_TRAILING_QUALIFIERS = ('const', 'volatile', '__ptr64', '__restrict')
+_OPERATOR_PUNCT = '<>=!+-*/%&|^~,'
+
+
+def _name_scan(text, honor_quotes=True):
+    """Return ([(index, char, angle_depth, quote_depth)], open_quotes).
+
+    MSVC undecorated names nest `...' quotes and <...> template lists; the
+    characters of ``operator<`` / ``operator()`` / ``operator->`` are not
+    brackets and must not disturb either depth (they are reported as 'o').
+    """
+    out = []
+    angle = quote = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if (quote == 0 and text.startswith('operator', i)
+                and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == '_'))):
+            j = i + 8
+            k = j
+            while k < n and text[k] == ' ':
+                k += 1
+            if text.startswith('()', k) or text.startswith('[]', k):
+                k += 2
+            else:
+                m = k
+                while m < n and text[m] in _OPERATOR_PUNCT:
+                    m += 1
+                k = m if m > k else j
+            for p in range(i, k):
+                out.append((p, 'o', angle, quote))
+            i = k
+            continue
+        if c == '`' and honor_quotes:
+            quote += 1
+            out.append((i, c, angle, quote))
+        elif c == "'" and quote > 0:
+            out.append((i, c, angle, quote))
+            quote -= 1
+        elif quote == 0 and c == '<':
+            angle += 1
+            out.append((i, c, angle, quote))
+        elif quote == 0 and c == '>' and angle > 0:
+            out.append((i, c, angle, quote))
+            angle -= 1
+        else:
+            out.append((i, c, angle, quote))
+        i += 1
+    return out, quote
+
+
+def sanitize_symbol_name(raw):
+    """Deterministic Ghidra-safe NAME for a possibly decorated symbol.
+
+    ``public: virtual void __cdecl A::B(void)`` -> ``A::B``;
+    ``A::B(int, float)`` -> ``A::B``; ``WinMain(HINSTANCE h, ...`` ->
+    ``WinMain``.  Already-plain names are returned unchanged.  The caller keeps
+    the full original text in the plate comment.  Returns '' when no name
+    survives.
+    """
+    text = ' '.join(str(raw or '').split())
+    if not text:
+        return ''
+    if ' ' not in text and '(' not in text:
+        return text
+    scan, open_quotes = _name_scan(text)
+    if open_quotes:
+        # "`anonymous_namespace::f(int)" -- a loader already dropped the
+        # closing quote; an unbalanced quote must not hide the argument list.
+        scan, open_quotes = _name_scan(text, False)
+    # 1. cut the argument list: first top-level '(' that is not an operator.
+    end = len(text)
+    for index, char, angle, quote in scan:
+        if char == '(' and angle == 0 and quote == 0:
+            end = index
+            break
+    declarator = re.match(r'\((?:\s*__\w+)?\s*[*&]+\s*([^()]+)\)', text[end:])
+    if declarator:
+        # ``int (__cdecl* Foo::ptr)(void)``: the name is inside the declarator.
+        return '_'.join(declarator.group(1).split())
+    head = text[:end].rstrip()
+    # A trailing qualifier with no argument list ('A::B const') is not a name.
+    while True:
+        parts = head.rsplit(' ', 1)
+        if len(parts) != 2 or parts[1] not in _MSVC_TRAILING_QUALIFIERS:
+            break
+        head = parts[0].rstrip()
+    # 2. keep what follows the last top-level calling convention; otherwise
+    #    drop leading access/storage words and the return type.
+    top_spaces = [index for index, char, angle, quote in scan
+                  if index < len(head) and char == ' '
+                  and angle == 0 and quote == 0]
+    bounds = [-1] + top_spaces + [len(head)]
+    tokens = [(bounds[k] + 1, head[bounds[k] + 1:bounds[k + 1]])
+              for k in range(len(bounds) - 1)]
+    start = 0
+    conv = [k for k, (_pos, tok) in enumerate(tokens) if tok in _MSVC_CALLCONVS]
+    if conv and conv[-1] + 1 < len(tokens):
+        start = tokens[conv[-1] + 1][0]
+    else:
+        k = 0
+        while k < len(tokens) - 1 and tokens[k][1] in _MSVC_PREFIX_WORDS:
+            k += 1
+        rest = tokens[k:]
+        # ``operator new`` / ``operator unsigned int`` keep their spaces: the
+        # name starts at the token that carries the 'operator' keyword.
+        op = [j for j, (_pos, tok) in enumerate(rest)
+              if tok == 'operator' or tok.endswith('::operator')]
+        if op:
+            start = rest[op[0]][0]
+        elif rest:
+            start = rest[-1][0]
+    name = head[start:].strip()
+    # 3. elaborated-type noise inside template arguments, then whitespace.
+    for noise in ('class ', 'struct ', 'union ', 'enum '):
+        parts = name.split(noise)
+        rebuilt = parts[0]
+        for part in parts[1:]:
+            prev = rebuilt[-1:]
+            if prev.isalnum() or prev == '_':
+                rebuilt += noise + part      # e.g. 'subclass X'
+            else:
+                rebuilt += part
+        name = rebuilt
+    name = name.replace(' __ptr64', '').replace(' *', '*').replace(' &', '&')
+    name = name.replace(', ', ',')
+    # 'Foo<std::pair<int,int> >' (pre-C++11 spelling) is 'Foo<std::pair<int,int>>'.
+    while '> >' in name:
+        name = name.replace('> >', '>>')
+    return '_'.join(name.split())
+'''
+
+exec(compile(_NAME_SANITIZER_SOURCE, '<bgs-name-sanitizer>', 'exec'))
+
+
+# ---------------------------------------------------------------------------
 # Ghidra script template (embedded Jython)
 # ---------------------------------------------------------------------------
 #
@@ -614,7 +818,7 @@ GHIDRA_SCRIPT_HEADER = '''\
 # @category Import
 # @description Import C++ type definitions and symbol names
 
-from ghidra.program.model.symbol import SourceType
+from ghidra.program.model.symbol import SourceType, SymbolType
 from ghidra.app.cmd.disassemble import DisassembleCommand
 from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
 from ghidra.app.util.cparser.C import CParserUtils
@@ -628,10 +832,14 @@ from ghidra.program.model.data import (
     UnsignedShortDataType, UnsignedIntegerDataType, UnsignedLongLongDataType,
     FunctionDefinitionDataType, ParameterDefinitionImpl,
 )
+from ghidra.program.model.data import Enum as _GhidraEnum
+from ghidra.program.model.data import Composite as _GhidraComposite
+from ghidra.program.model.data import Union as _GhidraUnion
 import re
 import struct
 import hashlib
 import os
+import sys
 
 dtm = currentProgram.getDataTypeManager()
 CONFLICT = DataTypeConflictHandler.REPLACE_HANDLER
@@ -640,25 +848,176 @@ created = {}  # full_name -> DataType
 _created_by_leaf = {}  # leaf -> [DataType]; ambiguous leaves never auto-resolve
 
 
-def _find_existing_elsewhere(name, category):
-    """A same-named data type already living in a DIFFERENT category.
+_RUN_TYPE_KEYS = set()  # (category path, name) of every type added by THIS run
+
+
+def _type_key(dt):
+    return (str(dt.getCategoryPath()), str(dt.getName()))
+
+
+def _add_type(dt):
+    """dtm.addDataType() that remembers the result as created by this run."""
+    added = dtm.addDataType(dt, CONFLICT)
+    _RUN_TYPE_KEYS.add(_type_key(added))
+    return added
+
+
+def _split_cpp_name(full_name):
+    """'A::B<C::D>::E' -> ['A', 'B<C::D>', 'E'] ('::' inside <> is kept)."""
+    parts = []
+    depth = 0
+    current = ''
+    i = 0
+    text = str(full_name or '')
+    while i < len(text):
+        c = text[i]
+        if c == '<':
+            depth += 1
+        elif c == '>' and depth > 0:
+            depth -= 1
+        if depth == 0 and text.startswith('::', i):
+            parts.append(current)
+            current = ''
+            i += 2
+            continue
+        current += c
+        i += 1
+    parts.append(current)
+    return [part for part in parts if part]
+
+
+def _has_cpp_full_name(dt, full_name, storage_name):
+    """True when *dt*'s category path spells exactly this C++ scope.
+
+    ``/Demangler/RE/BSScript/Type`` and ``/Old/RE/BSScript/Type`` are
+    ``RE::BSScript::Type``; ``/CommonLibSSE/RE/ByteCode/Type`` is not.  At
+    most ONE leading source-root folder (``/Demangler``, ``/game.pdb``,
+    ``/CommonLibSSE``) is tolerated, so a bare leaf match never qualifies.
+    """
+    wanted = _split_cpp_name(full_name)
+    if not wanted:
+        return False
+    wanted[-1] = str(storage_name)
+    try:
+        path = [str(part) for part in dt.getCategoryPath().getPathElements()]
+    except Exception:
+        path = [part for part in str(dt.getCategoryPath()).split('/') if part]
+    path.append(str(dt.getName()))
+    extra = len(path) - len(wanted)
+    return 0 <= extra <= 1 and path[extra:] == wanted
+
+
+def _expected_component_type_name(type_str):
+    """Display name a component must have for a record type string, or None
+    when only its length can be compared (builtins, arrays, raw bytes)."""
+    pointer = ''
+    text = type_str
+    if text.startswith('ptr:'):
+        pointer = ' *'
+        text = text[4:]
+    for prefix in ('struct:', 'enum:'):
+        if text.startswith(prefix):
+            name = text[len(prefix):]
+            if prefix == 'enum:':
+                name = _split_enum_width(name)[0]
+            parts = _split_cpp_name(name)
+            return (parts[-1] + pointer) if parts else None
+    return None
+
+
+def _equivalent_definition(dt, definition):
+    """Exact structural equality between an existing type and ours.
+
+    definition is ('enum', [(name, value), ...]) or
+    (record_kind, [(field, type_str, offset, size), ...]).  Anything that
+    cannot be proven identical is NOT equivalent: a duplicate type is harmless,
+    an alias to a different type corrupts every user of it.
+    """
+    kind, body = definition
+    try:
+        if kind == 'enum':
+            if not isinstance(dt, _GhidraEnum):
+                return False
+            expected = {}
+            for vname, vval in body:
+                key = vname if vname not in expected else vname + '_'
+                expected[key] = int(vval)
+            actual = dict((str(n), int(dt.getValue(n))) for n in dt.getNames())
+            return bool(expected) and actual == expected
+        if not isinstance(dt, _GhidraComposite):
+            return False
+        if (kind == 'union') != isinstance(dt, _GhidraUnion):
+            return False
+        expected = []
+        for fname, ftype, foffset, fsize in body:
+            if ftype.startswith('bf:'):
+                return False      # bitfield packing is not comparable here
+            expected.append((0 if kind == 'union' else int(foffset),
+                             int(fsize), str(fname), ftype))
+        components = list(dt.getDefinedComponents())
+        if not expected or len(components) != len(expected):
+            return False
+        actual = {}
+        for comp in components:
+            actual[(int(comp.getOffset()), str(comp.getFieldName()))] = comp
+        for foffset, fsize, fname, ftype in expected:
+            comp = actual.get((foffset, fname))
+            if comp is None or int(comp.getLength()) != fsize:
+                return False
+            wanted_type = _expected_component_type_name(ftype)
+            if (wanted_type is not None and
+                    str(comp.getDataType().getName()) != wanted_type):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _find_existing_elsewhere(name, category, full_name=None, size=None,
+                             definition=None):
+    """A reusable definition of the SAME type living in a different category.
 
     Re-running this generator against an already-improved program otherwise
     re-creates a second, competing copy of a common type (BSFixedString,
     TESForm, ...) under THIS run's category instead of reusing the one already
     registered by a prior /types.h import, a PDB-derived type, or a Demangler
-    stub.  This is a deliberately cheap, name-only guard against that blind
-    duplicate; it does not attempt full layout reconciliation.  Callers only
-    reuse when the sizes also agree, so a real layout difference still falls
-    through to the normal create path.  Returns the first match or None.
+    stub.
+
+    A leaf name plus a size is NOT an identity: ``FunctionMessage::Type`` and
+    ``ByteCode::Argument::Type`` are both 4-byte ``Type`` enums.  A candidate
+    is therefore reused only when
+      * it was not created by this very run (every ``X::Node`` would otherwise
+        collapse onto the first one created seconds earlier),
+      * its size matches, and
+      * it carries the same C++ full name, or its definition is exactly
+        equivalent to ours.
+    Otherwise the caller creates the type in its own category.
     """
     import java.util.ArrayList as _ArrayList
     results = _ArrayList()
     dtm.findDataTypes(name, results)
+    matches = []
     for dt in results:
-        if str(dt.getCategoryPath()) != category:
-            return dt
-    return None
+        if str(dt.getCategoryPath()) == category:
+            continue
+        if _type_key(dt) in _RUN_TYPE_KEYS:
+            continue
+        if size is not None and dt.getLength() != size:
+            continue
+        if definition is not None:
+            wanted_enum = definition[0] == 'enum'
+            if wanted_enum != isinstance(dt, _GhidraEnum):
+                continue
+            if not wanted_enum and not isinstance(dt, _GhidraComposite):
+                continue
+        if ((full_name and _has_cpp_full_name(dt, full_name, name)) or
+                (definition is not None and
+                 _equivalent_definition(dt, definition))):
+            matches.append(dt)
+    if not matches:
+        return None
+    matches.sort(key=_type_key)     # deterministic across runs
+    return matches[0]
 
 
 _VOID  = VoidDataType()
@@ -738,6 +1097,44 @@ def _resolve_struct_name(name):
         return None
     return _lookup_type(name)
 
+def _split_enum_width(name):
+    """'RE::FormType:1' -> ('RE::FormType', 1); 'RE::FormType' -> (name, None)."""
+    m = re.match(r'^(.*):(\\d+)$', name)
+    return (m.group(1), int(m.group(2))) if m else (name, None)
+
+
+_SIZED_ENUMS = {}
+
+
+def _sized_enum(base, width):
+    """*base* enum at *width* bytes, for an EnumSet<E, Storage> field: E held
+    in Storage, often narrower than E itself, and a Ghidra enum cannot occupy
+    a slot of another width.  A width-matched copy of E's values is created
+    once per enum, keyed by its full path (two 'Type' enums never share one),
+    under /_sized_enums/<width>/<E's category> so the field still shows E.
+    """
+    if base is None:
+        return None
+    if not isinstance(base, _GhidraEnum):
+        # The element name resolved to a non-enum: the field still occupies
+        # *width* bytes.
+        return {1: _BYTE, 2: _I16, 4: _I32, 8: _I64}.get(width, _BYTE)
+    if base.getLength() == width:
+        return base
+    key = (_type_key(base), width)
+    if key not in _SIZED_ENUMS:
+        category = CategoryPath('/_sized_enums/' + str(width) +
+                                str(base.getCategoryPath()).rstrip('/'))
+        clone = EnumDataType(category, base.getName(), width)
+        for vname in base.getNames():
+            try:
+                clone.add(vname, base.getValue(vname))
+            except Exception:
+                pass        # a value that does not fit the storage width
+        _SIZED_ENUMS[key] = _add_type(clone)
+    return _SIZED_ENUMS[key]
+
+
 def resolve_type(type_str):
     b = get_builtin(type_str)
     if b: return b
@@ -746,8 +1143,7 @@ def resolve_type(type_str):
         inner = _resolve_struct_name(name)
         return dtm.getPointer(inner, _PSIZE) if inner else _PTR
     if type_str.startswith('ptr:enum:'):
-        name = type_str[9:]
-        inner = _lookup_type(name)
+        inner = resolve_type(type_str[4:])
         return dtm.getPointer(inner, _PSIZE) if inner else _PTR
     if type_str.startswith('ptr:'):
         inner = get_builtin(type_str[4:]) or resolve_type(type_str[4:])
@@ -767,8 +1163,10 @@ def resolve_type(type_str):
                 return ArrayDataType(elem, count, elem.getLength())
         return None
     if type_str.startswith('enum:'):
-        name = type_str[5:]
-        return _lookup_type(name)
+        # ``enum:<E>:<width>`` (EnumSet field) or plain ``enum:<E>``.
+        name, width = _split_enum_width(type_str[5:])
+        base = _lookup_type(name)
+        return _sized_enum(base, width) if width else base
     if type_str.startswith('struct:'):
         name = type_str[7:]
         return _resolve_struct_name(name)
@@ -785,6 +1183,99 @@ def make_padding(size):
     return ArrayDataType(_BYTE, size, 1)
 
 
+def _version_keys():
+    """(rva_key, id_key) for VERSION from the ONE shared map; never a default."""
+    try:
+        keys = VERSION_KEYS[VERSION]
+    except KeyError:
+        raise RuntimeError('Unknown importer VERSION ' + repr(VERSION) +
+                           '; refusing to fall back to another runtime')
+    return keys[0], keys[1]
+
+
+def _owner_is_namespace(func_name):
+    """True when 'Owner::f' names a namespace-scope free function."""
+    if '::' not in func_name:
+        return False
+    return func_name.rsplit('::', 1)[0] in NAMESPACE_OWNERS
+
+
+def _is_member_function(func_name, is_static):
+    """Only a non-static function owned by a RECORD receives a 'this'."""
+    return ('::' in func_name and not is_static
+            and not _owner_is_namespace(func_name))
+
+
+def _signature_is_user_defined(func):
+    try:
+        return func.getSignatureSource() == SourceType.USER_DEFINED
+    except Exception:
+        return False
+
+
+def _has_defined_signature(func):
+    return (func.getSignature().getReturnType().getClass().getSimpleName()
+            != 'DefaultDataType')
+
+
+def _signature_is_authoritative(func):
+    """An analyst's or an import's prototype.  An analyser guess (ANALYSIS,
+    e.g. decompiler parameter ID) is not: CommonLib replaces it."""
+    try:
+        return func.getSignatureSource() in (SourceType.USER_DEFINED,
+                                             SourceType.IMPORTED)
+    except Exception:
+        return _has_defined_signature(func)
+
+
+# ---- per-symbol failure accounting ----------------------------------------
+# A swallowed per-symbol exception is still a failure.  Every pass counts
+# them, prints the first few, and aborts (-> transaction rollback) when the
+# share is larger than a small budget.
+_PASS_FAILURES = {}
+_FAILURE_MESSAGES_KEPT = 5
+
+
+def _note_failure(pass_name, what, error=None):
+    if error is None:
+        error = sys.exc_info()[1]
+    entry = _PASS_FAILURES.setdefault(pass_name, [0, []])
+    entry[0] += 1
+    if len(entry[1]) < _FAILURE_MESSAGES_KEPT:
+        entry[1].append(str(what)[:120] + ': ' + type(error).__name__ + ': ' +
+                        str(error)[:200])
+
+
+def _failure_budget(total):
+    override = os.environ.get('BGS_IMPORT_MAX_FAILURES', '').strip()
+    if override:
+        return int(override)
+    return max(25, int(total) // 100)
+
+
+def _finish_pass(pass_name, total):
+    """Report this pass's swallowed failures; raise when over budget."""
+    count, messages = _PASS_FAILURES.get(pass_name, [0, []])
+    budget = _failure_budget(total)
+    print(pass_name + ' failures: ' + str(count) + ' of ' + str(total) +
+          ' (budget ' + str(budget) + ')')
+    for message in messages:
+        print('  FAILED ' + message)
+    if count > budget:
+        raise RuntimeError(
+            pass_name + ': ' + str(count) + ' of ' + str(total) +
+            ' symbols failed (budget ' + str(budget) +
+            '); rolling back the whole import. First: ' +
+            (messages[0] if messages else '?'))
+
+
+def _failure_summary():
+    if not _PASS_FAILURES:
+        return 'no per-symbol failures'
+    return ', '.join(name + '=' + str(_PASS_FAILURES[name][0])
+                     for name in sorted(_PASS_FAILURES))
+
+
 def apply_structured_sig(sd, func_name, addr, fm, source_type=SOURCE_VERIFIED):
     """Apply a structured signature using FunctionDefinitionDataType.
 
@@ -795,7 +1286,7 @@ def apply_structured_sig(sd, func_name, addr, fm, source_type=SOURCE_VERIFIED):
     ret_pipeline, params_list, is_static = sd
     simple_name = func_name.split('::')[-1] if '::' in func_name else func_name
     fdef = FunctionDefinitionDataType(CategoryPath('/'), simple_name, dtm)
-    is_member = '::' in func_name and not is_static
+    is_member = _is_member_function(func_name, is_static)
     if _PSIZE == 4 and is_member:
         try:
             fdef.setCallingConvention('__thiscall')
@@ -805,7 +1296,7 @@ def apply_structured_sig(sd, func_name, addr, fm, source_type=SOURCE_VERIFIED):
     if ret_dt:
         fdef.setReturnType(ret_dt)
     param_defs = []
-    if '::' in func_name and not is_static:
+    if is_member:
         class_name = func_name.rsplit('::', 1)[0]
         this_dt = _lookup_type(class_name)
         this_ptr = dtm.getPointer(this_dt, _PSIZE) if this_dt else _PTR
@@ -816,7 +1307,10 @@ def apply_structured_sig(sd, func_name, addr, fm, source_type=SOURCE_VERIFIED):
     if param_defs:
         fdef.setArguments(param_defs)
     cmd = ApplyFunctionSignatureCmd(addr, fdef, source_type, True, False)
-    cmd.applyTo(currentProgram)
+    if not cmd.applyTo(currentProgram):
+        # A rejected command used to be counted as an applied signature.
+        raise RuntimeError('ApplyFunctionSignatureCmd failed for ' + func_name +
+                           ': ' + str(cmd.getStatusMsg()))
     if _PSIZE == 4 and is_member:
         f = fm.getFunctionAt(addr)
         if f:
@@ -993,7 +1487,7 @@ def convert_sig_to_ghidra(sig, func_name):
 
     simple_name = func_name.split('::')[-1] if '::' in func_name else func_name
 
-    if '::' in func_name and not is_static:
+    if _is_member_function(func_name, is_static):
         class_name = func_name.rsplit('::', 1)[0]
         class_name_simple = class_name.split('::')[-1] if '::' in class_name else class_name
         if class_name and _lookup_type(class_name):
@@ -1278,10 +1772,12 @@ def _manifest_section_name(rva):
 def _symbol_evidence_matches_target(symbol, version_key, rva):
     """Validate per-symbol provenance in addition to the global importer bind."""
     asserted_sha = _symbol_assertion(symbol, 'target_sha256', version_key)
-    if (asserted_sha and _ACTIVE_TARGET and
-            str(asserted_sha).lower() !=
-            str(_ACTIVE_TARGET.get('sha256', '')).lower()):
-        return False
+    if asserted_sha and _ACTIVE_TARGET:
+        # A proven byte-identical source image stands for its artifact.
+        allowed = (str(_ACTIVE_TARGET.get('sha256', '')).lower(),
+                   str(_ACTIVE_TARGET.get('equivalent_to') or '').lower())
+        if str(asserted_sha).lower() not in allowed:
+            return False
     asserted_section = _symbol_assertion(symbol, 'sections', version_key)
     if asserted_section:
         actual_section = _manifest_section_name(rva)
@@ -1290,8 +1786,17 @@ def _symbol_evidence_matches_target(symbol, version_key, rva):
     return True
 
 
-def _ensure_function(addr, suggested_name=None, verified_entry=False):
-    """Create only at executable, non-interior function entry addresses."""
+def _ensure_function(addr, suggested_name=None, verified_entry=False,
+                     source_type=None):
+    """Create only at executable, non-interior function entry addresses.
+
+    The function is created WITHOUT a name: FlatProgramAPI.createFunction
+    records a passed name as USER_DEFINED, i.e. as analyst work that later
+    imports and clean-up tools must leave alone.  Unnamed, it adopts the label
+    already at the entry (with that label's own source) or gets a default
+    FUN_ name, which *suggested_name* replaces with *source_type* (the
+    importer's own source; ANALYSIS when not given).
+    """
     if addr is None:
         return None
     block = currentProgram.getMemory().getBlock(addr)
@@ -1316,9 +1821,42 @@ def _ensure_function(addr, suggested_name=None, verified_entry=False):
     if not DisassembleCommand(addr, None, True).applyTo(currentProgram):
         return None
     try:
-        return createFunction(addr, suggested_name)
+        f = createFunction(addr, None)
     except Exception:
-        return fm.getFunctionAt(addr)
+        f = fm.getFunctionAt(addr)
+    if f is not None and suggested_name and f.getName().startswith('FUN_'):
+        try:
+            f.setName(suggested_name, source_type or SOURCE_HEURISTIC)
+        except Exception:
+            pass        # a rejected name: the caller's own rename reports it
+    return f
+
+
+def _rename_function(f, name, source_type):
+    """Name *f*, absorbing a same-named label an earlier pass left at its entry.
+
+    Ghidra refuses to rename a function to the name of a label already at the
+    same address in the same namespace (DuplicateNameException), so a default
+    ``FUN_`` function kept its placeholder although its real name sat right
+    there as a label.  The label is removed and the function takes the name --
+    unless the label is USER_DEFINED, which is analyst work and stays.
+    """
+    try:
+        f.setName(name, source_type)
+        return
+    except Exception as error:
+        if 'DuplicateNameException' not in str(error.__class__) + str(error):
+            raise
+        duplicate = error
+    namespace = f.getParentNamespace()
+    blocking = [sym for sym in currentProgram.getSymbolTable().getSymbols(f.getEntryPoint())
+                if sym.getSymbolType() == SymbolType.LABEL and sym.getName() == name
+                and sym.getParentNamespace().equals(namespace)]
+    if not blocking or any(sym.getSource() == SourceType.USER_DEFINED for sym in blocking):
+        raise duplicate
+    for sym in blocking:
+        sym.delete()
+    f.setName(name, source_type)
 
 
 def _merge_plate_comment(addr, parts):
@@ -1352,6 +1890,10 @@ def _source_for_symbol(symbol, fallback=False):
 
 '''
 
+# The sanitiser is appended verbatim (raw source, no escape translation) so
+# the generator and every generated importer run byte-identical code.
+GHIDRA_SCRIPT_HEADER += _NAME_SANITIZER_SOURCE + '\n'
+
 GHIDRA_SCRIPT_FOOTER = '''\
 
 def run():
@@ -1384,6 +1926,14 @@ def run():
             commit_syms = True
         finally:
             currentProgram.endTransaction(tx_syms, commit_syms)
+        # Provenance belongs to the same all-or-nothing unit: a failure here
+        # must roll the import back, and a rolled-back import must not leave a
+        # provenance record / canary comments behind.
+        _provenance = globals().get('_apply_bgs_provenance')
+        if _provenance is not None:
+            _provenance()
+        elif globals().get('BGS_PROVENANCE'):
+            raise RuntimeError('BGS_PROVENANCE is set but its apply step is missing')
         commit_all = True
     finally:
         all_committed = bool(currentProgram.endTransaction(
@@ -1391,7 +1941,10 @@ def run():
         if commit_all and not had_parent_transaction and not all_committed:
             raise RuntimeError('CommonLib import transaction did not commit')
 
-    print('All passes complete.')
+    _summary = globals().get('_failure_summary')
+    print('All passes complete (' +
+          (_summary() if _summary is not None else 'failure counts unavailable') +
+          ').')
 
 
 def _import_types():
@@ -1399,8 +1952,9 @@ def _import_types():
     enums_reused = 0
     for en in ENUMS:
         name, full_name, size, category, values = en
-        existing = _find_existing_elsewhere(name, category)
-        if existing is not None and existing.getLength() == size:
+        existing = _find_existing_elsewhere(
+            name, category, full_name, size, ('enum', values))
+        if existing is not None:
             dt = existing
             enums_reused += 1
         else:
@@ -1410,7 +1964,7 @@ def _import_types():
                     e.add(vname, vval)
                 except Exception:
                     e.add(vname + '_', vval)
-            dt = dtm.addDataType(e, CONFLICT)
+            dt = _add_type(e)
         _register_type(full_name, name, dt, category)
     print('Created {} enums ({} reused existing)'.format(
         len(ENUMS) - enums_reused, enums_reused))
@@ -1421,9 +1975,11 @@ def _import_types():
     shells_reused = 0
     for st in STRUCTS:
         name, full_name, record_kind, size, category, fields, bases, has_vtable = st
-        existing = _find_existing_elsewhere(name, category)
-        if existing is not None and existing.getLength() == size:
-            # Reuse the type that is already registered rather than adding a
+        existing = _find_existing_elsewhere(
+            name, category, full_name, size, (record_kind, fields))
+        if existing is not None:
+            # Reuse the SAME type (same C++ full name, or an exactly equivalent
+            # definition) that is already registered rather than adding a
             # competing copy.  Nothing lands under this run's category, so the
             # field-filling pass below skips it -- its getDataType() lookup misses.
             dt = existing
@@ -1435,7 +1991,7 @@ def _import_types():
                     s.add(make_padding(size), size, '__storage', 'Exact union storage size')
             else:
                 s = StructureDataType(CategoryPath(category), name, size)
-            dt = dtm.addDataType(s, CONFLICT)
+            dt = _add_type(s)
         _register_type(full_name, name, dt, category)
     print('Created {} record shells ({} reused existing)'.format(
         len(STRUCTS) - shells_reused, shells_reused))
@@ -1449,13 +2005,30 @@ def _import_types():
         vname, class_full_name, vtbl_size, category, slots, vt_kind, subobject_offset = vt
         scaled_size = (vtbl_size // 8) * _vt_psize if _vt_psize != 8 else vtbl_size
         s = StructureDataType(CategoryPath(category), vname, scaled_size)
+        # Slot FunctionDefinitions are PER CLASS.  '<method>_t' in the class
+        # category with the REPLACE handler made every class's 'Update_t' one
+        # shared, last-writer-wins type.  The owner is the class's own storage
+        # name (unique inside the category); a repeated method name inside one
+        # table (overloads) is disambiguated by its slot offset.
+        _owner_dt = created.get(class_full_name)
+        _fdef_owner = (str(_owner_dt.getName()) if _owner_dt is not None
+                       else class_full_name.split('::')[-1])
+        if vt_kind != 'primary':
+            _fdef_owner += '_sub{:X}'.format(int(subobject_offset))
+        _slot_name_uses = {}
+        for _slot in slots:
+            _slot_name_uses[_slot[1]] = _slot_name_uses.get(_slot[1], 0) + 1
         for slot_off, slot_name, slot_ret, slot_params in slots:
             field_name = slot_name.replace('~', '_dtor_') if slot_name.startswith('~') else slot_name
+            fdef_name = _fdef_owner + '_' + field_name
+            if _slot_name_uses.get(slot_name, 0) > 1:
+                fdef_name += '_{:03X}'.format(int(slot_off))
+            fdef_name += '_t'
             real_off = (slot_off // 8) * _vt_psize
             if real_off + _vt_psize <= scaled_size:
                 try:
                     if slot_ret is not None and slot_params is not None:
-                        fdef = FunctionDefinitionDataType(CategoryPath(category), field_name + '_t', dtm)
+                        fdef = FunctionDefinitionDataType(CategoryPath(category), fdef_name, dtm)
                         if _vt_psize == 4:
                             try:
                                 fdef.setCallingConvention('__thiscall')
@@ -1471,13 +2044,13 @@ def _import_types():
                             pdt = resolve_type(ptype) or _PTR
                             param_defs.append(ParameterDefinitionImpl(pname, pdt, ''))
                         fdef.setArguments(param_defs)
-                        fptr = dtm.getPointer(dtm.addDataType(fdef, CONFLICT), _vt_psize)
+                        fptr = dtm.getPointer(_add_type(fdef), _vt_psize)
                         s.replaceAtOffset(real_off, fptr, _vt_psize, field_name, '')
                     else:
                         s.replaceAtOffset(real_off, _PTR, _vt_psize, field_name, '')
                 except Exception:
                     pass
-        dt = dtm.addDataType(s, CONFLICT)
+        dt = _add_type(s)
         created['vtbl:' + vname] = dt
     print('Created {} vtable structs'.format(len(VTABLES)))
 
@@ -1535,18 +2108,10 @@ def _import_types():
 
 
 def _import_symbols():
-    # Per-version offset key embedded in the SYMBOLS array.  F4 OG/VR
-    # use ID namespaces disjoint from CommonLibF4's NG/AE-keyed IDs, so
-    # no per-symbol offset exists for them; type/vtable/enum application
-    # still runs but no function symbols get applied (use byte-signature
-    # porting from AE as a separate post-pass).
-    version_key = {
-        'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v',
-        'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
-        'f4_221': '221', 'f4_240': '240',
-        'sf': 'sf',
-        'fnv': 'fnv',
-    }.get(VERSION, 'a')
+    # Per-version offset key embedded in the SYMBOLS array (shared
+    # VERSION_KEYS map; an unknown VERSION raises instead of silently reading
+    # another runtime's offsets).
+    version_key, _id_key = _version_keys()
     symbol_table = currentProgram.getSymbolTable()
     base_addr = currentProgram.getImageBase()
     fm = currentProgram.getFunctionManager()
@@ -1555,6 +2120,7 @@ def _import_symbols():
     print('Applying ' + str(len(SYMBOLS)) + ' symbols...')
 
     count_sym = 0; count_func = 0; count_sig = 0; count_sig_fail = 0; count_invalid = 0
+    count_sig_user_kept = 0; count_attempted = 0; count_sanitized = 0
     used_names_at_addr = {}
     name_occurrence_count = {}
 
@@ -1562,6 +2128,7 @@ def _import_symbols():
         off = s.get(version_key)
         if off is None: continue
         off = int(off)
+        count_attempted += 1
 
         if not _symbol_evidence_matches_target(s, version_key, off):
             count_invalid += 1
@@ -1574,7 +2141,15 @@ def _import_symbols():
         if addr is None:
             count_invalid += 1
             continue
-        sname = s['n']
+        raw_name = s['n']
+        sname = sanitize_symbol_name(raw_name)
+        if not sname:
+            count_invalid += 1
+            continue
+        name_note = []
+        if sname != raw_name:
+            count_sanitized += 1
+            name_note = ['Symbol: ' + str(raw_name)]
         source_type = _source_for_symbol(s, False)
 
         if addr not in used_names_at_addr:
@@ -1611,18 +2186,23 @@ def _import_symbols():
                         parts.append('Source: ' + PROJECT_NAME + ' (Offsets_VTABLE.h)')
                     elif s.get('src'):
                         parts.append('Source: ' + s['src'])
+                    parts.extend(name_note)
                     if parts:
                         _merge_plate_comment(addr, parts)
-        except: pass
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            _note_failure('Primary symbols', 'label ' + final_name)
 
         if s['t'] == 'func':
             try:
-                f = _ensure_function(addr, final_name, bool(s.get('verified_entry')))
+                f = _ensure_function(addr, final_name, bool(s.get('verified_entry')),
+                                     source_type)
 
                 if f:
                     curr_name = f.getName()
                     if curr_name.startswith('FUN_') or curr_name.startswith('sub_'):
-                        f.setName(final_name, source_type)
+                        _rename_function(f, final_name, source_type)
 
                     comment_parts = []
                     se_id = s.get('si')
@@ -1640,17 +2220,27 @@ def _import_symbols():
                         comment_parts.append('Source: AE rename database (fallback)')
                     elif src:
                         comment_parts.append('Source: ' + src)
+                    comment_parts.extend(name_note)
                     if comment_parts:
                         _merge_plate_comment(addr, comment_parts)
 
                     sd = s.get('sd')
                     sig = s.get('sig', '')
-                    if sd:
+                    if (sd or sig) and _signature_is_user_defined(f):
+                        # An analyst's USER_DEFINED prototype outranks every
+                        # import source; re-running must never overwrite it.
+                        count_sig_user_kept += 1
+                    elif sd:
                         try:
                             apply_structured_sig(sd, final_name, addr, fm, source_type)
                             count_sig += 1
+                        except (KeyboardInterrupt, SystemExit):
+                            raise
                         except:
                             count_sig_fail += 1
+                            if count_sig_fail <= 20:
+                                print('SIG FAIL: ' + final_name + ': ' +
+                                      str(sys.exc_info()[1])[:120])
                     elif sig:
                         proto = convert_sig_to_ghidra(sig, final_name)
                         if proto:
@@ -1659,8 +2249,9 @@ def _import_symbols():
                                 func_def = CParserUtils.parseSignature(None, currentProgram, proto, True)
                                 if func_def:
                                     cmd = ApplyFunctionSignatureCmd(addr, func_def, source_type, True, False)
-                                    cmd.applyTo(currentProgram)
-                                    applied = True
+                                    applied = bool(cmd.applyTo(currentProgram))
+                            except (KeyboardInterrupt, SystemExit):
+                                raise
                             except: pass
                             if not applied:
                                 proto_safe = sanitize_unknown_types(proto)
@@ -1669,8 +2260,9 @@ def _import_symbols():
                                         func_def = CParserUtils.parseSignature(None, currentProgram, proto_safe, True)
                                         if func_def:
                                             cmd = ApplyFunctionSignatureCmd(addr, func_def, source_type, True, False)
-                                            cmd.applyTo(currentProgram)
-                                            applied = True
+                                            applied = bool(cmd.applyTo(currentProgram))
+                                    except (KeyboardInterrupt, SystemExit):
+                                        raise
                                     except: pass
                             if applied:
                                 count_sig += 1
@@ -1679,14 +2271,22 @@ def _import_symbols():
                                 if count_sig_fail <= 20:
                                     print('SIG FAIL: ' + proto[:120])
                     count_func += 1
-            except: pass
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except:
+                _note_failure('Primary symbols', 'function ' + final_name)
 
         if i % 5000 == 0 and i > 0:
             print('Progress: ' + str(i) + ' symbols processed...')
 
     print('Labels: ' + str(count_sym) + ', Functions: ' + str(count_func))
     print('Rejected invalid/unmapped/section-mismatched symbols: ' + str(count_invalid))
-    print('Signatures applied: ' + str(count_sig) + ', failed: ' + str(count_sig_fail))
+    print('Signatures applied: ' + str(count_sig) + ', failed: ' + str(count_sig_fail) +
+          ', USER_DEFINED prototypes kept: ' + str(count_sig_user_kept))
+    if count_sanitized:
+        print('Decorated names sanitised (full text kept in plate comment): ' +
+              str(count_sanitized))
+    _finish_pass('Primary symbols', count_attempted)
 
 
 def _build_rva_to_id():
@@ -1694,16 +2294,17 @@ def _build_rva_to_id():
     rva_to_id = {}
     if _ADDRLIB_B64:
         blob = _b64.b64decode(_ADDRLIB_B64)
-        for i in range(0, len(blob), 8):
-            rva, rid = struct.unpack_from('<II', blob, i)
+        record_size = struct.calcsize(ADDRLIB_RECORD)
+        if len(blob) % record_size:
+            raise RuntimeError('Embedded address-library map is truncated')
+        for i in range(0, len(blob), record_size):
+            rva, rid = struct.unpack_from(ADDRLIB_RECORD, blob, i)
             rva_to_id[rva] = rid
     else:
-        version_key = {
-            'se': 's', 'ae': 'a', '17104': '17104',
-            'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a',
-            'f4_vr': 'v', 'f4_221': '221', 'f4_240': '240',
-        }.get(VERSION, 'a')
-        id_key = 'si' if VERSION == 'se' else 'ai'
+        # The ID namespace must belong to the SAME runtime as the RVA key:
+        # Skyrim VR pairs ('v', 'si'); with ('v', 'ai') a VR RVA that merely
+        # equals some AE RVA received an AE REL::ID comment.
+        version_key, id_key = _version_keys()
         for s in SYMBOLS:
             rva = s.get(version_key)
             rid = s.get(id_key)
@@ -1741,6 +2342,8 @@ def _import_vtable_names():
     already_named = 0
     id_comments_added = 0
     shared_conflicts = 0
+    vfunc_sig_applied = 0
+    vfunc_sig_fail = 0
 
     def _read_vfunc(vtbl_addr, slot_off):
         ptr_addr = vtbl_addr.add((slot_off // 8) * ptr_size)
@@ -1836,8 +2439,7 @@ def _import_vtable_names():
                 claims = vfunc_claims.get(func_addr.getOffset(), [])
                 claim_sigs = set(repr((c[2], c[3])) for c in claims if c[2] is not None and c[3] is not None)
                 if slot_ret is not None and slot_params is not None and len(claim_sigs) <= 1:
-                    has_sig = func.getSignature().getReturnType().getClass().getSimpleName() != 'DefaultDataType'
-                    if not has_sig:
+                    if not _signature_is_authoritative(func):
                         try:
                             fdef = FunctionDefinitionDataType(CategoryPath('/'), slot_name, dtm)
                             if ptr_size == 4:
@@ -1856,15 +2458,20 @@ def _import_vtable_names():
                                 pdt = resolve_type(ptype) or _PTR
                                 pdefs.append(ParameterDefinitionImpl(pname, pdt, ''))
                             fdef.setArguments(pdefs)
-                            ApplyFunctionSignatureCmd(func_addr, fdef,
-                                SOURCE_VERIFIED, True, False).applyTo(currentProgram)
+                            if not ApplyFunctionSignatureCmd(func_addr, fdef,
+                                    SOURCE_VERIFIED, True, False).applyTo(currentProgram):
+                                vfunc_sig_fail += 1
+                            else:
+                                vfunc_sig_applied += 1
                         except Exception:
-                            pass
+                            vfunc_sig_fail += 1
             except Exception:
                 read_fail += 1
     print('Named {} virtual functions from vtable addresses'.format(named_vfuncs))
     print('  vtbl_found={} vtbl_not_found={} read_fail={} no_func={} already_named={} id_comments={} shared_conflicts={}'.format(
         vtbl_found, vtbl_not_found, read_fail, no_func, already_named, id_comments_added, shared_conflicts))
+    print('  vfunc signatures applied={} failed={}'.format(
+        vfunc_sig_applied, vfunc_sig_fail))
 
     # Second pass: walk VTABLE_ labels without struct definitions
     handled_labels = set()
@@ -1977,18 +2584,10 @@ def _import_vtable_names():
 
 def _import_fallback_symbols():
     """Apply fallback symbols only to addresses not yet named."""
-    # Per-version offset key embedded in the SYMBOLS array.  F4 OG/VR
-    # use ID namespaces disjoint from CommonLibF4's NG/AE-keyed IDs, so
-    # no per-symbol offset exists for them; type/vtable/enum application
-    # still runs but no function symbols get applied (use byte-signature
-    # porting from AE as a separate post-pass).
-    version_key = {
-        'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v',
-        'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
-        'f4_221': '221', 'f4_240': '240',
-        'sf': 'sf',
-        'fnv': 'fnv',
-    }.get(VERSION, 'a')
+    # Per-version offset key embedded in the SYMBOLS array (shared
+    # VERSION_KEYS map; an unknown VERSION raises instead of silently reading
+    # another runtime's offsets).
+    version_key, _id_key = _version_keys()
     base_addr = currentProgram.getImageBase()
     fm = currentProgram.getFunctionManager()
     symbol_table = currentProgram.getSymbolTable()
@@ -1996,12 +2595,14 @@ def _import_fallback_symbols():
     print('Applying ' + str(len(FALLBACK_SYMBOLS)) + ' fallback symbols...')
     count_applied = count_skipped = count_invalid = 0
     count_fb_sig = count_fb_sig_fail = 0
+    count_attempted = count_sanitized = count_sig_user_kept = 0
 
     for s in FALLBACK_SYMBOLS:
         off = s.get(version_key)
         if off is None:
             continue
         off = int(off)
+        count_attempted += 1
         if not _symbol_evidence_matches_target(s, version_key, off):
             count_invalid += 1
             continue
@@ -2012,7 +2613,19 @@ def _import_fallback_symbols():
         if addr is None:
             count_invalid += 1
             continue
-        sname = s['n']
+        # 'public: virtual void __cdecl A::B(void)' / 'A::B(int, float)' are
+        # not legal Ghidra names (createLabel/setName threw and the symbol
+        # vanished).  Apply the sanitised NAME; keep the full text as evidence.
+        # Overloads then share one NAME at different addresses, exactly like
+        # undecorated fallback names always have; the plate comment keeps the
+        # distinguishing full text.
+        raw_name = s['n']
+        sname = sanitize_symbol_name(raw_name)
+        if not sname:
+            count_invalid += 1
+            continue
+        if sname != raw_name:
+            count_sanitized += 1
         source_type = _source_for_symbol(s, True)
 
         try:
@@ -2027,7 +2640,7 @@ def _import_fallback_symbols():
                     f.setName(sname, source_type)
                     sig_target = f
                     was_renamed = True
-                elif curr == sname:
+                elif curr == sname or curr == raw_name:
                     # Same symbol applied by a previous run -- still eligible
                     # for signature application (makes sig fixes idempotent
                     # and retro-applicable by re-running the script).
@@ -2052,13 +2665,19 @@ def _import_fallback_symbols():
             # dropped their 'sd' on the floor (e.g. FNV ships ~19k of them).
             sd = s.get('sd')
             if sd and sig_target is not None:
-                has_sig = sig_target.getSignature().getReturnType().getClass().getSimpleName() != 'DefaultDataType'
-                if not has_sig:
+                if _signature_is_user_defined(sig_target):
+                    count_sig_user_kept += 1
+                elif not _signature_is_authoritative(sig_target):
                     try:
                         apply_structured_sig(sd, sname, addr, fm, source_type)
                         count_fb_sig += 1
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
                     except:
                         count_fb_sig_fail += 1
+                        if count_fb_sig_fail <= 20:
+                            print('FALLBACK SIG FAIL: ' + sname + ': ' +
+                                  str(sys.exc_info()[1])[:120])
 
             if not was_renamed:
                 count_skipped += 1
@@ -2078,16 +2697,26 @@ def _import_fallback_symbols():
                 comment_parts.append('Source: AE rename database (fallback)')
             elif src:
                 comment_parts.append('Source: ' + src + ' (fallback)')
+            if sname != raw_name:
+                comment_parts.append('Symbol: ' + str(raw_name))
             if comment_parts:
                 _merge_plate_comment(addr, comment_parts)
             count_applied += 1
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
-            pass
+            _note_failure('Fallback symbols', sname)
 
     print('Fallback: applied ' + str(count_applied) + ', skipped (already named): ' + str(count_skipped))
     print('Fallback rejected invalid/unmapped/section-mismatched: ' + str(count_invalid))
-    if count_fb_sig or count_fb_sig_fail:
-        print('Fallback signatures applied: ' + str(count_fb_sig) + ', failed: ' + str(count_fb_sig_fail))
+    if count_sanitized:
+        print('Fallback decorated names sanitised (full text kept in plate comment): ' +
+              str(count_sanitized))
+    if count_fb_sig or count_fb_sig_fail or count_sig_user_kept:
+        print('Fallback signatures applied: ' + str(count_fb_sig) + ', failed: ' +
+              str(count_fb_sig_fail) + ', USER_DEFINED prototypes kept: ' +
+              str(count_sig_user_kept))
+    _finish_pass('Fallback symbols', count_attempted)
 
 '''
 
@@ -2096,15 +2725,136 @@ try:
 except (ImportError, ValueError):
     from provenance import GHIDRA_PROVENANCE_APPLY_SNIPPET
 
+# run() calls _apply_bgs_provenance() INSIDE its outermost transaction (the
+# snippet's own startTransaction nests), so there is no second, post-commit
+# transaction any more.  'run()' must stay the final statement: apply_enrich /
+# stamp_provenance locate the trailing call textually.
 GHIDRA_SCRIPT_FOOTER += GHIDRA_PROVENANCE_APPLY_SNIPPET + '''
 run()
-_apply_bgs_provenance()
 '''
 
 
 # ---------------------------------------------------------------------------
 # Script generation
 # ---------------------------------------------------------------------------
+
+def _decorated_params(raw) -> Optional[str]:
+    """Normalised argument list (plus cv-qualifiers) of a decorated symbol
+    name, None when it has none.
+
+    ``public: bool __cdecl A::B(class X * __ptr64,int)`` -> ``X*,int``;
+    ``A::B(void)`` -> ``''``; ``A::B(void) const`` -> ``' const'``;
+    ``A::B`` -> None.  The list is located exactly as
+    ``sanitize_symbol_name`` cuts it (``operator()`` is not a list).
+    """
+    text = ' '.join(str(raw or '').split())
+    scan, open_quotes = _name_scan(text)
+    if open_quotes:
+        scan, open_quotes = _name_scan(text, False)
+    start = next((index for index, char, angle, quote in scan
+                  if char == '(' and angle == 0 and quote == 0), None)
+    if start is None:
+        return None
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == '(':
+            depth += 1
+        elif text[index] == ')':
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        return None
+    params = re.sub(r'\b(?:class|struct|union|enum)\s+', '', text[start + 1:index])
+    params = params.replace('__ptr64', '')
+    params = re.sub(r'\s*([*&,<>()])\s*', r'\1', params).strip()
+    # ``f() const`` and ``f()`` are two functions
+    quals = [tok for tok in text[index + 1:].split() if tok in ('const', 'volatile')]
+    return ('' if params == 'void' else params) + ''.join(' ' + q for q in quals)
+
+
+def _cpp_suffixes(full_name: str) -> List[str]:
+    """Every '::'-suffix spelling of a qualified name ('A::B::C', 'B::C', 'C').
+
+    '::' inside template arguments is not a scope separator.
+    """
+    parts: List[str] = []
+    depth = 0
+    current = ''
+    index = 0
+    while index < len(full_name):
+        char = full_name[index]
+        if char == '<':
+            depth += 1
+        elif char == '>' and depth > 0:
+            depth -= 1
+        if depth == 0 and full_name.startswith('::', index):
+            parts.append(current)
+            current = ''
+            index += 2
+            continue
+        current += char
+        index += 1
+    parts.append(current)
+    parts = [part for part in parts if part]
+    return ['::'.join(parts[i:]) for i in range(len(parts))]
+
+
+def _namespace_owner_names(structs: dict) -> set:
+    """Owner spellings that can only mean a namespace, never a record."""
+    namespace_names = set()
+    record_names = set()
+    for st in structs.values():
+        target = (namespace_names if st.get('record_kind') == 'namespace'
+                  else record_names)
+        target.update(_cpp_suffixes(st['full_name']))
+    return namespace_names - record_names
+
+
+def _mark_namespace_functions_static(symbols: list, namespace_owners: set) -> int:
+    """Force ``sd[2]`` (is_static) for functions owned by a namespace."""
+    fixed = 0
+    for symbol in symbols:
+        sd = symbol.get('sd')
+        name = symbol.get('n') or ''
+        if (not sd or len(sd) < 3 or sd[2] or '::' not in name):
+            continue
+        owner = sanitize_symbol_name(name).rsplit('::', 1)[0]
+        if owner in namespace_owners:
+            symbol['sd'] = [sd[0], sd[1], 1]
+            fixed += 1
+    if fixed:
+        print('  Marked {} namespace-scope functions static (no this)'.format(fixed))
+    return fixed
+
+
+def normalize_enum_values(values, size):
+    """One consistent integer representation per enum, as Ghidra requires.
+
+    A Ghidra enum is either signed or unsigned as a whole: adding ``-1`` to an
+    enum that already holds ``0xFFFFFFFF`` throws and aborts the import
+    (``RE::XAUDIO2_PROCESSORS::XAUDIO2_WINDOWS_PROCESSOR_SPECIFIER`` has both).
+    Both spellings denote the same bit pattern, so when an enum mixes negative
+    values with values above the signed maximum, every value is reduced to its
+    unsigned bit pattern.  Eight-byte enums use the signed form instead,
+    because a Java ``long`` cannot hold values >= 2**63.
+    """
+    bits = 8 * max(1, int(size))
+    mask = (1 << bits) - 1
+    numbers = [value for _name, value in values]
+    mixed = (any(value < 0 for value in numbers) and
+             any(value > (mask >> 1) for value in numbers))
+    out = []
+    for name, value in values:
+        if bits >= 64:
+            value &= mask
+            if value >= (1 << 63):
+                value -= (1 << 64)
+        elif mixed or value > mask or value < -(1 << (bits - 1)):
+            value &= mask
+        out.append((name, value))
+    return out
+
 
 def generate_script(
     enums: dict,
@@ -2151,6 +2901,7 @@ def generate_script(
         inspected with :mod:`binary_identity` during generation.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    version_rva_key, _version_id_key = version_keys(version)
 
     header = script_header if script_header is not None else GHIDRA_SCRIPT_HEADER
     footer = script_footer if script_footer is not None else GHIDRA_SCRIPT_FOOTER
@@ -2173,6 +2924,24 @@ def generate_script(
                     raise ValueError('artifact lineage requires exact source.sha256')
                 target_lineage.append(item)
                 target_manifests.append(item['artifact'])
+                # Evidence-bound lineage: when the generator PROVED that source
+                # and artifact map to byte-identical sections
+                # (binary_identity.prove_section_equivalence), a Program that was
+                # imported from the exact source file is the same image, so the
+                # source becomes a second allowed identity.  Every other check
+                # (hash, size, sections, memory anchors) still applies to it.
+                proof = item.get('equivalence')
+                if isinstance(proof, dict):
+                    if (proof.get('proof') != 'all sections byte-identical'
+                            or proof.get('source_sha256') != item['source'].get('sha256')
+                            or proof.get('artifact_sha256') != item['artifact'].get('sha256')
+                            or not proof.get('sections_sha256')):
+                        raise ValueError('lineage equivalence proof does not '
+                                         'match its source/artifact')
+                    equivalent = dict(item['source'])
+                    equivalent['equivalent_to'] = item['artifact']['sha256']
+                    equivalent['equivalence'] = proof
+                    target_manifests.append(equivalent)
             else:
                 target_manifests.append(item)
     deduped_targets = []
@@ -2193,6 +2962,9 @@ def generate_script(
     lines = [header]
 
     lines.append('VERSION = {}'.format(repr(version)))
+    lines.append('VERSION_KEYS = {}'.format(repr(
+        {key: tuple(value) for key, value in sorted(VERSION_KEYS.items())})))
+    lines.append('ADDRLIB_RECORD = {}'.format(repr(ADDRLIB_RECORD)))
     lines.append('PROJECT_NAME = {}'.format(repr(project_name)))
     lines.append('import json as _json_target')
     lines.append('TARGET_MANIFESTS = _json_target.loads(' +
@@ -2209,6 +2981,12 @@ def generate_script(
         deduped_targets)
     lines.append('BGS_PROVENANCE = _json_target.loads(' +
                  repr(canonical_json(provenance_manifest)) + ')')
+    # Record layouts depend on the LLVM release; make the one used visible.
+    try:
+        from .clang_types import used_clang_version
+    except (ImportError, ValueError):
+        from clang_types import used_clang_version
+    lines.append('BGS_CLANG_VERSION = {}'.format(repr(used_clang_version())))
     lines.append('')
 
     # Ghidra has one datatype namespace per category, while C++ permits tag
@@ -2250,20 +3028,15 @@ def generate_script(
     lines.append('')
 
     # ENUMS — convert unsigned values >= 2^63 to signed for Java long
-    def _wrap_signed(values):
-        out = []
-        for n, v in values:
-            if v >= (1 << 63):
-                v -= (1 << 64)
-            out.append((n, v))
-        return out
+    def _wrap_signed(values, size):
+        return normalize_enum_values(values, size)
 
     lines.append('ENUMS = [')
     for en in sorted(enums.values(), key=lambda e: e['full_name']):
         name = _storage_names.get(en['full_name'], en['name'])
         size = en['size']
         category = en['category']
-        values = _wrap_signed(en['values'])
+        values = _wrap_signed(en['values'], size)
         val_str = repr(values)
         lines.append('    ({}, {}, {}, {}, {}),'.format(
             repr(name), repr(en['full_name']), repr(size), repr(category), val_str))
@@ -2273,6 +3046,10 @@ def generate_script(
     # STRUCTS
     lines.append('STRUCTS = [')
     for st in sorted(structs.values(), key=lambda s: s['full_name']):
+        if st.get('record_kind') == 'namespace':
+            # A namespace pseudo-record only carries free functions; it is not
+            # a datatype and must not become a 0-size struct named ``RE``.
+            continue
         name = _storage_names.get(st['full_name'], st['name'])
         size = st['size']
         category = st['category']
@@ -2298,32 +3075,21 @@ def generate_script(
     lines.append(']')
     lines.append('')
 
-    # Build class::method -> structured signature lookup from method data
-    _method_sd_lookup = {}
-    _method_short_candidates = {}
-    for st in structs.values():
-        class_short = st['name']
-        class_full = st['full_name']
-        for mname, (ret, params) in st.get('method_sigs', {}).items():
-            if ret and params is not None:
-                sd = [ret, params, 0]
-                _method_sd_lookup[class_full + '::' + mname] = sd
-                _method_short_candidates.setdefault(
-                    class_short + '::' + mname, []).append(sd)
-    for key, candidates in _method_short_candidates.items():
-        if len(candidates) == 1 and key not in _method_sd_lookup:
-            _method_sd_lookup[key] = candidates[0]
+    # Namespace-scope free functions are stored by the clang layer as methods
+    # of a 'namespace' pseudo-record.  They are NOT members: inserting a
+    # 'this' shifts every argument register.  An owner spelling (full name or
+    # any '::' suffix of it) counts as a namespace only when no real record
+    # answers to the same spelling.
+    namespace_owners = _namespace_owner_names(structs)
+    lines.append('NAMESPACE_OWNERS = frozenset({})'.format(
+        repr(sorted(namespace_owners))))
+    lines.append('')
 
-    # Inject structured signatures into symbol entries
+    # Structured signatures ('sd') are attached by the drivers before this
+    # point (the SSE / F4 parse_commonlib_types match symbols against the AST
+    # ``methods``, rejecting uninstantiated template parameters).
     _syms = json.loads(symbols_json)
-    _sig_count = 0
-    for s in _syms:
-        if s['t'] == 'func' and not s.get('sd') and not s.get('sig') and '::' in s.get('n', ''):
-            sd = _method_sd_lookup.get(s['n'])
-            if sd:
-                s['sd'] = sd
-                _sig_count += 1
-    if _sig_count:
+    if _mark_namespace_functions_static(_syms, namespace_owners):
         symbols_json = json.dumps(_syms, separators=(',', ':'))
 
     lines.append('import json as _json_sym')
@@ -2347,12 +3113,68 @@ def generate_script(
         unique = {repr(candidate): candidate for candidate in candidates}
         if len(unique) == 1:
             _vtable_sigs[key] = next(iter(unique.values()))
-    if fallback_symbols_json != '[]' and _vtable_sigs:
+    if fallback_symbols_json != '[]':
         _fb = json.loads(fallback_symbols_json)
+        _fb_changed = False
+
+        # De-duplicate DECORATED fallback names against the primary symbols of
+        # THIS runtime by their SANITISED name.  'A::B(int)' / 'public: ...
+        # __cdecl A::B(void)' never compared equal to the primary 'A::B' in the
+        # drivers' exact-name de-dup, so that de-dup silently never fired.
+        # The same name at the same RVA stays (it is how a fallback 'sd' reaches
+        # a primary function).  At another RVA it is dropped only when its
+        # argument list is the primary's own: the same function claimed twice.
+        # A different or unknown list is an overload, kept exactly like two
+        # fallback overloads of one name are.
+        _primary_name_rvas = {}     # sanitised name -> {rva: {argument lists}}
+        for s in _syms:
+            if s.get(version_rva_key) is not None:
+                _primary_name_rvas.setdefault(
+                    sanitize_symbol_name(s.get('n')), {}).setdefault(
+                        int(s[version_rva_key]), set()).add(
+                            _decorated_params(s.get('n')))
+        _primary_name_rvas.pop('', None)
+
+        def _conflicts_with_primary(symbol):
+            rva = symbol.get(version_rva_key)
+            if rva is None:
+                return False
+            clean = sanitize_symbol_name(symbol.get('n'))
+            if clean == symbol.get('n'):
+                # Undecorated: the per-game driver already compared this exact
+                # name against its primary names; its policy is not ours.
+                return False
+            claimed = _primary_name_rvas.get(clean)
+            if not claimed or int(rva) in claimed:
+                return False
+            params = _decorated_params(symbol.get('n'))
+            return params is not None and any(
+                params in lists for lists in claimed.values())
+
+        _kept = [s for s in _fb if not _conflicts_with_primary(s)]
+        if len(_kept) != len(_fb):
+            print('  Dropped {} fallback symbols that are a primary symbol (same '
+                  'name and arguments) at a different address'.format(
+                      len(_fb) - len(_kept)))
+            _fb = _kept
+            _fb_changed = True
+
+        # A vtable-slot signature is attached only when the sanitised name is
+        # unambiguous: 'A::B(int)' and 'A::B(float)' must not both receive the
+        # one known prototype, nor an overload of a primary 'A::B' elsewhere.
+        _fb_name_uses = {}
+        for s in _fb:
+            if s.get(version_rva_key) is not None:
+                _clean = sanitize_symbol_name(s.get('n'))
+                _fb_name_uses[_clean] = _fb_name_uses.get(_clean, 0) + 1
         _upgraded = 0
         for s in _fb:
-            sig_info = _vtable_sigs.get(s.get('n'))
-            if sig_info:
+            _clean = sanitize_symbol_name(s.get('n'))
+            sig_info = _vtable_sigs.get(_clean)
+            _rva = s.get(version_rva_key)
+            _elsewhere = [rva for rva in _primary_name_rvas.get(_clean, ())
+                          if _rva is None or rva != int(_rva)]
+            if sig_info and _fb_name_uses.get(_clean, 0) <= 1 and not _elsewhere:
                 s['src'] = project_name
                 if sig_info[0] is not None and sig_info[1] is not None and not s.get('sd'):
                     s['sd'] = [sig_info[0], sig_info[1], 0]
@@ -2360,6 +3182,10 @@ def generate_script(
                 _upgraded += 1
         if _upgraded:
             print('  Upgraded {} vtable-known fallback symbols to {} source'.format(_upgraded, project_name))
+            _fb_changed = True
+        if _mark_namespace_functions_static(_fb, namespace_owners):
+            _fb_changed = True
+        if _fb_changed:
             fallback_symbols_json = json.dumps(_fb, separators=(',', ':'))
 
     # Use json.loads so JSON's ``true``/``false``/``null`` parse safely
@@ -2373,7 +3199,8 @@ def generate_script(
     if address_lib_map:
         import base64 as _b64
         pairs = sorted(address_lib_map.items())
-        blob = b''.join(struct.pack('<II', rva, rid) for rva, rid in pairs)
+        # u64 id: Skyrim VR ids exceed 2**32.  Decoder: _build_rva_to_id().
+        blob = b''.join(struct.pack(ADDRLIB_RECORD, rva, rid) for rva, rid in pairs)
         b64 = _b64.b64encode(blob).decode('ascii')
         lines.append('_ADDRLIB_B64 = (')
         for i in range(0, len(b64), 120):

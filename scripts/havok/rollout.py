@@ -19,6 +19,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 sys.path.insert(0, str(HERE))
 import apply_structs
 import apply_this
@@ -44,7 +48,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         root = project.getProjectData().getRootFolder()
         files = []
 
@@ -68,7 +72,7 @@ def main():
 
         for ppath, df in targets:
             consumer = java.lang.Object()
-            program = df.getDomainObject(consumer, not args.dry_run, False, monitor)
+            program = open_program(df, consumer, monitor, write=not args.dry_run)
             try:
                 print("\n### %s" % ppath)
                 apply_structs.run(program, records, args.dry_run, monitor,

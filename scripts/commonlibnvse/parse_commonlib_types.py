@@ -97,11 +97,20 @@ def _try_clang_types(verbose=True):
     pipeline still produces a usable labels-only script.
     """
     if not os.path.isfile(ENTRY_HEADER):
+        # Same fail-closed rule as a parse failure below: a missing header must
+        # not ship a zero-type importer while the run looks successful.
+        if os.environ.get('BGS_ALLOW_LABELS_ONLY') != '1':
+            raise RuntimeError(
+                'xNVSE entry header not found: {}; run `git submodule update '
+                '--init` or set BGS_ALLOW_LABELS_ONLY=1 to emit a labels-only '
+                'importer'.format(ENTRY_HEADER))
         if verbose:
             print('  xNVSE entry header not found: {}'.format(ENTRY_HEADER))
-            print('  Falling back to labels-only output.')
+            print('  BGS_ALLOW_LABELS_ONLY=1: labels-only output '
+                  '(no struct/enum types).')
         return {}, {}, {}, ''
 
+    from clang_types import ToolchainMismatchError
     try:
         from clang_types import collect_types, _setup_include_paths
         from ghidra_import_gen import (
@@ -146,6 +155,9 @@ def _try_clang_types(verbose=True):
             print('  structs:  {}'.format(len(structs)))
             print('  vtables:  {}'.format(len(vtable_structs)))
         return enums, structs, vtable_structs, template_source
+    except ToolchainMismatchError:
+        # An unpinned compiler must stop generation, not degrade it.
+        raise
     except (Exception, SystemExit) as e:
         # clang_types.collect_types() calls sys.exit() when clang.exe
         # isn't on PATH, so catch SystemExit too.
@@ -154,7 +166,13 @@ def _try_clang_types(verbose=True):
         if os.environ.get('BGS_DEBUG_FNV'):
             import traceback
             traceback.print_exc()
-        print('         Falling back to labels-only output '
+        # Fail closed: a silent labels-only importer ships zero types while the
+        # run looks successful.  Labels-only output must be asked for.
+        if os.environ.get('BGS_ALLOW_LABELS_ONLY') != '1':
+            raise RuntimeError(
+                'xNVSE types could not be parsed; fix the headers or set '
+                'BGS_ALLOW_LABELS_ONLY=1 to emit a labels-only importer') from e
+        print('         BGS_ALLOW_LABELS_ONLY=1: labels-only output '
               '(no struct/enum types).')
         return {}, {}, {}, ''
 

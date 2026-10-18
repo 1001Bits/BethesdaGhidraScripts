@@ -34,12 +34,12 @@ Seeds use SourceType.ANALYSIS so a human edit / CommonLib re-import outranks the
 Dry-run by default; CLVR_SEED=go to apply. Decision logic is in seed_plan.py
 (unit-tested).
 """
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clvr_config import IMPORT_PATH, SCRIPT_DIR  # noqa: E402
+from generated_symbols import load_symbols  # noqa: E402
 
 APPLY = os.environ.get('CLVR_SEED', 'dry').lower() == 'go'
 
@@ -55,16 +55,9 @@ _DUP = _re.compile(r'(?:_[0-9A-Fa-f]{6,})+$')
 def _static_map():
     """{ 'Class::Method': is_static } from CommonLib SYMBOLS (sd[2])."""
     out = {}
-    try:
-        with open(IMPORT_PATH) as f:
-            for line in f:
-                if line.startswith('SYMBOLS = '):
-                    for s in json.loads(line[len('SYMBOLS = '):]):
-                        if s.get('t') == 'func' and s.get('sd'):
-                            out[s['n']] = bool(s['sd'][2])
-                    break
-    except Exception:
-        pass
+    for s in load_symbols(IMPORT_PATH):
+        if s.get('t') == 'func' and s.get('sd'):
+            out[s['n']] = bool(s['sd'][2])
     return out
 
 

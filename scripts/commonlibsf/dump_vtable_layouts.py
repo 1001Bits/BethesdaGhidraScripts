@@ -49,6 +49,7 @@ CORE_DIR    = REPO_DIR / "scripts" / "core"
 
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(SCRIPT_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 FP_BYTES = 32
 _VERSIONLIB_RE = re.compile(
@@ -124,7 +125,7 @@ def _find_program_by_sha256(project, expected_sha256, consumer, monitor):
         for domain_file in folder.getFiles():
             obj = None
             try:
-                obj = domain_file.getDomainObject(consumer, False, False, monitor)
+                obj = open_program(domain_file, consumer, monitor, write=False)
                 actual = (obj.getExecutableSHA256() or '').lower()
                 if actual == expected_sha256.lower():
                     matches.append(domain_file)
@@ -423,7 +424,7 @@ def main():
 
     from vtable_layout import BinaryLayout, ClassVtable, SlotEntry, save_csv
 
-    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         consumer = java.lang.Object()
         domain_file = _find_program_by_sha256(
             project, args.expected_sha256, consumer, monitor)
@@ -433,7 +434,7 @@ def main():
             sys.exit(2)
         print('Found program: {}'.format(domain_file.getPathname()))
 
-        program = domain_file.getDomainObject(consumer, False, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         try:
             actual = ''
             try:

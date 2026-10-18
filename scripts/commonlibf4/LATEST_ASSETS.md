@@ -22,6 +22,13 @@ V5, so the Skyrim loader accepts V1/V2 for existing targets and the bounded,
 flat-indexed V5 layout for `1.7.104`. No intermediate Skyrim versions are added
 by this integration.
 
+Skyrim `1.6.640` was added afterwards as an exact older AE target (catalog key
+`ae16640`, `exes/skyrim/16640/`, `CommonLibImport_AE_1_6_640.py`). Its V2
+address library and in-place-unpacked executable are pinned in the same
+manifest. It resolves symbols through the AE ID namespace only; the CommonLibSSE
+headers have no pre-1.6.1130 layout switch, so its imported types are
+1.6.1130+-shaped and its vtable overlays stay disabled.
+
 The local release source archive omitted CommonLibF4's declared
 `lib/commonlib-shared` submodule. The generator dependency and downloaded
 archive identity are recorded in `scripts/core/latest_target_assets.json`.

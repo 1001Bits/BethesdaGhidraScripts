@@ -503,7 +503,7 @@ def _get_exe_fingerprints():
     fps = {}
     if EXES_ROOT.is_dir():
         for exe in EXES_ROOT.rglob("*.exe"):
-            if "unpacked" in exe.name.lower():
+            if "unpacked" in exe.name.lower() or _is_recovered_artifact(exe):
                 continue
             rel = exe.relative_to(EXES_ROOT).as_posix()
             fps[rel] = canonical_identity(inspect_pe(str(exe)))
@@ -1135,9 +1135,36 @@ def _requirement_satisfied(import_name, requirement):
     return _can_import(import_name)
 
 
+def _confirm_clean():
+    """Interactive guard for menu option 8: deleting the project is final."""
+    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    print()
+    print("  This permanently DELETES the generated pipeline project:")
+    print(f"    {project_dir}")
+    print("  including every analysis result and anything saved into it by hand.")
+    try:
+        answer = input("  Type 'yes' to delete it: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer != "yes":
+        print("  Cancelled; nothing was removed.")
+        return False
+    return True
+
+
 def clean_project():
     _header("Clean Ghidra Project")
     project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    locks = _project_lock_files(project_dir, GHIDRA_PROJECT_NAME)
+    if locks:
+        # A lock means Ghidra (GUI or a pipeline step) has the project open:
+        # deleting it underneath corrupts that session and loses its work.
+        raise RuntimeError(
+            "refusing to clean: the pipeline project is locked ({}).  Close "
+            "Ghidra / wait for the running step, or remove a stale lock by "
+            "hand after checking nothing uses it.".format(
+                ", ".join(str(lock) for lock in locks)))
     if project_dir.exists():
         _safe_rmtree(PROJECTS_DIR, project_dir, "generated Ghidra project")
         print("  Removed project directory.")
@@ -1247,7 +1274,7 @@ def _discover_ghidra_projects():
     """Find all .gpr Ghidra projects in known roots.
 
     Includes the in-repo project plus any under EXTERNAL_GHIDRA_ROOTS
-    (e.g., C:/GhidraProjects/ExampleProject.gpr if the user has a separate
+    (e.g., C:/GhidraProjects/Combined.gpr if the user has a separate
     pre-analyzed corpus).  Returns a list of (display_name, project_dir,
     project_name) tuples.
     """
@@ -1399,6 +1426,9 @@ def _enrich_menu():
     when you already have a fully-analyzed binary somewhere and just want
     to apply our RTTI-driven vtable expansion to bump its named-function
     count.
+
+    Returns False when the project could not be opened or the sequence
+    failed, the sequence's True on success, and None when the user backed out.
     """
     projects = _discover_ghidra_projects()
     if not projects:
@@ -1437,7 +1467,7 @@ def _enrich_menu():
         print("=" * 60)
         print()
         input("  Press Enter to return to main menu ... ")
-        return
+        return False
     if result is None:
         print()
         print("=" * 60)
@@ -1445,7 +1475,7 @@ def _enrich_menu():
         print("=" * 60)
         print()
         input("  Press Enter to return to main menu ... ")
-        return
+        return False
     programs = result
     if not programs:
         print("  No programs in project.")
@@ -1473,7 +1503,7 @@ def _enrich_menu():
         return
     program_path, _ = programs[pidx - 1]
 
-    _run_enrichment_sequence(label, pdir, pname, program_path)
+    return _run_enrichment_sequence(label, pdir, pname, program_path)
 
 
 def _run_enrichment_sequence(label, pdir, pname, program_path):
@@ -1625,6 +1655,25 @@ def _export_menu():
     input("\n  Press Enter to return to main menu ... ")
 
 
+# Exact-build Skyrim AE runtimes with their own importer.  Every one of these
+# names also matches the generic ``skyrimae`` / ``_ae`` hints, so they must be
+# tested before falling back to the 1.6.1170 importer.
+_SKYRIM_AE_EXACT_BUILDS = (
+    (('1_7_104', '1.7.104', '_17104'), '17104.exe',
+     'CommonLibImport_AE_1_7_104.py'),
+    (('1_6_640', '1.6.640', '_16640'), '16640.exe',
+     'CommonLibImport_AE_1_6_640.py'),
+)
+
+
+def _skyrim_ae_exact_build_script(n):
+    """Importer for an exact-build AE tag in lower-cased name ``n``, or None."""
+    for tags, suffix, script in _SKYRIM_AE_EXACT_BUILDS:
+        if any(tag in n for tag in tags) or n.endswith(suffix):
+            return script
+    return None
+
+
 def _infer_commonlib_script(program_name):
     """Return the best-fit ``CommonLibImport_*.py`` basename for a program.
 
@@ -1645,19 +1694,16 @@ def _infer_commonlib_script(program_name):
         # emitted until an exact GOG executable is present and bound.
         return None
     if 'skyrimae' in n:
-        if ('1_7_104' in n or '1.7.104' in n or '_17104' in n or
-                n.endswith('17104.exe')):
-            return 'CommonLibImport_AE_1_7_104.py'
-        return 'CommonLibImport_AE.py'
+        return _skyrim_ae_exact_build_script(n) or 'CommonLibImport_AE.py'
     if 'skyrimse' in n:
         # Bethesda names both SE and AE binaries SkyrimSE.exe.  Automatic
         # mutation requires an explicit version tag; never guess that a bare
         # basename is whichever Steam build happens to be current.
         if '1_5_97' in n or '1.5.97' in n:
             return 'CommonLibImport_SE.py'
-        if ('1_7_104' in n or '1.7.104' in n or '_17104' in n or
-                n.endswith('17104.exe')):
-            return 'CommonLibImport_AE_1_7_104.py'
+        exact_build = _skyrim_ae_exact_build_script(n)
+        if exact_build:
+            return exact_build
         if ('1_6_1170' in n or '1.6.1170' in n or
                 '_ae' in n or ' ae' in n):
             return 'CommonLibImport_AE.py'
@@ -1712,8 +1758,8 @@ def _local_target_pe_candidates(program_path):
     These paths are evidence candidates, not trusted selections.  The RTTI
     subprocess inspects each PE, then requires one candidate's SHA, anchors,
     sections, image base, and pointer width to attest the live Program.  Both
-    packed and identity-bound unpacked files are passed because an imported
-    program may record a deleted temporary Steamless path.
+    packed and identity-bound unpacked files are passed because a Combined
+    project commonly records a deleted temporary Steamless path.
     """
     suggested = _infer_commonlib_script(Path(program_path).name)
     matches = [entry for entry in VERSION_CATALOG if entry[4] == suggested]
@@ -1722,6 +1768,10 @@ def _local_target_pe_candidates(program_path):
         if target_dir.is_dir():
             found = sorted(path for path in target_dir.glob("*.exe")
                            if path.is_file())
+            # A recovered build is kept in a subfolder (see _recovery_dir).
+            found += sorted(path for path in
+                            (target_dir / RECOVERED_DIR_NAME).glob("*.exe")
+                            if path.is_file())
             if found:
                 return found
     # No inferred runtime (e.g. a GOG build, or a program named off-catalog):
@@ -1733,17 +1783,67 @@ def _local_target_pe_candidates(program_path):
     return sorted(path for path in EXES_ROOT.rglob("*.exe") if path.is_file())
 
 
+# Recovered executables that would sit next to a staged original live here.
+# Every "one original .exe per version folder" discovery (run.py, the parsers,
+# run_headless) only globs the folder itself, so a second .exe never makes a
+# version directory ambiguous.
+RECOVERED_DIR_NAME = "recovered"
+
+
+def _is_recovered_artifact(path):
+    """An exe written by option 9's recovery, not a staged original."""
+    try:
+        parts = Path(path).resolve().relative_to(EXES_ROOT.resolve()).parts
+    except (OSError, ValueError):
+        return False
+    return RECOVERED_DIR_NAME in parts[:-1]
+
+
+def _recovery_dir(program_path):
+    """Where ``_recover_target_pe`` writes the exact imported executable.
+
+    The catalog version folder only while it holds no original .exe: there the
+    recovered file IS the staged target that regeneration needs.  Next to a
+    staged original it would be a second ".exe" and make every
+    one-original-per-folder discovery ambiguous, so it goes in a
+    ``recovered/`` subfolder that discovery never globs (but that
+    ``_local_target_pe_candidates`` offers).
+    """
+    suggested = _infer_commonlib_script(Path(program_path).name)
+    matches = [entry for entry in VERSION_CATALOG if entry[4] == suggested]
+    if len(matches) != 1:
+        return EXES_ROOT / RECOVERED_DIR_NAME
+    ver_dir = EXES_ROOT / matches[0][3]
+    staged = ([f for f in ver_dir.glob("*.exe")
+               if f.is_file() and "unpacked" not in f.name.lower()]
+              if ver_dir.is_dir() else [])
+    return ver_dir / RECOVERED_DIR_NAME if staged else ver_dir
+
+
+def _unused_recovery_path(wanted):
+    """``wanted`` when free, else ``<stem>.recovered[-N].exe`` beside it."""
+    wanted = Path(wanted)
+    if not wanted.exists():
+        return wanted
+    for index in range(1, 1000):
+        suffix = ".recovered" if index == 1 else ".recovered-{}".format(index)
+        candidate = wanted.with_name(wanted.stem + suffix + (wanted.suffix or ".exe"))
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("no free recovery file name next to {}".format(wanted))
+
+
 def _recover_target_pe(program_path, pdir, pname):
     """Export the Program's original imported bytes into ``exes/``.
 
     Returns the recovered path, or None.  The helper keeps the file only when
     it hashes to the SHA-256 the Program recorded at import time.
     """
-    suggested = _infer_commonlib_script(Path(program_path).name)
-    matches = [entry for entry in VERSION_CATALOG if entry[4] == suggested]
-    out_dir = (EXES_ROOT / matches[0][3]) if len(matches) == 1 \
-        else (EXES_ROOT / "recovered")
-    out = out_dir / Path(program_path).name
+    out_dir = _recovery_dir(program_path)
+    # The helper never overwrites: a file already staged under that name is
+    # the user's (and evidently not the imported build), so recover NEXT to it.
+    out = _unused_recovery_path(out_dir / Path(program_path).name)
+    out.parent.mkdir(parents=True, exist_ok=True)
     if not _wait_for_unlock(pdir, pname, "original-executable recovery"):
         return None
     rc = _run_project_step(
@@ -1807,6 +1907,7 @@ def _prompt_for_target_pe(program_path, pdir=None, pname=None):
 _COMMONLIB_APPLY_SCRIPTS = {
     'CommonLibImport_SE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'se']),
     'CommonLibImport_AE.py':     ('apply_skyrim_to_user_project.py', ['--version', 'ae']),
+    'CommonLibImport_AE_1_6_640.py': ('apply_skyrim_to_user_project.py', ['--version', '16640']),
     'CommonLibImport_AE_1_7_104.py': ('apply_skyrim_to_user_project.py', ['--version', '17104']),
     'CommonLibImport_VR.py':     ('apply_skyrim_to_user_project.py', ['--version', 'vr']),
     # Same applier and runtime; the script itself is passed with --script.
@@ -2086,6 +2187,12 @@ def _version_submenu():
         return _finalize_build(rc, {game})
 
 
+def _describe_command(cmd):
+    if isinstance(cmd, (list, tuple)):
+        return " ".join(str(part) for part in cmd)
+    return str(cmd)
+
+
 def _run_menu():
     _print_status()
     _show_menu()
@@ -2133,9 +2240,13 @@ def _run_menu():
                 if rc:
                     raise RuntimeError(f"full rebuild failed (exit {rc})")
             elif choice == "8":
-                clean_project()
+                if _confirm_clean():
+                    clean_project()
             elif choice == "9":
-                _enrich_menu()
+                # A failed improvement sequence is a failed session, exactly
+                # like a failed build: report it and end non-zero.
+                if _enrich_menu() is False:
+                    raise RuntimeError("improvement sequence did not complete")
             elif choice == "10":
                 _export_menu()
             else:
@@ -2145,6 +2256,15 @@ def _run_menu():
             # e.g. locked-runtime install failure or submodule drift; report
             # and return to the menu instead of crashing out of it.
             print(f"\n  ERROR: {exc}")
+            exit_code = 1
+        except subprocess.CalledProcessError as exc:
+            # A failed child step (git, pip, a pipeline subprocess) is a
+            # result to report, not a reason to lose the menu.
+            print(f"\n  ERROR: command failed (exit {exc.returncode}): "
+                  f"{_describe_command(exc.cmd)}")
+            exit_code = 1
+        except OSError as exc:
+            print(f"\n  ERROR: {type(exc).__name__}: {exc}")
             exit_code = 1
 
         _print_status()

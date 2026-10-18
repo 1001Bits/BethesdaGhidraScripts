@@ -3,11 +3,25 @@
 
 Run: python -m pytest test_ctor_plan.py
 """
+import importlib.util
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ctor_plan as cm  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+
+def _load(name):
+    # core/ and commonlibvr/ both ship a ctor_plan / globals_plan; import by
+    # path under a private name so a full-suite run never mixes them up.
+    spec = importlib.util.spec_from_file_location(
+        'clvr_test_' + name, os.path.join(HERE, name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+cm = _load('ctor_plan')
 
 
 def test_is_ctor():

@@ -238,3 +238,18 @@ def test_fnv_layout_attestation_rejects_reduced_or_changed_corpus(tmp_path):
         attest_pc_corpus_layout(
             target, manifest, [record], expected_tables=1,
             expected_slots=2, expected_digest='0' * 64)
+
+
+def test_missing_entry_header_fails_closed_unless_labels_only_is_allowed(
+        tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'nvse_parse_under_test', HERE / 'parse_commonlib_types.py')
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    monkeypatch.setattr(gen, 'ENTRY_HEADER', str(tmp_path / 'GameForms.h'))
+    monkeypatch.delenv('BGS_ALLOW_LABELS_ONLY', raising=False)
+    with pytest.raises(RuntimeError, match='BGS_ALLOW_LABELS_ONLY'):
+        gen._try_clang_types(verbose=False)
+    monkeypatch.setenv('BGS_ALLOW_LABELS_ONLY', '1')
+    assert gen._try_clang_types(verbose=False) == ({}, {}, {}, '')

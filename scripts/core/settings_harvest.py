@@ -30,6 +30,12 @@ def _is_data_addr(mem, addr):
     return blk is not None and blk.isInitialized() and not blk.isExecute()
 
 
+def _report_errors(errors):
+    print('  %d write(s) FAILED:' % len(errors))
+    for line in errors[:20]:
+        print('    ' + line)
+
+
 def run():
     from ghidra.program.model.symbol import SourceType
     from ghidra.program.model.data import (
@@ -81,7 +87,7 @@ def run():
             base_off = frm.getOffset() - NAME_OFF
             base = af.getAddress(base_off)
             base_block = mem.getBlock(base)
-            if (base_block is None or not base_block.isWritable() or
+            if (base_block is None or not base_block.isWrite() or
                     not base_block.contains(base.add(NAME_OFF + 7))):
                 continue
             # Require a data vtable and an executable first virtual target.
@@ -98,6 +104,23 @@ def run():
                 continue
             candidates.setdefault(base_off, set()).add((key, vt))
 
+    errors = []
+
+    def value_conflict(va, width):
+        """Anything real inside [va, va+width)?  Checked per byte: looking at
+        one data item and then clearing a RANGE destroyed typed neighbours."""
+        for delta in range(width):
+            location = va.add(delta)
+            if listing.getInstructionContaining(location) is not None:
+                return True
+            existing = listing.getDefinedDataContaining(location)
+            if (existing is not None and not
+                    existing.getDataType().getName().startswith('undefined')):
+                return True
+        return False
+
+    had_parent_transaction = (
+        APPLY and cp.getCurrentTransactionInfo() is not None)
     tx = cp.startTransaction('settings-harvest') if APPLY else None
     success = False
     try:
@@ -113,37 +136,45 @@ def run():
                 if vt:
                     typed += 1
                 continue
+            wanted = 'setting_' + key
             try:
                 sym = st.getPrimarySymbol(base)
-                wanted = 'setting_' + key
-                if sym is None or sym.getName().startswith('DAT_'):
+                # Any DEFAULT-source name (DAT_/PTR_/LAB_/...) is a placeholder;
+                # everything else is somebody's name and is kept.
+                if sym is None or sym.getSource() == SourceType.DEFAULT:
                     st.createLabel(base, wanted, SourceType.ANALYSIS)
                     named += 1
                 elif sym.getName() == wanted:
                     named += 1
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                errors.append('name %s @ %s: %s' % (wanted, base, exc))
             if vt:
                 valt, width = vt
                 va = base.add(VALUE_OFF)
-                ex = listing.getDefinedDataContaining(va)
-                if (ex is not None and
-                        (ex.getAddress() != va or
-                         not ex.getDataType().getName().startswith('undefined'))):
+                if value_conflict(va, width):
                     skipped += 1
                     continue
                 dt = PointerDataType() if valt == 'ptr' else _TYPE.get(valt)
                 if dt is not None:
                     try:
                         listing.clearCodeUnits(va, va.add(width - 1), False)
-                        listing.createData(va, dt)
+                        if listing.createData(va, dt) is None:
+                            raise RuntimeError('createData returned no data')
                         typed += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append('type %s @ %s: %s' % (wanted, va, exc))
+        # Decide BEFORE ending the transaction: a pass in which every write
+        # failed is rolled back, never committed and then reported as failed.
+        if errors and not (named or typed):
+            _report_errors(errors)
+            raise RuntimeError(
+                'settings-harvest: every write failed (%d errors)' % len(errors))
         success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, success)
+            committed = bool(cp.endTransaction(tx, success))
+            if success and not had_parent_transaction and not committed:
+                raise RuntimeError('settings-harvest transaction did not commit')
 
     print('settings-harvest (%s): %s  (game=%s, key@0x%X)'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN',
@@ -152,8 +183,17 @@ def run():
           'values-typed=%d ambiguous/skipped=%d'
           % (scanned, len(candidates), 'named' if APPLY else 'would-name',
              named, typed, skipped))
+    if errors:
+        # A silent ``except: pass`` here once hid a pass in which EVERY write
+        # failed while the summary still looked healthy.
+        _report_errors(errors)
     if not APPLY:
         print('  set BGS_ENRICH_APPLY=go to apply.')
 
 
-run()
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('settings_harvest'))

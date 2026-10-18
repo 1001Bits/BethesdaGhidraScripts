@@ -5,7 +5,7 @@
 The Fallout 4 workflow is pinned to Steam Creation Kit `1.11.137.0` at
 `C:\games\steam\steamapps\common\Fallout 4\CreationKit.exe` (SHA-256
 `222fd0aad949e76721d85c922ae508ada6816ba2f3e1fc11647c7239c24c2e13`).
-It imports the Program at the unique ExampleProject path
+It imports the Program at the unique Combined path
 `/Creation Kit/CreationKit Fallout 4 1.11.137.0.exe` and never overwrites the
 Skyrim or Starfield editor Programs.
 
@@ -23,7 +23,7 @@ directory is placed on `D:` to protect the project drive's free-space margin:
 
 ```powershell
 $env:JAVA_TOOL_OPTIONS = '-Djava.io.tmpdir=D:\GhidraTemp\Fallout4CreationKit -XX:ActiveProcessorCount=4'
-& tools\ghidra\support\analyzeHeadless.bat C:\GhidraProjects 'ExampleProject/Creation Kit' `
+& tools\ghidra\support\analyzeHeadless.bat C:\GhidraProjects 'Combined/Creation Kit' `
   -process 'CreationKit Fallout 4 1.11.137.0.exe' -noanalysis `
   -scriptPath tools\ghidra\Ghidra\Features\Decompiler\ghidra_scripts `
   -postScript RecoverClassesFromRTTIScript.java -max-cpu 4
@@ -33,10 +33,10 @@ python scripts/creationkit/analyze_fallout4_creationkit.py policy
 Audit and apply the generic RTTI/vtable pass:
 
 ```powershell
-python scripts/core/run_vtable_pipeline.py C:/GhidraProjects ExampleProject `
+python scripts/core/run_vtable_pipeline.py C:/GhidraProjects Combined `
   '/Creation Kit/CreationKit Fallout 4 1.11.137.0.exe' `
   --target-pe 'C:\games\steam\steamapps\common\Fallout 4\CreationKit.exe' --dry-run
-python scripts/core/run_vtable_pipeline.py C:/GhidraProjects ExampleProject `
+python scripts/core/run_vtable_pipeline.py C:/GhidraProjects Combined `
   '/Creation Kit/CreationKit Fallout 4 1.11.137.0.exe' `
   --target-pe 'C:\games\steam\steamapps\common\Fallout 4\CreationKit.exe'
 ```
@@ -49,12 +49,12 @@ python scripts/creationkit/analyze_fallout4_creationkit.py ckpe-dry
 # Review scripts/creationkit/refs/generated/ckpe_fo4_1_11_137_0_*.json/csv
 python scripts/creationkit/analyze_fallout4_creationkit.py ckpe-apply
 python scripts/creationkit/bytesig_port_fallout4_to_ck.py `
-  --project-dir C:/GhidraProjects --project-name ExampleProject
+  --project-dir C:/GhidraProjects --project-name Combined
 # Review scripts/creationkit/refs/fallout4_to_creationkit_1_11_137_0.csv
 python scripts/creationkit/bytesig_port_fallout4_to_ck.py `
-  --project-dir C:/GhidraProjects --project-name ExampleProject --apply
+  --project-dir C:/GhidraProjects --project-name Combined --apply
 python scripts/creationkit/analyze_fallout4_creationkit.py policy
-& tools\ghidra\support\analyzeHeadless.bat C:\GhidraProjects 'ExampleProject/Creation Kit' `
+& tools\ghidra\support\analyzeHeadless.bat C:\GhidraProjects 'Combined/Creation Kit' `
   -process 'CreationKit Fallout 4 1.11.137.0.exe' -noanalysis `
   -scriptPath scripts\creationkit `
   -postScript VerifyAndFinalizeFallout4CreationKit.java -max-cpu 4
@@ -149,7 +149,7 @@ after reviewing the annotations.
 Cross-binary function naming also has separate identity-locked entry points:
 
 - `bytesig_port_skyrim_to_ck.py` uses the analyzed Skyrim runtime sources.
-- `bytesig_port_fallout4_to_ck.py` uses the exact ExampleProject paths for analyzed
+- `bytesig_port_fallout4_to_ck.py` uses the exact Combined paths for analyzed
   Fallout 4 `1.11.221` and `1.10.163` runtimes.
 
 Both wrappers share the reciprocal-unique matcher in

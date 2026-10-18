@@ -26,12 +26,14 @@ apply-plan CSV + summary. To actually apply, set env CLVR_APPLY=go.
 """
 import os
 import sys
+from collections import ChainMap
 
 from ghidra.program.model.data import (
     StructureDataType, CategoryPath, DataTypeConflictHandler)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from layout_diff import plan_cascade_fix  # noqa: E402
+from gen_tuples import normalize_namespace  # noqa: E402
 from clvr_config import IMPORT_PATH, SCRIPT_DIR, TYPES_CAT  # noqa: E402
 
 CONFLICT_REPORT = os.path.join(SCRIPT_DIR, 'conflict_report.py')
@@ -84,6 +86,11 @@ _dd_spec.loader.exec_module(clvr_dedup)
 def _load_generated_ns():
     """exec the generated import file WITHOUT its trailing run() so we get its
     data (ENUMS/STRUCTS/VTABLES/SYMBOLS) and helpers (resolve_type/created/dtm).
+
+    The importer's own target preflight runs first: it refuses a Program that
+    is not the exact generated-for executable, and it arms the generated
+    address gates (_checked_rva / _ensure_function / _import_vtable_names),
+    which are inert while no target is bound.
     """
     with open(IMPORT_PATH, 'r') as f:
         text = f.read()
@@ -94,7 +101,31 @@ def _load_generated_ns():
     gns = dict(globals())             # inherit flat API
     gns.update(_ghidra_globals())     # currentProgram/monitor are name-injected, not in globals()
     exec(compile(body, IMPORT_PATH, 'exec'), gns)
-    return gns
+    preflight = gns.get('_preflight_target')
+    if preflight is None:
+        raise RuntimeError('{} has no target preflight (unbound or outdated '
+                           'importer); regenerate it'.format(IMPORT_PATH))
+    preflight()
+    view, skipped = _legacy_view(gns)
+    if skipped:
+        print('Left {} union/namespace records to the generated importer '
+              '(not expressible as a sequential struct layout)'.format(skipped))
+    return view
+
+
+def _legacy_view(gns):
+    """Return ``(view, skipped)``: *gns* with legacy-shaped record lists.
+
+    The generator emits 8/5/7-field records; everything in this file (and
+    apply_plan / conflict_report) indexes the older 6/4/5 shape.  The
+    normalised copies live in a separate front map so the exec'd importer
+    globals are never rewritten: its own helpers (``_import_vtable_names``
+    unpacks all 7 VTABLES fields) keep reading the records they were
+    generated with.
+    """
+    legacy = {name: gns[name] for name in ('STRUCTS', 'ENUMS', 'VTABLES')}
+    skipped = normalize_namespace(legacy)
+    return ChainMap(legacy, gns), skipped
 
 
 def _load_classifier():
@@ -583,18 +614,19 @@ def run_symbols():
         fallback symbol passes.
     """
     from ghidra.program.model.symbol import SourceType
-    from ghidra.app.cmd.disassemble import DisassembleCommand
-    gns = _load_generated_ns()
+    gns = _load_generated_ns()       # target preflight already passed
     dtm = gns['dtm']
     created = gns['created']
     SYMBOLS = gns['SYMBOLS']
-    VERSION = gns['VERSION']
     apply_structured_sig = gns['apply_structured_sig']
-    create_function = gns.get('createFunction')
+    # The importer's own gates: exact-target evidence, mapped/permitted RVAs,
+    # and function creation only at a linker-attested entry (.pdata start).
+    evidence_ok = gns['_symbol_evidence_matches_target']
+    checked_rva = gns['_checked_rva']
+    ensure_function = gns['_ensure_function']
     cp = gns['currentProgram']
     fm = cp.getFunctionManager()
     stt = cp.getSymbolTable()
-    base = cp.getImageBase()
     listing = cp.getListing()
 
     # Rebuild created[] from the LIVE (already type-applied) program so signature
@@ -612,7 +644,7 @@ def run_symbols():
         if vt[0] in live:
             created['vtbl:' + vt[0]] = live[vt[0]]
 
-    vkey = {'svr': 'v', 'se': 's', 'ae': 'a'}.get(VERSION, 'a')
+    vkey = gns['_version_keys']()[0]   # unknown VERSION raises, never 'a'
 
     def relid(s):
         si, ai = s.get('si'), s.get('ai')
@@ -632,7 +664,12 @@ def run_symbols():
             off = s.get(vkey)
             if not off:
                 continue
-            addr = base.add(int(off))
+            off = int(off)
+            if not evidence_ok(s, vkey, off):
+                continue
+            addr = checked_rva(off, 'func' if s['t'] == 'func' else 'label')
+            if addr is None:
+                continue
             nm = s['n']
             if s['t'] == 'label':
                 if nm not in [x.getName() for x in stt.getSymbols(addr)]:
@@ -643,12 +680,8 @@ def run_symbols():
                     _safe_eol_comment(listing.getCodeUnitAt(addr), rc)
             else:  # function
                 f = fm.getFunctionAt(addr)
-                if f is None and create_function is not None:
-                    DisassembleCommand(addr, None, True).applyTo(cp)
-                    try:
-                        f = create_function(addr, nm)
-                    except Exception:
-                        f = fm.getFunctionAt(addr)
+                if f is None:
+                    f = ensure_function(addr, None, bool(s.get('verified_entry')))
                     if f is not None:
                         made += 1
                 if f is None:
@@ -734,11 +767,10 @@ def run_sigconflict():
 
     gns = _load_generated_ns()
     SYMBOLS = gns['SYMBOLS']
-    VERSION = gns['VERSION']
     apply_structured_sig = gns['apply_structured_sig']
+    checked_rva = gns['_checked_rva']
     cp = gns['currentProgram']
     fm = cp.getFunctionManager()
-    base = cp.getImageBase()
     dtm = gns['dtm']
     created = gns['created']
 
@@ -753,7 +785,7 @@ def run_sigconflict():
 
     apply_go = os.environ.get('CLVR_SIGCONFLICT', 'dry').lower() == 'go'
     cap = int(os.environ.get('CLVR_SIGCONFLICT_MAX', '0') or 0)
-    vkey = {'svr': 'v', 'se': 's', 'ae': 'a'}.get(VERSION, 'a')
+    vkey = gns['_version_keys']()[0]   # unknown VERSION raises, never 'a'
     out_csv = IMPORT_PATH + '.sigconflict.csv'
 
     decomp = DecompInterface()
@@ -773,8 +805,8 @@ def run_sigconflict():
             off = s.get(vkey)
             if not off:
                 continue
-            addr = base.add(int(off))
-            f = fm.getFunctionAt(addr)
+            addr = checked_rva(int(off), 'func')
+            f = fm.getFunctionAt(addr) if addr is not None else None
             if f is None:
                 continue
             src = f.getSignatureSource()

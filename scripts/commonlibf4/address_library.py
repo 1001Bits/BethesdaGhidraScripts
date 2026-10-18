@@ -7,17 +7,34 @@ Binary format (from CommonLibF4 IDDatabase::load()):
 Loads OG (1.10.163), NG (1.10.984), AE (1.11.191), 1.11.221,
 1.11.240, and VR (1.2.72).
 
-OG and AE/NG IDs share the same meh321-maintained namespace: a single ID
-resolves to a function's offset in whichever DBs it exists in.  VR uses a
-disjoint community-maintained namespace and ships as a flat CSV.  Looking
-up an AE-namespace ID against the VR DB only ever finds coincidental
-low-ID matches that point at the wrong functions, so VR symbols are only
-populated when CommonLibF4 explicitly references a VR ID.
+ID NAMESPACE -- the one authoritative statement (other files refer here)
+-----------------------------------------------------------------------
+Fallout 4 has ONE address-library ID namespace, in two ranges:
 
-CommonLibF4's headers carry NG/AE IDs (1.10.984 / 1.11.191), so symbol
-resolution for OG/VR scripts comes from types and labels only; function
-addresses must be reconstructed via a separate post-pass (e.g. byte-sig
-porting from AE).
+  * Legacy IDs < 1,600,000 (OG max 1,583,368, VR max 1,583,245) identify the
+    same object in OG 1.10.163, NG 1.10.984, AE 1.11.191, 1.11.221, 1.11.240
+    AND VR 1.2.72.  The community VR CSV is keyed on OG IDs: all 93,858 VR IDs
+    exist in the OG database, and the same ID ranks the same in both address
+    orders (rank correlation OG-VR 0.9997, OG-AE 0.9996 over 88,362 shared
+    IDs; neighbouring-ID controls are ~0).  CommonLibF4VR itself resolves OG
+    IDs against the VR CSV at runtime.
+  * IDs >= 2,000,000 were introduced with NG: NG/AE *functions* were
+    renumbered (~2.16M and up) while ~88k legacy data/vtable IDs were kept.
+    These IDs exist only in NG and later and can never resolve in OG or VR.
+
+So a legacy ID may be looked up in every database including ``vr_db``; an
+NG-range ID only in ng/ae/221/240.  Earlier revisions of this docstring (and
+the README) called VR "a disjoint community namespace" -- that was wrong and
+cost ~9.9k valid VR vtable labels.  Because the VR mapping is established
+statistically rather than by the database author, the generator attaches VR
+offsets only when the VR executable is staged and drops every VTABLE_/RTTI_
+label that executable's own RTTI does not confirm.
+
+CommonLibF4's headers carry NG/AE function IDs (1.10.984 / 1.11.191), so OG/VR
+scripts get types and labels only from it; CommonLibF4VR's
+``REL::RelocationID(og, ng)`` carries a legacy ID for OG/VR and an NG-range ID
+for NG and later.  ``resolve_desktop`` below is the desktop half of that and
+deliberately never reads ``vr_db``.
 """
 
 from __future__ import annotations

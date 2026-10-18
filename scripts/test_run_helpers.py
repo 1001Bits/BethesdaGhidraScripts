@@ -99,7 +99,7 @@ def test_commonlib_offer_reports_subprocess_failure(tmp_path, monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(returncode=17))
 
     assert run._offer_commonlib_apply(
-        "project-dir", "ExampleProject",
+        "project-dir", "Combined",
         "/Fallout4/Fallout4_1_11_221.exe") is False
 
 
@@ -121,7 +121,7 @@ def test_locked_project_step_is_retried_not_reported_as_failed(monkeypatch, caps
     monkeypatch.setattr(run, "_configure_java_home_override", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
 
-    rc = run._run_project_step(["step"], "project-dir", "ExampleProject", "the step")
+    rc = run._run_project_step(["step"], "project-dir", "Combined", "the step")
     assert rc == 0
     assert len(attempts) == 3
 
@@ -135,7 +135,7 @@ def test_declining_the_retry_leaves_the_step_locked(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
 
     assert run._run_project_step(
-        ["step"], "project-dir", "ExampleProject", "the step") == run.PROJECT_LOCKED_EXIT
+        ["step"], "project-dir", "Combined", "the step") == run.PROJECT_LOCKED_EXIT
 
 
 def test_a_real_failure_is_not_mistaken_for_a_lock(monkeypatch):
@@ -150,7 +150,7 @@ def test_a_real_failure_is_not_mistaken_for_a_lock(monkeypatch):
     monkeypatch.setattr("builtins.input", _never_asked)
 
     assert run._run_project_step(
-        ["step"], "project-dir", "ExampleProject", "the step") == 4
+        ["step"], "project-dir", "Combined", "the step") == 4
     assert len(calls) == 1
 
 
@@ -181,7 +181,7 @@ def test_unbound_importer_is_never_applied(tmp_path, monkeypatch):
         lambda *args, **kwargs: applied.append(args) or SimpleNamespace(returncode=0))
 
     assert run._offer_commonlib_apply(
-        "project-dir", "ExampleProject",
+        "project-dir", "Combined",
         "/Fallout4/Fallout4_1_11_221.exe") is False
     assert not applied, "an unbound importer must never be handed to the applier"
 
@@ -253,7 +253,7 @@ def test_ensure_importer_bound_recovers_exe_when_none_is_staged(
     # and it must have tried recovery and a VR-only regeneration to get there.
     assert run._ensure_importer_bound(
         "CommonLibImport_VR.py", importer,
-        "project-dir", "ExampleProject", "/Skyrim/SkyrimVR_1_4_15.exe") is False
+        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is False
     assert calls == ["recover", ("generate", ("skyrim",), "vr")]
 
 
@@ -265,7 +265,7 @@ def test_ensure_importer_bound_passes_through_a_bound_importer(tmp_path, monkeyp
 
     assert run._ensure_importer_bound(
         "CommonLibImport_VR.py", importer,
-        "project-dir", "ExampleProject", "/Skyrim/SkyrimVR_1_4_15.exe") is True
+        "project-dir", "Combined", "/Skyrim/SkyrimVR_1_4_15.exe") is True
 
 
 def _no_input(_prompt):
@@ -290,7 +290,7 @@ def test_option9_runs_rtti_first_and_stops_when_commonlib_apply_fails(monkeypatc
         lambda *_args, **_kwargs: calls.append("rtti") or 0)
 
     assert run._run_enrichment_sequence(
-        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is False
+        "Combined", "project-dir", "Combined", "/game.exe") is False
     assert calls == ["unlock", "rtti", "commonlib"]
 
 
@@ -309,7 +309,7 @@ def test_option9_stops_before_reconciler_when_rtti_fails(monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(returncode=9))
 
     assert run._run_enrichment_sequence(
-        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is False
+        "Combined", "project-dir", "Combined", "/game.exe") is False
     assert calls == []
 
 
@@ -336,7 +336,7 @@ def test_option9_passes_all_local_identity_candidates_to_rtti(
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
     assert run._run_enrichment_sequence(
-        "ExampleProject", "project-dir", "ExampleProject", "/game.exe") is True
+        "Combined", "project-dir", "Combined", "/game.exe") is True
     assert calls[0][-4:] == (
         "--target-pe", str(first), "--target-pe", str(unpacked))
     assert calls[1] == ("reconciler",)
@@ -378,7 +378,7 @@ def test_reconciler_uses_inferred_importer_without_prompts_or_dry_run(
 
     program = "/Fallout4/Fallout4_1_11_221.exe"
     assert run._run_vtable_reconciler(
-        "project-dir", "ExampleProject", program) is True
+        "project-dir", "Combined", program) is True
     assert len(calls) == 1
     command = calls[0]
     assert command[command.index("--import-script") + 1] == str(chosen)
@@ -398,10 +398,10 @@ def test_reconciler_skips_empty_or_unresolved_importer_without_pyghidra(
         lambda *_args, **_kwargs: pytest.fail("reconciler must not launch"))
 
     assert run._run_vtable_reconciler(
-        "project-dir", "ExampleProject",
+        "project-dir", "Combined",
         "/Fallout4/Fallout4_1_11_221.exe") is True
     assert run._run_vtable_reconciler(
-        "project-dir", "ExampleProject", "/Unknown/game.exe") is True
+        "project-dir", "Combined", "/Unknown/game.exe") is True
 
 
 def test_cmd_all_does_not_launch_failed_build(monkeypatch):
@@ -710,6 +710,10 @@ def test_expanded_source_bundle_rejects_missing_locked_tree(
          "apply_skyrim_to_user_project.py", "17104", "skyrim", "17104"),
         ("SkyrimSE_1.7.104.exe", "CommonLibImport_AE_1_7_104.py",
          "apply_skyrim_to_user_project.py", "17104", "skyrim", "17104"),
+        ("SkyrimAE_1_6_640.exe", "CommonLibImport_AE_1_6_640.py",
+         "apply_skyrim_to_user_project.py", "16640", "skyrim", "16640"),
+        ("SkyrimSE_1.6.640.exe", "CommonLibImport_AE_1_6_640.py",
+         "apply_skyrim_to_user_project.py", "16640", "skyrim", "16640"),
         ("Fallout4_1_11_240.exe", "CommonLibImport_F4_240.py",
          "apply_f4_to_user_project.py", "240", "f4", "240"),
     ],
@@ -723,6 +727,50 @@ def test_latest_programs_have_end_to_end_cli_routing(
         applier, ["--version", version])
     assert generation_target(importer) == (game, subdir)
     assert run_headless.script_for(game, subdir).name == importer
+
+
+@pytest.mark.parametrize(
+    ("program_name", "importer"),
+    [
+        # Every exact-build AE name also carries the generic ``skyrimae`` /
+        # ``_ae`` hints; the exact build must win over the 1.6.1170 importer.
+        ("SkyrimAE_1_6_640.exe", "CommonLibImport_AE_1_6_640.py"),
+        ("/Skyrim/SkyrimAE_1_6_640.exe", "CommonLibImport_AE_1_6_640.py"),
+        ("SkyrimSE_AE_1_6_640.exe", "CommonLibImport_AE_1_6_640.py"),
+        ("SkyrimSE_16640.exe", "CommonLibImport_AE_1_6_640.py"),
+        ("SkyrimAE_1_7_104.exe", "CommonLibImport_AE_1_7_104.py"),
+        ("SkyrimAE_1_6_1170.exe", "CommonLibImport_AE.py"),
+        ("SkyrimSE_1.6.1170.exe", "CommonLibImport_AE.py"),
+        ("SkyrimAE.exe", "CommonLibImport_AE.py"),
+        ("SkyrimSE_1_5_97.exe", "CommonLibImport_SE.py"),
+    ],
+)
+def test_exact_ae_builds_win_over_generic_ae_hints(program_name, importer):
+    assert run._infer_commonlib_script(program_name) == importer
+
+
+def test_skyrim_exact_ae_hints_never_claim_another_build():
+    import apply_skyrim_to_user_project as apply_skyrim
+    sys.path.insert(0, str(Path(run.__file__).resolve().parent /
+                           "scripts" / "commonlibsse"))
+    import bytesig_port_combined as bytesig_sse
+
+    programs = {
+        "16640": "/skyrim/skyrimae_1_6_640.exe",
+        "17104": "/skyrim/skyrimae_1_7_104.exe",
+    }
+    others = ["/skyrim/skyrimae_1_6_1170.exe", "/skyrim/skyrimse_1_5_97.exe",
+              "/skyrim/skyrimae_gog edition.exe", "/skyrim/skyrimvr_1_4_15.exe"]
+    for hint_table in (
+            {key: value[3] for key, value in apply_skyrim.VERSIONS.items()},
+            {key: value[1] for key, value in bytesig_sse.VERSIONS.items()}):
+        for version, own_path in programs.items():
+            hints = hint_table[version]
+            assert any(hint in own_path for hint in hints)
+            foreign = [path for key, path in programs.items()
+                       if key != version] + others
+            assert not [path for path in foreign
+                        if any(hint in path for hint in hints)]
 
 
 def test_generated_script_completeness_tracks_only_staged_versions(
@@ -749,7 +797,7 @@ def test_generated_script_completeness_tracks_only_staged_versions(
 
 def test_project_discovery_keeps_every_gpr_in_a_shared_directory(
         tmp_path, monkeypatch):
-    for name in ("CK_Opt_Audit", "ExampleProject", "ExampleProject_Audit", "MyProject"):
+    for name in ("CK_Opt_Audit", "Combined", "Combined_Audit", "MyProject"):
         (tmp_path / (name + ".gpr")).write_text("", encoding="ascii")
     debug = tmp_path / "Debug"
     debug.mkdir()
@@ -762,7 +810,7 @@ def test_project_discovery_keeps_every_gpr_in_a_shared_directory(
 
     labels = {label for label, _, _ in run._discover_ghidra_projects()}
     assert labels == {
-        "CK_Opt_Audit", "ExampleProject", "ExampleProject_Audit", "MyProject",
+        "CK_Opt_Audit", "Combined", "Combined_Audit", "MyProject",
         "Debug/XboxDebug", "Debug/XDIVR",
     }
 
@@ -772,6 +820,8 @@ def test_project_discovery_keeps_every_gpr_in_a_shared_directory(
     [
         ("/Skyrim/SkyrimAE_1_7_104.exe",
          "CommonLibImport_AE_1_7_104.py"),
+        ("/Skyrim/SkyrimAE_1_6_640.exe",
+         "CommonLibImport_AE_1_6_640.py"),
         ("/Fallout4/Fallout4_1_11_240.exe",
          "CommonLibImport_F4_240.py"),
     ],
@@ -798,7 +848,7 @@ def test_option9_passes_exact_latest_importer_through_every_phase(
     monkeypatch.setattr(run, "_run_vtable_reconciler", reconcile)
 
     assert run._run_enrichment_sequence(
-        "ExampleProject", "project-dir", "ExampleProject", program_path) is True
+        "Combined", "project-dir", "Combined", program_path) is True
     assert calls == [
         ("rtti", importer),
         ("apply", importer),
@@ -808,7 +858,8 @@ def test_option9_passes_exact_latest_importer_through_every_phase(
 
 @pytest.mark.parametrize(
     ("catalog_key", "game", "version"),
-    [("ae17104", "skyrim", "17104"), ("f4240", "f4", "240")],
+    [("ae17104", "skyrim", "17104"), ("ae16640", "skyrim", "16640"),
+     ("f4240", "f4", "240")],
 )
 def test_per_version_workflow_routes_latest_runtime(
         catalog_key, game, version, monkeypatch):
@@ -858,7 +909,9 @@ def test_per_version_workflow_routes_latest_runtime(
 def test_interactive_menu_dispatches_every_workflow(
         choice, expected, monkeypatch):
     calls = []
-    answers = iter([choice] if choice == "6" else [choice, "q"])
+    # Option 8 deletes the project, so the menu asks for a typed confirmation.
+    answers = iter([choice] if choice == "6" else
+                   [choice, "yes", "q"] if choice == "8" else [choice, "q"])
 
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
     monkeypatch.setattr(run, "_print_status", lambda: None)

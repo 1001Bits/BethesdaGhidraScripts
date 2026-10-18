@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "existing runtimes plus Fallout 4 1.11.240 and Skyrim AE 1.7.104",
+  "scope": "existing runtimes plus Fallout 4 1.11.240, Skyrim AE 1.7.104 and Skyrim AE 1.6.640",
   "generator_sources": {
     "commonlib_release_archive": "BethesdaGhidraScripts-v1.2.0.zip",
     "commonlib_shared": {
@@ -10,6 +10,21 @@
     }
   },
   "targets": {
+    "ae16640": {
+      "address_library": {
+        "origin": "local SKSE install copy (Data/SKSE/Plugins); meh321 Address Library for SKSE Plugins, V2 format",
+        "artifact": "addresslibrary/sse/versionlib-1-6-640-0.bin",
+        "artifact_sha256": "4e4bec0af54cc99580908a714ea1418c877d634437f97bb208ea07f889850ec7",
+        "embedded_version": [1, 6, 640, 0],
+        "entry_count": 416334
+      },
+      "executable": {
+        "artifact": "exes/skyrim/16640/SkyrimSE.exe",
+        "file_version": [1, 6, 640, 0],
+        "sha256": "d3c4f588b942e73a54240497886e35f094a3641ed2a7173332100eaf1c90ea60",
+        "note": "unpacked in place: dead .bind section retained, entry point in .text; analysed as-is without a Steamless artifact"
+      }
+    },
     "ae17104": {
       "address_library": {
         "archive": "Address Library All in One (1.7.104.0) v13 32444 13 2026-08-27T15-29Z Ae46W7Fw2.zip",

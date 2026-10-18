@@ -1,161 +1,894 @@
-class,offset,type,name,slot_state
-BSTempEffectDebris,0x40,undefined1,12,unknown
-ExtraInfoGeneralTopic,0x10,undefined8,2,unknown
-ExtraPackage,0x10,undefined8,2,unknown
-ExtraShouldWear,0x10,undefined1,2,unknown
-MapCamera,0x58,undefined8,2,unknown
-MovementControllerAI,0x110,undefined4,2,unknown
-StatsNode,0x40,undefined4,3,unknown
-StatsNode,0x48,undefined4,4,unknown
-StatsNode,0x50,longlong,5,unknown
-StatsNode,0x58,longlong,6,unknown
-bhkCharacterPointCollector,0x220,undefined8,2,unknown
-AbstractHeap,0x30,undefined8,4,known
-AbstractHeap,0x40,undefined4,5,known
-AbstractHeap,0x48,undefined8,2,known
-AbstractHeap,0x50,undefined8,3,known
-AbstractHeap,0x58,undefined8,3,known
-AbstractHeap,0xA4,undefined1,7,known
-AbstractHeap,0xA5,undefined1,6,known
-ActiveEffect,0x40,undefined8,3,known
-ActiveEffect,0x48,EffectItem *,4,known
-ActorMagicCaster,0xB8,undefined8,2,known
-ActorMagicCaster,0xF4,undefined4,3,known
-ActorValueInfo,0x50,byte *,3,known
-ActorValueMeter,0x48,undefined4,3,known
-AddCellGrassTask,0x38,TESObjectCELL *,2,known
-BGSBaseAlias,0x10,undefined8,2,known
-BGSBaseAlias,0x18,undefined4,3,known
-BGSDecalNode,0x140,char,3,known
-BGSEntryPointFunctionDataActivateChoice,0x10,undefined8,2,known
-BGSEntryPointFunctionDataActivateChoice,0x22,undefined2,3,known
-BSDynamicTriShape,0x148,ulonglong,2,known
-BSDynamicTriShape,0x158,ushort,4,known
-BSDynamicTriShape,0x15A,ushort,3,known
-BSDynamicTriShape,0x170,undefined4,5,known
-BSFaceGenKeyframeMultiple,0x8,Type,2,known
-BSGeometry,0x138,undefined8,2,known
-BSGeometry,0x148,undefined8,3,known
-BSMultiBoundAABB,0x48,undefined4,5,known
-BSMultiBoundAABB,0x4C,int,6,known
-BSMultiBoundAABB,0x50,undefined1,4,known
-BSPortalSharedNode,0x140,NiTimeController *,2,known
-BSSceneGraph,0x128,longlong *,4,known
-BSSceneGraph,0x138,undefined1,3,known
-BSShadowFrustumLight,0x568,float,4,known
-BSShadowFrustumLight,0x56C,float,5,known
-BSShadowFrustumLight,0x570,float,6,known
-BSTempEffect,0x10,undefined4,3,known
-BSTempEffectDebris,0x38,undefined8,4,known
-BSTempEffectGeometryDecal,0x38,longlong *,5,known
-BSTempEffectGeometryDecal,0xA4,undefined4,8,known
-BSTempEffectGeometryDecal,0xAC,undefined4,10,known
-BSTempEffectParticle,0x40,undefined8,4,known
-BSTempEffectParticle,0x88,longlong,5,known
-BSTempEffectSimpleDecal,0x170,undefined8,2,known
-BSTempEffectWeaponBlood,0x30,longlong,3,known
-BSTriShape,0x158,undefined2,5,known
-BSTriShape,0x15A,undefined2,4,known
-BSXFlags,0x18,undefined4,2,known
-DialoguePackage,0xF1,undefined1,4,known
-ExtraCount,0x10,undefined2,2,known
-ExtraGhost,0x10,undefined1,2,known
-ExtraPackage,0x1C,undefined2,3,known
-ExtraRank,0x10,undefined4,2,known
-ExtraSayToTopicInfo,0x38,undefined8,2,known
-ExtraSoul,0x10,undefined1,2,known
-Hazard,0xB8,Actor_vtbl_184 *,2,known
-ImageSpaceModifierInstance,0x14,undefined4,3,known
-ImageSpaceModifierInstance,0x20,undefined4,2,known
-ImageSpaceModifierInstance,0x28,uint,5,known
-ImageSpaceModifierInstanceDOF,0x64,undefined4,2,known
-ImageSpaceModifierInstanceDOF,0x68,undefined4,5,known
-ImageSpaceModifierInstanceDOF,0x6C,undefined4,6,known
-LoadStorageWrapper,0x20,longlong,2,known
-Main,0x18,undefined8,2,known
-Main,0x20,undefined8,3,known
-MessageBoxData,0x38,undefined4,6,known
-MessageBoxData,0x48,undefined4,7,known
-MessageBoxData,0x4C,undefined1,5,known
-Moon,0xB0,undefined4,3,known
-Moon,0xB4,undefined4,4,known
-Moon,0xB8,undefined4,5,known
-Moon,0xBC,undefined4,6,known
-Moon,0xC0,undefined4,7,known
-Moon,0xC4,undefined4,8,known
-NiColorInterpolator,0x28,longlong,2,known
-NiControllerManager,0xA8,undefined1,3,known
-NiControllerSequence,0x18,uint,3,known
-NiControllerSequence,0x1C,uint,4,known
-NiCullingProcess,0x8,undefined1,3,known
-NiCullingProcess,0x10,undefined8,2,known
-NiFile,0x20,uint,4,known
-NiFile,0x40,uint,3,known
-NiFloatInterpolator,0x18,undefined4,2,known
-NiGeometry,0x120,longlong,2,known
-NiGeometryData,0x10,undefined2,2,known
-NiGeometryData,0x30,NiObject_vtbl *,4,known
-NiGeometryData,0x40,NiObject_vtbl *,6,known
-NiPSysGravityModifier,0x30,undefined8,3,known
-NiPSysGravityModifier,0x44,undefined4,5,known
-NiPSysGravityModifier,0x48,undefined4,6,known
-NiPSysGravityModifier,0x4C,undefined4,7,known
-NiPSysGravityModifier,0x50,undefined4,8,known
-NiPSysGravityModifier,0x54,undefined4,9,known
-NiPSysModifier,0x18,uint,3,known
-NiParticles,0x158,longlong *,2,known
-SaveStorageWrapper,0x20,longlong,2,known
-StandardItemData,0x8,longlong,3,known
-StatsNode,0x44,undefined4,2,known
-TESTopic,0x31,undefined1,2,known
-ThirdPersonState,0x10,undefined8,2,known
-ThirdPersonState,0x18,undefined4,3,known
-TweenMenuCameraState,0x10,undefined8,2,known
-TweenMenuCameraState,0x18,undefined4,3,known
-VATSCameraState,0x10,undefined8,2,known
-VATSCameraState,0x18,undefined4,3,known
-WeaponEnchantmentController,0x8,undefined8,2,known
-WeaponEnchantmentController,0x10,longlong *,3,known
-ZeroOverheadHeap,0x8,SIZE_T,2,known
-ZeroOverheadHeap,0x10,undefined8,3,known
-hkLifoAllocator,0x10,undefined4,2,known
-hkMoppBvTreeShapeBase,0x18,undefined4,2,known
-hkMoppBvTreeShapeBase,0x28,hkReferencedObject *,3,known
-hkaAnimationControl,0x38,longlong,2,known
-hkaDefaultAnimationControl,0x38,undefined8,2,known
-hkaDefaultAnimationControl,0x68,undefined4,4,known
-hkbNode,0x80,hkReferencedObject *,2,known
-hkbNode,0x88,hkReferencedObject *,3,known
-hkbRagdollDriver,0x1C,undefined1,3,known
-hkbRagdollDriver,0x80,undefined8,2,known
-hkpAabbPhantom,0x4C,undefined4,3,known
-hkpAction,0x20,undefined8,4,known
-hkpAction,0x30,longlong,2,known
-hkpAction,0x38,longlong,3,known
-hkpBoxShape,0x20,undefined4,3,known
-hkpBroadPhase,0x10,undefined2,2,known
-hkpBroadPhase,0x12,undefined2,3,known
-hkpBroadPhase,0x14,undefined4,4,known
-hkpCachingShapePhantom,0x4C,undefined4,4,known
-hkpCapsuleShape,0x20,undefined4,4,known
-hkpCapsuleShape,0x3C,undefined4,4,known
-hkpCapsuleShape,0x4C,undefined4,4,known
-hkpCharacterContext,0x18,hkReferencedObject *,2,known
-hkpCharacterContext,0x20,undefined4,3,known
-hkpCharacterContext,0x24,undefined4,3,known
-hkpCompressedMeshShape,0x30,int,2,known
-hkpCompressedMeshShape,0x40,undefined4,3,known
-hkpConstraintInstance,0x18,undefined8,4,known
-hkpConstraintInstance,0x28,undefined8,2,known
-hkpConstraintInstance,0x30,undefined8,3,known
-hkpConstraintInstance,0x38,undefined1,5,known
-hkpConvexVerticesShape,0x20,undefined4,2,known
-hkpMoppBvTreeShape,0x58,hkReferencedObject *,2,known
-hkpMouseSpringAction,0x60,undefined4,4,known
-hkpMouseSpringAction,0x64,int,5,known
-hkpMouseSpringAction,0x6C,undefined4,6,known
-hkpShapeCollection,0x18,undefined4,2,known
-hkpShapeCollection,0x29,undefined1,3,known
-hkpSimpleShapePhantom,0x4C,undefined4,4,known
-hkpSimulationIsland,0x20,undefined8,2,known
-hkpSphereShape,0x20,undefined4,2,known
+class,offset,type,name,slot_state,votes,confidence,constructors,decision
+BSTempEffectDebris,0x40,undefined1,12,unknown,2,high,BSTempEffect::sub_140447A30@0x140447A30 | FUN_140447b90@0x140447B90
+hkaQuantizedAnimation,0x0,hkaAnimation,base,unknown,3,high,FUN_140b1f8d0@0x140B1F8D0 | FUN_140b1fab0@0x140B1FAB0 | FUN_140b1fd20@0x140B1FD20
+hkpConstraintChainInstance,0x0,hkpConstraintInstance,base,unknown,2,high,FUN_140a99dc0@0x140A99DC0 | FUN_140a99e90@0x140A99E90
+hkpEntity,0x0,hkpWorldObject,base,unknown,2,high,FUN_140a6cf00@0x140A6CF00 | GFxMovieDefImpl::BindTaskData::dtor@0x140A6C0D0
+hkpExtendedMeshShape,0x0,hkpShapeCollection,base,unknown,2,high,FUN_140b7ae50@0x140B7AE50 | sub_140B25430@0x140B7AD20
+hkpMouseSpringAction,0x0,hkpAction,base,unknown,2,high,FUN_140abb3d0@0x140ABB3D0 | FUN_140abb450@0x140ABB450
+hkpReorientAction,0x0,hkpAction,base,unknown,2,high,FUN_140ac49d0@0x140AC49D0 | sub_140A8CED0@0x140AC4990
+hkpStorageExtendedMeshShape,0x0,hkpExtendedMeshShape,base,unknown,2,high,FUN_140b4c900@0x140B4C900 | hkpStorageExtendedMeshShape::sub@0x140B4C730
+AbstractHeap,0x0,IMemoryHeap,base,known,2,high,AbstractHeap::__vecDelDtor@0x140C0F6B0 | FUN_140c0e470@0x140C0E470
+ActorValueInfo,0x0,TESForm,base,known,2,high,FUN_1403e3850@0x1403E3850 | FUN_1403e3a10@0x1403E3A10
+AlchemyItem,0x90,TESModelTextureSwap,embedded,known,2,high,FUN_1400f6090@0x1400F6090 | FUN_1400f6240@0x1400F6240
+AlchemyItem,0xD8,BGSMessageIcon,embedded,known,2,high,FUN_1400f6090@0x1400F6090 | FUN_1400f6240@0x1400F6240
+AlchemyItem,0x110,BGSDestructibleObjectForm,embedded,known,2,high,FUN_1400f6090@0x1400F6090 | FUN_1400f6240@0x1400F6240
+Archive,0x0,BSFile,base,known,2,high,FUN_140c2e7d0@0x140C2E7D0 | FUN_140c2ef10@0x140C2EF10
+BGSAction,0x0,BGSKeyword,base,known,2,high,BGSAction::__vecDelDtor@0x14032AD60 | FUN_14032ac30@0x14032AC30
+BGSActionData,0x0,ActionInput,base,known,6,high,BGSActionData::__vecDelDtor@0x1401EDB40 | FUN_1401ed8b0@0x1401ED8B0 | FUN_1401ed9a0@0x1401ED9A0 | FUN_1404fb8b0@0x1404FB8B0 | TESActionData::Ctor@0x1401ED550 | TESActionData::__vecDelDtor@0x1401EDDA0
+BGSAddonNode,0x0,TESObject,base,known,2,high,BGSAddonNode::__vecDelDtor@0x140208FB0 | BGSAddonNode::sub@0x140208630
+BGSAddonNode,0x30,TESModelTextureSwap,embedded,known,3,high,BGSAddonNode::__vecDelDtor@0x140208FB0 | BGSAddonNode::sub@0x140208630 | FUN_1402085c0@0x1402085C0
+BGSAddonNodeSoundHandleExtra,0x0,NiExtraData,base,known,3,high,BGSAddonNodeSoundHandleExtra::Func1@0x140209040 | FUN_140208c40@0x140208C40 | FUN_140208c80@0x140208C80
+BGSArtObject,0x0,TESObject,base,known,2,high,BGSArtObject::__vecDelDtor@0x14020A330 | FUN_140209a10@0x140209A10
+BGSArtObject,0x30,TESModelTextureSwap,embedded,known,3,high,BGSArtObject::__vecDelDtor@0x14020A330 | FUN_1402099b0@0x1402099B0 | FUN_140209a10@0x140209A10
+BGSAssociationType,0x0,TESForm,base,known,3,high,BGSAssociationType::__vecDelDtor@0x14032B3F0 | FUN_14032aea0@0x14032AEA0 | FUN_14032af10@0x14032AF10
+BGSBaseAlias,0x10,undefined8,2,known,3,high,FUN_140333d70@0x140333D70 | FUN_1403346c0@0x1403346C0 | FUN_14033f6c0@0x14033F6C0
+BGSBaseAlias,0x18,undefined4,3,known,2,high,FUN_1403346c0@0x1403346C0 | FUN_14033f6c0@0x14033F6C0
+BGSBodyPartData,0x0,TESForm,base,known,2,high,FUN_14032cb50@0x14032CB50 | FUN_14032cbe0@0x14032CBE0
+BGSBodyPartData,0x20,TESModel,embedded,known,2,high,FUN_14032cb50@0x14032CB50 | FUN_14032cbe0@0x14032CBE0
+BGSCameraPath,0x0,TESForm,base,known,2,high,FUN_1402bb390@0x1402BB390 | FUN_1402bb3f0@0x1402BB3F0
+BGSCameraShot,0x0,TESForm,base,known,2,high,Atmosphere::sub@0x1402BDA90 | FUN_1402bd9b0@0x1402BD9B0
+BGSCameraShot,0x20,TESModel,embedded,known,2,high,Atmosphere::sub@0x1402BDA90 | FUN_1402bd9b0@0x1402BD9B0
+BGSCollisionLayer,0x0,TESForm,base,known,2,high,BGSCollisionLayer::ctor@0x1402BF140 | BGSCollisionLayer::dtor_impl@0x1402BF1D0
+BGSConstructibleObject,0x0,TESForm,base,known,2,high,FUN_14020a770@0x14020A770 | FUN_14020a7f0@0x14020A7F0
+BGSConstructibleObject,0x20,TESContainer,embedded,known,2,high,FUN_14020a770@0x14020A770 | FUN_14020a7f0@0x14020A7F0
+BGSDebris,0x0,TESForm,base,known,3,high,BGSDebris::__vecDelDtor@0x14020C620 | BGSDebris::sub@0x14020B500 | FUN_14020b4c0@0x14020B4C0
+BGSDecalNode,0x0,NiNode,base,known,3,high,BGSDecalNode::sub@0x1401B1260 | FUN_1401b10b0@0x1401B10B0 | FUN_1401b1140@0x1401B1140
+BGSDialogueBranch,0x0,TESForm,base,known,3,high,BGSDialogueBranch::__vecDelDtor@0x14032EBA0 | FUN_14032e600@0x14032E600 | FUN_14032e640@0x14032E640
+BGSDualCastData,0x0,TESObject,base,known,2,high,BGSDualCastData::__vecDelDtor@0x1400F7B50 | FUN_1400f74e0@0x1400F74E0
+BGSEquipSlot,0x0,TESForm,base,known,2,high,FUN_140330ff0@0x140330FF0 | FUN_140331060@0x140331060
+BGSHazard,0x0,TESObject,base,known,2,high,BGSHazard::__vecDelDtor@0x14020E8D0 | FUN_14020e120@0x14020E120
+BGSHeadPart,0x0,TESForm,base,known,2,high,BGSHeadPart::sub_140331AF0@0x140331AF0 | FUN_140331a00@0x140331A00
+BGSHeadPart,0x30,TESModelTextureSwap,embedded,known,2,high,BGSHeadPart::sub_140331AF0@0x140331AF0 | FUN_140331a00@0x140331A00
+BGSIdleMarker,0x0,TESObject,base,known,2,high,BGSIdleMarker::__vecDelDtor@0x140333400 | FUN_140332e10@0x140332E10
+BGSIdleMarker,0x30,TESModel,embedded,known,3,high,BGSIdleMarker::__vecDelDtor@0x140333400 | FUN_140332d90@0x140332D90 | FUN_140332e10@0x140332E10
+BGSImpactData,0x0,TESForm,base,known,3,high,BGSImpactData::__vecDelDtor@0x1402C2D70 | FUN_1402c2420@0x1402C2420 | FUN_1402c24d0@0x1402C24D0
+BGSImpactData,0x20,TESModel,embedded,known,3,high,BGSImpactData::__vecDelDtor@0x1402C2D70 | FUN_1402c2420@0x1402C2420 | FUN_1402c24d0@0x1402C24D0
+BGSImpactDataSet,0x0,TESForm,base,known,3,high,BGSImpactDataSet::__vecDelDtor@0x1402C42F0 | FUN_1402c2e90@0x1402C2E90 | FUN_1402c2f00@0x1402C2F00
+BGSKeyword,0x0,TESForm,base,known,3,high,BGSKeyword::__vecDelDtor@0x140333AD0 | FUN_140333810@0x140333810 | FUN_140333860@0x140333860
+BGSLensFlare,0x0,TESForm,base,known,2,high,FUN_14020ea10@0x14020EA10 | FUN_14020ea70@0x14020EA70
+BGSListForm,0x0,TESForm,base,known,2,high,FUN_1402c4c80@0x1402C4C80 | sub_1402B1EF0@0x1402C4C10
+BGSLocation,0x0,TESForm,base,known,2,high,FUN_140240c10@0x140240C10 | FUN_140240d70@0x140240D70
+BGSLocation,0x30,BGSKeywordForm,embedded,known,2,high,FUN_140240c10@0x140240C10 | FUN_140240d70@0x140240D70
+BGSLocationRefType,0x0,BGSKeyword,base,known,2,high,BGSLocationRefType::__vecDelDtor@0x1402479C0 | FUN_140247870@0x140247870
+BGSMaterialObject,0x0,TESForm,base,known,2,high,FUN_1402c5d70@0x1402C5D70 | FUN_1402c5e10@0x1402C5E10
+BGSMaterialObject,0x20,TESModel,embedded,known,2,high,FUN_1402c5d70@0x1402C5D70 | FUN_1402c5e10@0x1402C5E10
+BGSMaterialObject,0x48,BSMaterialObject,embedded,known,2,high,FUN_1402c5d70@0x1402C5D70 | FUN_1402c5e10@0x1402C5E10
+BGSMaterialType,0x0,TESForm,base,known,2,high,FUN_1402c6dc0@0x1402C6DC0 | sub_1402B55F0@0x1402C6D60
+BGSMenuIcon,0x0,TESForm,base,known,3,high,BGSMenuIcon::__vecDelDtor@0x1402C8080 | FUN_1402c7d50@0x1402C7D50 | FUN_1402c7db0@0x1402C7DB0
+BGSMenuIcon,0x20,TESTexture,embedded,known,2,high,BGSMenuIcon::__vecDelDtor@0x1402C8080 | FUN_1402c7db0@0x1402C7DB0
+BGSMessage,0x0,TESForm,base,known,2,high,FUN_1402c81f0@0x1402C81F0 | FUN_1402c82a0@0x1402C82A0
+BGSMovementType,0x0,TESForm,base,known,2,high,FUN_140334c10@0x140334C10 | FUN_140334c80@0x140334C80
+BGSMoviePlayer,0x0,MoviePlayer,base,known,2,high,BGSMoviePlayer::__vecDelDtor@0x1405A5040 | BGSMoviePlayer::sub@0x1405A4C80
+BGSMusicTrackFormWrapper,0x0,TESForm,base,known,3,high,BGSMusicTrackFormWrapper::__vecDelDtor@0x1402CBE50 | FUN_1402cb9b0@0x1402CB9B0 | FUN_1402cb9f0@0x1402CB9F0
+BGSMusicType,0x0,TESForm,base,known,2,high,FUN_1402cc4c0@0x1402CC4C0 | FUN_1402cc520@0x1402CC520
+BGSMusicType,0x20,BSIMusicType,embedded,known,2,high,FUN_1402cc4c0@0x1402CC4C0 | FUN_1402cc520@0x1402CC520
+BGSNote,0x30,TESModel,embedded,known,2,high,BGSNote::sub@0x140335D60 | FUN_140335c70@0x140335C70
+BGSOutfit,0x0,TESForm,base,known,2,high,BGSOutfit::sub@0x140210610 | FUN_1402105a0@0x1402105A0
+BGSPerk,0x0,TESForm,base,known,2,high,FUN_140337ca0@0x140337CA0 | FUN_140337d80@0x140337D80
+BGSProjectile,0x40,TESModel,embedded,known,2,high,FUN_140210f30@0x140210F30 | FUN_1402110a0@0x1402110A0
+BGSProjectile,0x70,BGSDestructibleObjectForm,embedded,known,2,high,FUN_140210f30@0x140210F30 | FUN_1402110a0@0x1402110A0
+BGSProjectile,0x108,TESModel,embedded,known,2,high,FUN_140210f30@0x140210F30 | FUN_1402110a0@0x1402110A0
+BGSRagdoll,0x0,TESForm,base,known,2,high,FUN_14033df00@0x14033DF00 | FUN_14033e050@0x14033E050
+BGSRagdoll,0x20,TESModel,embedded,known,2,high,FUN_14033df00@0x14033DF00 | FUN_14033e050@0x14033E050
+BGSRelationship,0x0,TESForm,base,known,3,high,BGSRelationship::BGSRelationship@0x140345440 | FUN_140345400@0x140345400 | FUN_140345490@0x140345490
+BGSScene,0x0,TESForm,base,known,2,high,FUN_140346e30@0x140346E30 | FUN_140346f60@0x140346F60
+BGSShaderParticleGeometryData,0x0,TESForm,base,known,2,high,FUN_140248100@0x140248100 | FUN_140248180@0x140248180
+BGSShaderParticleGeometryData,0x38,TESTexture,embedded,known,2,high,FUN_140248100@0x140248100 | FUN_140248180@0x140248180
+BGSSoundCategory,0x0,TESForm,base,known,3,high,BGSSoundCategory::__vecDelDtor@0x1402CE3C0 | FUN_1402cd810@0x1402CD810 | FUN_1402cd8b0@0x1402CD8B0
+BGSSoundDescriptorForm,0x0,TESForm,base,known,3,high,BGSSoundDescriptorForm::__vecDelDtor@0x1402CF0A0 | FUN_1402ce700@0x1402CE700 | FUN_1402ce740@0x1402CE740
+BGSSoundOutput,0x0,TESForm,base,known,2,high,FUN_1402cf2e0@0x1402CF2E0 | FUN_1402cf330@0x1402CF330
+BGSStaticCollection,0x30,TESModelTextureSwap,embedded,known,2,high,FUN_140212410@0x140212410 | FUN_140212470@0x140212470
+BGSStoryManagerEventNode,0x0,BGSStoryManagerBranchNode,base,known,2,high,BGSStoryManagerEventNode::__vecDelDtor@0x1404D2FF0 | FUN_1404d2f00@0x1404D2F00
+BGSStoryManagerNodeBase,0x0,TESForm,base,known,5,high,BGSStoryManagerNodeBase::__vecDelDtor@0x1401764B0 | FUN_140175cc0@0x140175CC0 | FUN_1404d2a30@0x1404D2A30 | FUN_1404d66c0@0x1404D66C0 | FUN_1404d69d0@0x1404D69D0
+BGSTalkingActivator,0x0,TESObjectACTI,base,known,2,high,FUN_1402129f0@0x1402129F0 | FUN_140212a80@0x140212A80
+BGSVoiceType,0x0,TESForm,base,known,2,high,BGSVoiceType::BGSVoiceType@0x14034FCB0 | FUN_14034fcf0@0x14034FCF0
+BSAnimGroupSequence,0x0,NiControllerSequence,base,known,3,high,BSAnimGroupSequence::Func1@0x1401CEDB0 | FUN_1401cdf90@0x1401CDF90 | FUN_1401ce120@0x1401CE120
+BSAudioManagerThread,0x0,BSThread,base,known,2,high,BSAudioManagerThread::__vecDelDtor@0x140BF68D0 | BSAudioManagerThread::~BSAudioManagerThread@0x140BF6430
+BSBehaviorGraphExtraData,0x0,NiExtraData,base,known,2,high,BSBehaviorGraphExtraData::Func1@0x140D4E440 | FUN_140d4e3e0@0x140D4E3E0
+BSBoneLODExtraData,0x0,NiExtraData,base,known,2,high,BSBoneLODExtraData::Func1@0x140D61BF0 | FUN_140d618a0@0x140D618A0
+BSBoneMap,0x0,NiExtraData,base,known,2,high,BSBoneMap::BSBoneMap@0x140D56B60 | FUN_140d56c30@0x140D56C30
+BSDynamicLines,0x0,BSLines,base,known,2,high,BSDynamicLines::Func1@0x1413181B0 | FUN_141317de0@0x141317DE0
+BSDynamicTriShape,0x0,BSTriShape,base,known,4,high,BSDynamicTriShape::__vecDelDtor@0x140C72C60 | BSParticleShaderGeometry::sub@0x140C72350 | FUN_140c72250@0x140C72250 | FUN_140c72300@0x140C72300
+BSFaceGenAnimationData,0x0,NiExtraData,base,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x20,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x40,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x60,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x80,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0xA0,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0xC0,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0xE0,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x100,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x120,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x140,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x160,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenAnimationData,0x180,BSFaceGenKeyframeMultiple,embedded,known,2,high,FUN_1403c2ef0@0x1403C2EF0 | FUN_1403c3190@0x1403C3190
+BSFaceGenNiNode,0x0,NiNode,base,known,3,high,BSFaceGenNiNode::__vecDelDtor@0x1403D9AF0 | FUN_1403d8610@0x1403D8610 | FUN_1403d86a0@0x1403D86A0
+BSFadeNode,0x0,NiNode,base,known,2,high,BSFadeNode::ctor@0x14128F900 | NiNode::sub_14128F940@0x14128F940
+BSFlattenedBoneTree,0x0,NiNode,base,known,2,high,FUN_140c69a60@0x140C69A60 | FUN_140c69fb0@0x140C69FB0
+BSGrassShaderProperty,0x0,BSLightingShaderProperty,base,known,2,high,BSGrassShaderProperty::ctor@0x1412C9710 | BSGrassShaderProperty::sub_1412C9840@0x1412C9840
+BSImagespaceShader,0x90,ImageSpaceEffect,embedded,known,2,high,BSImagespaceShader::Ctor@0x14130C5A0 | FUN_14130c710@0x14130C710
+BSLightingShader,0x0,BSShader,base,known,2,high,BSLightingShader::Func1@0x1412F5B80 | FUN_1412f11d0@0x1412F11D0
+BSLightingShaderMaterialEnvmap,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialEnvmap::Ctor@0x1412D01A0 | FUN_1412d01f0@0x1412D01F0
+BSLightingShaderMaterialEye,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialEye::Ctor@0x1412D0850 | FUN_1412d0900@0x1412D0900
+BSLightingShaderMaterialFacegen,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialFacegen::Ctor@0x1412D1F70 | FUN_1412d1fb0@0x1412D1FB0
+BSLightingShaderMaterialGlowmap,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialGlowmap::Ctor@0x1412D1010 | FUN_1412d1050@0x1412D1050
+BSLightingShaderMaterialLODLandscape,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialLODLandscape::Ctor@0x1412D3360 | FUN_1412d33b0@0x1412D33B0
+BSLightingShaderMaterialLandscape,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialLandscape::Ctor@0x1412D2AC0 | FUN_1412d2c00@0x1412D2C00
+BSLightingShaderMaterialMultiLayerParallax,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialMultiLayerParallax::Ctor@0x1412D3AD0 | FUN_1412d3b40@0x1412D3B40
+BSLightingShaderMaterialParallax,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialParallax::Ctor@0x1412D14B0 | FUN_1412d14f0@0x1412D14F0
+BSLightingShaderMaterialParallaxOcc,0x0,BSLightingShaderMaterialBase,base,known,2,high,BSLightingShaderMaterialParallaxOcc::Ctor@0x1412D1950 | FUN_1412d1990@0x1412D1990
+BSLines,0x0,BSGeometry,base,known,2,high,BSLines::Func1@0x141317820 | FUN_1413177c0@0x1413177C0
+BSMasterParticleSystem,0x0,NiNode,base,known,2,high,FUN_140d5df80@0x140D5DF80 | FUN_140d5e030@0x140D5E030
+BSMultiBoundAABB,0x48,undefined4,5,known,2,high,FUN_140d474e0@0x140D474E0 | FUN_140d47590@0x140D47590
+BSMultiBoundAABB,0x4C,int,6,known,2,high,FUN_140d474e0@0x140D474E0 | FUN_140d47590@0x140D47590
+BSMultiBoundAABB,0x50,undefined1,4,known,2,high,FUN_140d474e0@0x140D474E0 | FUN_140d47590@0x140D47590
+BSMultiBoundNode,0x0,BSNiNode,base,known,2,high,BSMultiBoundNode::BSMultiBoundNode@0x140D56180 | FUN_140d561c0@0x140D561C0
+BSMultiIndexTriShape,0x0,BSTriShape,base,known,3,high,BSMultiIndexTriShape::sub@0x14131BB40 | BSTriShape::FUN@0x14131B940 | FUN_14131bab0@0x14131BAB0
+BSMultiStreamInstanceTriShape,0x0,BSTriShape,base,known,3,high,BSMultiStreamInstanceTriShape::ctor@0x140D45980 | BSMultiStreamInstanceTriShape::sub@0x140D45B80 | FUN_140d458f0@0x140D458F0
+BSNiNode,0x0,NiNode,base,known,2,high,FUN_140d66290@0x140D66290 | NiNode::sub_140D662C0@0x140D662C0
+BSOcclusionShape,0x0,NiObject,base,known,3,high,FUN_140d491a0@0x140D491A0 | FUN_140d4ba10@0x140D4BA10 | NiObject::sub_140D3FA60@0x140D3FA60
+BSParticleSystemManager,0x0,NiNode,base,known,2,high,FUN_140d52880@0x140D52880 | FUN_140d52950@0x140D52950
+BSPortalSharedNode,0x0,NiNode,base,known,2,high,FUN_140d4ced0@0x140D4CED0 | NiNode::sub_140D4CF50@0x140D4CF50
+BSScaleformImageLoader,0x0,GRefCountImplCore,base,known,2,high,BSScaleformImageLoader::__vecDelDtor@0x140F45F30 | FUN_140f45180@0x140F45180
+BSSceneGraph,0x0,NiNode,base,known,2,high,FUN_140d57720@0x140D57720 | FUN_140d57a30@0x140D57A30
+BSShadowFrustumLight,0x0,BSShadowLight,base,known,2,high,BSShadowFrustumLight::__vecDelDtor@0x14132D4F0 | FUN_14132cf70@0x14132CF70
+BSSimpleScaleController,0x0,NiTimeController,base,known,2,high,FUN_140691bc0@0x140691BC0 | `scalar_deleting_destructor'@0x140691CF0
+BSStripPSysData,0x0,NiPSysData,base,known,2,high,BSStripPSysData::BSStripPSysData@0x140D24FF0 | FUN_140d246b0@0x140D246B0
+BSSubIndexTriShape,0x0,BSTriShape,base,known,2,high,BSSubIndexTriShape::sub@0x140D591F0 | FUN_140d595e0@0x140D595E0
+BSSystemFileStorage,0x0,BSStorage,base,known,2,high,BSSystemFileStorage::__vecDelDtor@0x140C39900 | FUN_140c395c0@0x140C395C0
+BSTempEffect,0x0,NiObject,base,known,2,high,BSTempEffect::BSTempEffect@0x140446A90 | BSTempEffect::ctor@0x140446AD0
+BSTempEffectDebris,0x38,undefined8,4,known,2,high,BSTempEffect::sub_140447A30@0x140447A30 | FUN_140447b90@0x140447B90
+BSTempEffectGeometryDecal,0x0,BSTempEffect,base,known,2,high,BSTempEffect::sub_1404485F0@0x1404485F0 | FUN_140448650@0x140448650
+BSTempEffectSimpleDecal,0x0,BSTempEffect,base,known,2,high,BSTempEffect::sub_14044D1C0@0x14044D1C0 | BSTempEffect::sub_14044D420@0x14044D420
+BSTriShape,0x0,BSGeometry,base,known,4,high,BSSkinnedDecalTriShape::Func1@0x140C677D0 | BSTriShape::__vecDelDtor@0x140C67850 | FUN_140c675f0@0x140C675F0 | FUN_140c67780@0x140C67780
+BleedoutCameraState,0x0,ThirdPersonState,base,known,2,high,BleedoutCameraState::__vecDelDtor@0x14084E600 | FUN_14084e4e0@0x14084E4E0
+BookMenu,0x30,SimpleAnimationGraphManagerHolder,embedded,known,2,high,FUN_140857330@0x140857330 | IMenu::sub_1408571E0@0x1408571E0
+BoundItemEffect,0x0,ActiveEffect,base,known,2,high,BoundItemEffect::__vecDelDtor@0x1405461D0 | FUN_1405457e0@0x1405457E0
+CommandEffect,0x0,ActiveEffect,base,known,2,high,CommandEffect::__vecDelDtor@0x140546FD0 | ~ExternalContextBase@0x140546960
+EffectSetting,0x0,TESForm,base,known,2,high,FUN_1400fa430@0x1400FA430 | FUN_1400fa530@0x1400FA530
+EffectSetting,0x40,BGSKeywordForm,embedded,known,2,high,FUN_1400fa430@0x1400FA430 | FUN_1400fa530@0x1400FA530
+EnchantmentItem,0x0,MagicItem,base,known,2,high,EnchantmentItem::__vecDelDtor@0x1400FEB50 | FUN_1400fdfd0@0x1400FDFD0
+Explosion,0x0,TESObjectREFR,base,known,2,high,FUN_140737700@0x140737700 | sub_140715F00@0x140737A30
+FaderMenu,0x0,IMenu,base,known,2,high,FUN_1408779d0@0x1408779D0 | FaderMenu::__vecDelDtor@0x140877A10
+GFxState,0x0,GRefCountImplCore,base,known,12,high,FUN_140f4c1f0@0x140F4C1F0 | FUN_140f4c250@0x140F4C250 | FUN_140f4dd20@0x140F4DD20 | FUN_140fc92a0@0x140FC92A0 | FUN_140fc93f0@0x140FC93F0 | FUN_141004e10@0x141004E10 | FUN_141005170@0x141005170 | FxDelegate::__vecDelDtor@0x140ED7600 | GFxMeshCacheManager::dtor_impl@0x140F64210 | GFxTextClipboard::dtor@0x140F86650 | GFxTextKeyMap::dtor@0x140F86760 | Scaleform::GFx::Clipboard::~Clipboard@0x140F86080
+GrenadeProjectile,0x0,Projectile,base,known,2,high,FUN_14073ed60@0x14073ED60 | FlameProjectile::ctor@0x14073E9C0
+HighActorCuller,0x10,NiCullingProcess,embedded,known,2,high,FUN_140695900@0x140695900 | FUN_140695980@0x140695980
+IMenu,0x0,GRefCountImplCore,base,known,2,high,IMenu::__vecDelDtor@0x140ECDD70 | IMenu::dtor_impl@0x140ECD7F0
+ImageSpaceModifierInstance,0x0,NiObject,base,known,2,high,FUN_14024d460@0x14024D460 | ImageSpaceModifierInstanceForm::ctor@0x14024C4F0
+IngredientItem,0x90,TESModelTextureSwap,embedded,known,2,high,FUN_1400fed70@0x1400FED70 | FUN_1400feee0@0x1400FEEE0
+IngredientItem,0xF8,BGSDestructibleObjectForm,embedded,known,2,high,FUN_1400fed70@0x1400FED70 | FUN_1400feee0@0x1400FEEE0
+LocalMapCamera,0x0,TESCamera,base,known,2,high,FUN_1401f5640@0x1401F5640 | LocalMapCamera::Ctor@0x1401F5390
+MagicItem,0x40,BGSKeywordForm,embedded,known,2,high,FUN_1401004c0@0x1401004C0 | FUN_140100590@0x140100590
+Main,0x38,ScrapHeap,embedded,known,2,high,FUN_1405acc20@0x1405ACC20 | FUN_1405adaf0@0x1405ADAF0
+Main,0x108,ScrapHeap,embedded,known,2,high,FUN_1405acc20@0x1405ACC20 | FUN_1405adaf0@0x1405ADAF0
+MapCamera,0x0,TESCamera,base,known,3,high,FUN_1408de9c0@0x1408DE9C0 | FUN_1408deaa0@0x1408DEAA0 | FUN_1408dee90@0x1408DEE90
+MapMenu,0x304A0,MapCamera,embedded,known,2,high,FUN_1408e3500@0x1408E3500 | sub_1408A8130@0x1408E3AA0
+MemoryHeap,0x0,AbstractHeap,base,known,4,high,FUN_140c0b400@0x140C0B400 | FUN_140c0b760@0x140C0B760 | MemoryHeap::__vecDelDtor@0x140C0B9B0 | UnitTestMemoryHeap::Func1@0x140C0BA10
+MistMenu,0x0,IMenu,base,known,2,high,FUN_1408acb30@0x1408ACB30 | MistMenu::sub@0x1408ACFD0
+MistMenu,0x30,SimpleAnimationGraphManagerHolder,embedded,known,2,high,FUN_1408acb30@0x1408ACB30 | MistMenu::sub@0x1408ACFD0
+ModelReferenceEffect,0x0,ReferenceEffect,base,known,3,high,FUN_140557be0@0x140557BE0 | FUN_140557ca0@0x140557CA0 | ModelReferenceEffect::sub_140557D80@0x140557D80
+NavMesh,0x0,TESForm,base,known,2,high,FUN_140455500@0x140455500 | FUN_140455570@0x140455570
+NavMesh,0x28,BSNavmesh,embedded,known,2,high,FUN_140455500@0x140455500 | FUN_140455570@0x140455570
+NavMeshInfoMap,0x0,TESForm,base,known,2,high,FUN_14045fb70@0x14045FB70 | FUN_14045fc30@0x14045FC30
+NavMeshInfoMap,0x20,BSNavmeshInfoMap,embedded,known,2,high,FUN_14045fb70@0x14045FB70 | FUN_14045fc30@0x14045FC30
+NiControllerManager,0x0,NiTimeController,base,known,3,high,FUN_140cc00f0@0x140CC00F0 | FUN_140cc2d80@0x140CC2D80 | NiControllerManager::sub_140CC0290@0x140CC0290
+NiControllerSequence,0x0,NiObject,base,known,2,high,FUN_140cc92c0@0x140CC92C0 | NiObject::sub_140CC5730@0x140CC5730
+NiCullingProcess,0x10,undefined8,2,known,2,high,FUN_140c79190@0x140C79190 | FUN_140c79300@0x140C79300
+NiExtraData,0x0,NiObject,base,known,2,high,FUN_140c6e920@0x140C6E920 | FUN_140c6e950@0x140C6E950
+NiFile,0x0,NiBinaryStream,base,known,2,high,BSFile::FUN@0x140C250B0 | NiFile::__vecDelDtor@0x140C25590
+NiGeometryData,0x0,NiObject,base,known,2,high,FUN_140c70620@0x140C70620 | FUN_140c70740@0x140C70740
+NiIntegersExtraData,0x0,NiExtraData,base,known,4,high,BSWArray::Func1@0x140D63C20 | FUN_140d63be0@0x140D63BE0 | Func1@0x140D63AE0 | NiIntegersExtraData::__vecDelDtor@0x140C865B0
+NiPSysModifier,0x0,NiObject,base,known,2,high,FUN_140d0a9e0@0x140D0A9E0 | FUN_140d0aa20@0x140D0AA20
+NiTriShape,0x0,NiTriBasedGeom,base,known,2,high,FUN_140c8aeb0@0x140C8AEB0 | FUN_140c8b3b0@0x140C8B3B0
+NiTriStrips,0x0,NiTriBasedGeom,base,known,2,high,FUN_140c8c520@0x140C8C520 | FUN_140c8c720@0x140C8C720
+NonActorMagicCaster,0x10,MagicCaster,embedded,known,2,high,NonActorMagicCaster::__vecDelDtor@0x14055A620 | NonActorMagicCaster::sub@0x140559CD0
+PeakValueModifierEffect,0x0,ActiveEffect,base,known,2,high,FUN_14055ac80@0x14055AC80 | PeakValueModifierEffect::__vecDelDtor@0x14055B340
+PlayerCamera,0x0,TESCamera,base,known,2,high,PlayerCamera::ctor@0x140849F90 | PlayerCamera::dtor_impl@0x14084A0B0
+Projectile,0x0,TESObjectREFR,base,known,2,high,FUN_14074a750@0x14074A750 | FUN_14074ad10@0x14074AD10
+RaceSexMenu,0xE8,TESCamera,embedded,known,2,high,BGSProcedureUseMagicExecState::sub@0x1408AFD50 | IMenu::sub_1408AFB70@0x1408AFB70
+ReferenceEffect,0x0,BSTempEffect,base,known,2,high,ReferenceEffect::ReferenceEffect@0x14055BAB0 | ReferenceEffect::ctor@0x14055BB00
+SaveStorageWrapper,0x0,BSStorage,base,known,2,high,SaveStorageWrapper::__vecDelDtor@0x14059A510 | SaveStorageWrapper::sub_14059A260@0x14059A260
+ScrapHeap,0x0,IMemoryStoreBase,base,known,2,high,FUN_140c03460@0x140C03460 | ScrapHeap::__vecDelDtor@0x140C04640
+Script,0x0,TESForm,base,known,3,high,FUN_1402e63c0@0x1402E63C0 | FUN_1402e6440@0x1402E6440 | Script::__vecDelDtor@0x1402EA390
+ScriptEffect,0x0,ActiveEffect,base,known,3,high,FUN_14055de40@0x14055DE40 | ScriptEffect::__vecDelDtor@0x14055E520 | ScriptedRefEffect::__vecDelDtor@0x14055E580
+ShaderReferenceEffect,0x0,ReferenceEffect,base,known,3,high,FUN_14055ea00@0x14055EA00 | FUN_14055ed60@0x14055ED60 | ShaderReferenceEffect::ctor@0x14055EB60
+ShadowSceneNode,0x0,NiNode,base,known,2,high,FUN_1412b8ab0@0x1412B8AB0 | ShadowSceneNode::ctor_1412B8580@0x1412B8580
+SlowTimeEffect,0x0,ScriptEffect,base,known,2,high,FUN_140562be0@0x140562BE0 | SlowTimeEffect::__vecDelDtor@0x140562E80
+SummonCreatureEffect,0x0,ActiveEffect,base,known,2,high,FUN_140563600@0x140563600 | SummonCreatureEffect::__vecDelDtor@0x140565640
+SummonPlacementEffect,0x0,ReferenceEffect,base,known,3,high,FUN_140564b10@0x140564B10 | FUN_140565480@0x140565480 | ReferenceEffect::sub@0x140564A50
+SummonPlacementEffect,0x48,SimpleAnimationGraphManagerHolder,embedded,known,3,high,FUN_140564b10@0x140564B10 | FUN_140565480@0x140565480 | ReferenceEffect::sub@0x140564A50
+TESActionData,0x0,BGSActionData,base,known,3,high,CombatAnimation::Ctor0@0x14075FD20 | CombatAnimation::Ctor1@0x14075FDD0 | CombatAnimation::Ctor2@0x14075FE80
+TESAmmo,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_140213ec0@0x140213EC0 | FUN_140214070@0x140214070
+TESAmmo,0x88,BGSMessageIcon,embedded,known,2,high,FUN_140213ec0@0x140213EC0 | FUN_140214070@0x140214070
+TESAmmo,0xC0,BGSDestructibleObjectForm,embedded,known,2,high,FUN_140213ec0@0x140213EC0 | FUN_140214070@0x140214070
+TESAmmo,0xF8,BGSKeywordForm,embedded,known,2,high,FUN_140213ec0@0x140213EC0 | FUN_140214070@0x140214070
+TESClass,0x0,TESForm,base,known,2,high,FUN_140353760@0x140353760 | FUN_140353830@0x140353830
+TESClass,0x40,TESTexture,embedded,known,2,high,FUN_140353760@0x140353760 | FUN_140353830@0x140353830
+TESClimate,0x0,TESForm,base,known,3,high,FUN_14024e400@0x14024E400 | FUN_14024e490@0x14024E490 | TESClimate::__vecDelDtor@0x14024EA30
+TESClimate,0x20,TESModel,embedded,known,3,high,FUN_14024e400@0x14024E400 | FUN_14024e490@0x14024E490 | TESClimate::__vecDelDtor@0x14024EA30
+TESEffectShader,0x0,TESForm,base,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEffectShader,0x1C0,TESTexture,embedded,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEffectShader,0x1D0,TESTexture,embedded,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEffectShader,0x1E0,TESTexture,embedded,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEffectShader,0x1F0,TESTexture,embedded,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEffectShader,0x200,TESTexture,embedded,known,2,high,FUN_1402165a0@0x1402165A0 | FUN_140216650@0x140216650
+TESEyes,0x0,TESForm,base,known,3,high,FUN_140353de0@0x140353DE0 | FUN_140353e70@0x140353E70 | TESEyes::__vecDelDtor@0x140354240
+TESEyes,0x30,TESTexture,embedded,known,3,high,FUN_140353de0@0x140353DE0 | FUN_140353e70@0x140353E70 | TESEyes::__vecDelDtor@0x140354240
+TESFaction,0x0,TESForm,base,known,2,high,FUN_140354370@0x140354370 | FUN_1403544b0@0x1403544B0
+TESFlora,0x0,TESObjectACTI,base,known,2,high,FUN_140218a10@0x140218A10 | FUN_140218ac0@0x140218AC0
+TESFurniture,0x0,TESObjectACTI,base,known,2,high,FUN_140219140@0x140219140 | FUN_140219210@0x140219210
+TESGlobal,0x0,TESForm,base,known,2,high,FUN_1402e4480@0x1402E4480 | FUN_1402e44c0@0x1402E44C0
+TESGrass,0x0,TESObject,base,known,2,high,FUN_14021b520@0x14021B520 | TESGrass::__vecDelDtor@0x14021BAE0
+TESIdleForm,0x0,TESForm,base,known,2,high,FUN_140357310@0x140357310 | FUN_1403573a0@0x1403573A0
+TESImageSpace,0x0,TESForm,base,known,3,high,FUN_14024ec10@0x14024EC10 | FUN_14024ecc0@0x14024ECC0 | TESImageSpace::__vecDelDtor@0x14024F2F0
+TESImageSpaceModifier,0x0,TESForm,base,known,2,high,FUN_14024f5b0@0x14024F5B0 | FUN_14024f720@0x14024F720
+TESLandTexture,0x0,TESForm,base,known,3,high,FUN_14025dfe0@0x14025DFE0 | FUN_14025e050@0x14025E050 | TESLandTexture::__vecDelDtor@0x14025EC10
+TESLevCharacter,0x0,TESObject,base,known,2,high,FUN_14021c270@0x14021C270 | TESLevCharacter::__vecDelDtor@0x14021C920
+TESLevCharacter,0x30,TESLeveledList,embedded,known,3,high,FUN_14021c1e0@0x14021C1E0 | FUN_14021c270@0x14021C270 | TESLevCharacter::__vecDelDtor@0x14021C920
+TESLevItem,0x0,TESObject,base,known,2,high,FUN_14021cba0@0x14021CBA0 | TESLevItem::__vecDelDtor@0x14021D1D0
+TESLevSpell,0x0,TESObject,base,known,2,high,FUN_14021d390@0x14021D390 | TESLevSpell::__vecDelDtor@0x14021E220
+TESLevSpell,0x30,TESLeveledList,embedded,known,3,high,FUN_14021d320@0x14021D320 | FUN_14021d390@0x14021D390 | TESLevSpell::__vecDelDtor@0x14021E220
+TESLoadScreen,0x0,TESForm,base,known,2,high,FUN_1402e49e0@0x1402E49E0 | FUN_1402e4a40@0x1402E4A40
+TESModelTextureSwap,0x0,TESModel,base,known,2,high,TESModel::sub_14019B0B0@0x14019B0B0 | TESModelTextureSwap::__vecDelDtor@0x14019C140
+TESObjectACTI,0x40,TESModelTextureSwap,embedded,known,2,high,TESObjectACTI::ctor@0x1402237D0 | TESObjectACTI::dtor_impl@0x1402238E0
+TESObjectACTI,0x78,BGSDestructibleObjectForm,embedded,known,2,high,TESObjectACTI::ctor@0x1402237D0 | TESObjectACTI::dtor_impl@0x1402238E0
+TESObjectANIO,0x0,TESForm,base,known,3,high,FUN_140225b90@0x140225B90 | FUN_140225c50@0x140225C50 | TESObjectANIO::__vecDelDtor@0x140226110
+TESObjectANIO,0x20,TESModelTextureSwap,embedded,known,2,high,FUN_140225c50@0x140225C50 | TESObjectANIO::__vecDelDtor@0x140226110
+TESObjectARMO,0x88,BGSDestructibleObjectForm,embedded,known,2,high,FUN_1402278b0@0x1402278B0 | TESObjectARMO::sub@0x140227AA0
+TESObjectARMO,0xB0,TESBipedModelForm,embedded,known,2,high,FUN_1402278b0@0x1402278B0 | TESObjectARMO::sub@0x140227AA0
+TESObjectARMO,0x1D8,BGSKeywordForm,embedded,known,2,high,FUN_1402278b0@0x1402278B0 | TESObjectARMO::sub@0x140227AA0
+TESObjectBOOK,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_1402291b0@0x1402291B0 | FUN_140229360@0x140229360
+TESObjectBOOK,0xB8,BGSDestructibleObjectForm,embedded,known,2,high,FUN_1402291b0@0x1402291B0 | FUN_140229360@0x140229360
+TESObjectBOOK,0xC8,BGSMessageIcon,embedded,known,2,high,FUN_1402291b0@0x1402291B0 | FUN_140229360@0x140229360
+TESObjectCELL,0x0,TESForm,base,known,2,high,FUN_14025f2e0@0x14025F2E0 | TESObjectCELL::sub_14025F460@0x14025F460
+TESObjectCONT,0x30,TESContainer,embedded,known,2,high,FUN_14022ae90@0x14022AE90 | TESObjectCONT::dtor_impl@0x14022AF90
+TESObjectCONT,0x58,TESModelTextureSwap,embedded,known,2,high,FUN_14022ae90@0x14022AE90 | TESObjectCONT::dtor_impl@0x14022AF90
+TESObjectDOOR,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_14022c1f0@0x14022C1F0 | FUN_14022c2e0@0x14022C2E0
+TESObjectDOOR,0x78,BGSDestructibleObjectForm,embedded,known,2,high,FUN_14022c1f0@0x14022C1F0 | FUN_14022c2e0@0x14022C2E0
+TESObjectLAND,0x0,TESForm,base,known,2,high,sub_14023E670@0x140251C20 | sub_14023E690@0x140251CA0
+TESObjectLIGH,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_14021e3f0@0x14021E3F0 | FUN_14021e590@0x14021E590
+TESObjectLIGH,0x88,BGSMessageIcon,embedded,known,2,high,FUN_14021e3f0@0x14021E3F0 | FUN_14021e590@0x14021E590
+TESObjectMISC,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_14022fde0@0x14022FDE0 | FUN_14022ff50@0x14022FF50
+TESObjectMISC,0xA8,BGSDestructibleObjectForm,embedded,known,2,high,FUN_14022fde0@0x14022FDE0 | FUN_14022ff50@0x14022FF50
+TESObjectMISC,0xB8,BGSMessageIcon,embedded,known,2,high,FUN_14022fde0@0x14022FDE0 | FUN_14022ff50@0x14022FF50
+TESObjectMISC,0xE8,BGSKeywordForm,embedded,known,2,high,FUN_14022fde0@0x14022FDE0 | FUN_14022ff50@0x14022FF50
+TESObjectREFR,0x0,TESForm,base,known,2,high,FUN_1402839f0@0x1402839F0 | TESObjectREFR::Constructor@0x140283AE0
+TESObjectREFR,0x38,IAnimationGraphManagerHolder,embedded,known,2,high,FUN_1402839f0@0x1402839F0 | TESObjectREFR::Constructor@0x140283AE0
+TESObjectSTAT,0x0,TESObject,base,known,2,high,FUN_140230a00@0x140230A00 | TESObjectSTAT::__vecDelDtor@0x140230E40
+TESObjectTREE,0x30,TESModel,embedded,known,2,high,FUN_140230fc0@0x140230FC0 | FUN_140231100@0x140231100
+TESObjectWEAP,0x40,TESModelTextureSwap,embedded,known,2,high,FUN_140232070@0x140232070 | FUN_140232300@0x140232300
+TESObjectWEAP,0xD0,BGSDestructibleObjectForm,embedded,known,2,high,FUN_140232070@0x140232070 | FUN_140232300@0x140232300
+TESObjectWEAP,0xF8,BGSMessageIcon,embedded,known,2,high,FUN_140232070@0x140232070 | FUN_140232300@0x140232300
+TESObjectWEAP,0x140,BGSKeywordForm,embedded,known,2,high,FUN_140232070@0x140232070 | FUN_140232300@0x140232300
+TESPackage,0x0,TESForm,base,known,2,high,FUN_140434b30@0x140434B30 | Func1@0x140434AA0
+TESRace,0x0,TESForm,base,known,2,high,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60 | FUN_140384150@0x140384150
+TESRace,0x40,TESSpellList,embedded,known,2,high,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60 | FUN_140384150@0x140384150
+TESRace,0x70,BGSKeywordForm,embedded,known,2,high,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60 | FUN_140384150@0x140384150
+TESRace,0x88,BGSAttackDataForm,embedded,known,2,high,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60 | FUN_140384150@0x140384150
+TESRegion,0x0,TESForm,base,known,2,high,FUN_1401fcab0@0x1401FCAB0 | FUN_1401fcba0@0x1401FCBA0
+TESRegionDataMap,0x0,TESRegionData,base,known,4,high,FUN_1401ff670@0x1401FF670 | FUN_1401ff750@0x1401FF750 | TESRegionDataMap::__vecDelDtor@0x1401FFA30 | sub_1401F1F50@0x1401FF6D0
+TESShout,0x0,TESForm,base,known,3,high,FUN_140329590@0x140329590 | FUN_140329680@0x140329680 | TESShout::__vecDelDtor@0x14032A140
+TESTopic,0x0,TESForm,base,known,2,high,FUN_14038e2a0@0x14038E2A0 | sub_1403703C0@0x14038E200
+TESTopicInfo,0x0,TESForm,base,known,3,high,TESTopicInfo::__vecDelDtor@0x140394A30 | sub_140375AF0@0x140391770 | sub_140375B60@0x1403917F0
+TESWaterForm,0x0,TESForm,base,known,2,high,BGSMusicTrackFormWrapper::sub@0x1402ABC90 | FUN_1402abb10@0x1402ABB10
+TESWaterForm,0x78,TESTexture,embedded,known,2,high,BGSMusicTrackFormWrapper::sub@0x1402ABC90 | FUN_1402abb10@0x1402ABB10
+TESWaterForm,0x88,TESTexture,embedded,known,2,high,BGSMusicTrackFormWrapper::sub@0x1402ABC90 | FUN_1402abb10@0x1402ABB10
+TESWaterForm,0x98,TESTexture,embedded,known,2,high,BGSMusicTrackFormWrapper::sub@0x1402ABC90 | FUN_1402abb10@0x1402ABB10
+TESWaterForm,0xA8,TESTexture,embedded,known,2,high,BGSMusicTrackFormWrapper::sub@0x1402ABC90 | FUN_1402abb10@0x1402ABB10
+TESWeather,0x0,TESForm,base,known,2,high,FUN_1402ad710@0x1402AD710 | FUN_1402ad7f0@0x1402AD7F0
+TESWeather,0x878,TESModel,embedded,known,2,high,FUN_1402ad710@0x1402AD710 | FUN_1402ad7f0@0x1402AD7F0
+TESWordOfPower,0x0,TESForm,base,known,3,high,FUN_14032a760@0x14032A760 | FUN_14032a7e0@0x14032A7E0 | TESWordOfPower::__vecDelDtor@0x14032AAB0
+TESWorldSpace,0x0,TESForm,base,known,2,high,FUN_1402b01c0@0x1402B01C0 | FUN_1402b0390@0x1402B0390
+TESWorldSpace,0x30,TESModel,embedded,known,2,high,FUN_1402b01c0@0x1402B01C0 | FUN_1402b0390@0x1402B0390
+TESWorldSpace,0x230,TESTexture,embedded,known,2,high,FUN_1402b01c0@0x1402B01C0 | FUN_1402b0390@0x1402B0390
+TESWorldSpace,0x240,TESTexture,embedded,known,2,high,FUN_1402b01c0@0x1402B01C0 | FUN_1402b0390@0x1402B0390
+TutorialMenu,0x0,IMenu,base,known,2,high,FUN_1408cf9d0@0x1408CF9D0 | TutorialMenu::__vecDelDtor@0x1408D03A0
+TweenMenu,0x0,IMenu,base,known,2,high,IMenu::sub_1408D0680@0x1408D0680 | TweenMenu::__vecDelDtor@0x1408D1AA0
+WeaponAnimationGraphManagerHolder,0x0,IAnimationGraphManagerHolder,base,known,2,high,FUN_1404f3bb0@0x1404F3BB0 | WeaponAnimationGraphManagerHolder::__vecDelDtor@0x1404F43C0
+ZeroOverheadHeap,0x0,IMemoryHeap,base,known,4,high,FUN_140c0bb40@0x140C0BB40 | FUN_140c0be70@0x140C0BE70 | UnitTestZeroOverheadHeap::Func1@0x140C0BF00 | ZeroOverheadHeap::__vecDelDtor@0x140C0BF60
+bhkCachingShapePhantom,0x0,bhkShapePhantom,base,known,2,high,FUN_140dedf70@0x140DEDF70 | bhkCachingShapePhantom::__vecDelDtor@0x140DEEA80
+bhkCharRigidBodyController,0x370,bhkCharacterPointCollector,embedded,known,2,high,FUN_140df1460@0x140DF1460 | FUN_140df1510@0x140DF1510
+bhkRigidBodyT,0x0,bhkRigidBody,base,known,2,high,FUN_140ddaea0@0x140DDAEA0 | bhkRigidBodyT::Func1@0x140DDB840
+hkaDefaultAnimationControl,0x0,hkaAnimationControl,base,known,2,high,hkaDefaultAnimationControl::ctor@0x140B16FB0 | hkaDefaultAnimationControl::sub@0x140B17080
+hkbNode,0x80,hkReferencedObject *,2,known,2,high,FUN_1409ef430@0x1409EF430 | FUN_1409f30d0@0x1409F30D0
+hkbNode,0x88,hkReferencedObject *,3,known,2,high,FUN_1409ef430@0x1409EF430 | FUN_1409f30d0@0x1409F30D0
+hkp3AxisSweep,0x0,hkpBroadPhase,base,known,2,high,FUN_140b2acc0@0x140B2ACC0 | FUN_140b2b250@0x140B2B250
+hkpAction,0x20,undefined8,3,known,2,high,FUN_140a71800@0x140A71800 | FUN_140bc5760@0x140BC5760
+hkpPhantomCallbackShape,0x20,BGSWaterCollisionManager__BGSWaterUpdateI,embedded,known,2,high,FUN_14029d490@0x14029D490 | FUN_14029d5a0@0x14029D5A0
+hkpSimpleConstraintContactMgr,0x28,hkpSimpleContactConstraintData,embedded,known,2,high,FUN_140a9eba0@0x140A9EBA0 | FUN_140a9ecd0@0x140A9ECD0
+hkpSimpleConstraintContactMgr,0x78,hkpConstraintInstance,embedded,known,2,high,FUN_140a9eba0@0x140A9EBA0 | FUN_140a9ecd0@0x140A9ECD0
+BSDynamicLines,0x148,undefined8,2,unknown,1,low,FUN_141317cf0@0x141317CF0
+ExtraInfoGeneralTopic,0x10,undefined8,2,unknown,1,low,FUN_1401355e0@0x1401355E0
+ExtraPackage,0x10,undefined8,2,unknown,1,low,FUN_1401357c0@0x1401357C0
+ExtraShouldWear,0x10,undefined1,2,unknown,1,low,FUN_140135360@0x140135360
+MapCamera,0x58,undefined8,2,unknown,1,low,FUN_1408deaa0@0x1408DEAA0
+MovementControllerAI,0x110,undefined4,2,unknown,1,low,FUN_1410feb10@0x1410FEB10
+StatsNode,0x40,undefined4,3,unknown,1,low,FUN_1408c8c20@0x1408C8C20
+StatsNode,0x48,undefined4,4,unknown,1,low,FUN_1408c8c20@0x1408C8C20
+StatsNode,0x50,longlong,5,unknown,1,low,FUN_1408c8c20@0x1408C8C20
+StatsNode,0x58,longlong,6,unknown,1,low,FUN_1408c8c20@0x1408C8C20
+bhkCharacterPointCollector,0x220,undefined8,2,unknown,1,low,FUN_140e32b10@0x140E32B10
+hkErrStream,0x0,hkOstream,base,unknown,1,low,FUN_1409caf00@0x1409CAF00
+hkMoppBvTreeShapeBase,0x18,undefined4,2,unknown,1,low,FUN_140a62870@0x140A62870
+hkaSplineCompressedAnimation,0x0,hkBaseObject,base,unknown,1,low,FUN_140b70f10@0x140B70F10
+hkpAabbPhantom,0x0,hkpPhantom,base,unknown,1,low,FUN_140a6fb80@0x140A6FB80
+hkpBallGun,0x0,hkpFirstPersonGun,base,unknown,1,low,FUN_140ac8ab0@0x140AC8AB0
+hkpCachingShapePhantom,0x0,hkpPhantom,base,unknown,1,low,FUN_140a87af0@0x140A87AF0
+hkpCollisionDispatcher,0x10,undefined8,2,unknown,1,low,FUN_140b24ea0@0x140B24EA0
+hkpCompressedMeshShape,0x0,hkpShapeCollection,base,unknown,1,low,FUN_140e3a710@0x140E3A710
+hkpCompressedSampledHeightFieldShape,0x0,hkpSampledHeightFieldShape,base,unknown,1,low,FUN_140a69da0@0x140A69DA0
+hkpConstraintInstance,0x28,undefined8,2,unknown,1,low,FUN_140a85090@0x140A85090
+hkpConstraintInstance,0x38,undefined1,2,unknown,1,low,FUN_140a85390@0x140A85390
+hkpConvexTransformShape,0x0,hkpConvexTransformShapeBase,base,unknown,1,low,FUN_140a62fc0@0x140A62FC0
+hkpConvexTransformShapeBase,0x18,undefined4,2,unknown,1,low,FUN_140a59450@0x140A59450
+hkpListShape,0x0,hkpShapeCollection,base,unknown,1,low,FUN_140a616e0@0x140A616E0
+hkpMeshShape,0x0,hkpShapeCollection,base,unknown,1,low,FUN_140b79e70@0x140B79E70
+hkpMoppBvTreeShape,0x0,hkMoppBvTreeShapeBase,base,unknown,1,low,FUN_140a62a60@0x140A62A60
+hkpMotorAction,0x0,hkpAction,base,unknown,1,low,FUN_140ac46d0@0x140AC46D0
+hkpPhantom,0x0,hkpWorldObject,base,unknown,1,low,hkpPhantom::sub_140A90F00@0x140A90F00
+hkpPhysicsSystemWithContacts,0x0,hkpPhysicsSystem,base,unknown,1,low,FUN_140ac7f20@0x140AC7F20
+hkpProjectileGun,0x0,hkpFirstPersonGun,base,unknown,1,low,FUN_140aca680@0x140ACA680
+hkpRigidBody,0x0,hkpEntity,base,unknown,1,low,hkpRigidBody::ctor@0x140A6DFC0
+hkpSampledHeightFieldShape,0x2D,undefined1,3,unknown,1,low,sub_140A47750@0x140A68410
+hkpShapeCollection,0x18,undefined4,2,unknown,1,low,FUN_140a6a970@0x140A6A970
+hkpShapeCollection,0x29,undefined1,3,unknown,1,low,FUN_140a6a970@0x140A6A970
+hkpShapePhantom,0x0,hkpWorldObject,base,unknown,1,low,FUN_140a87790@0x140A87790
+hkpSimpleMeshShape,0x0,hkpShapeCollection,base,unknown,1,low,FUN_140e7d0c0@0x140E7D0C0
+hkpSimpleShapePhantom,0x0,hkpPhantom,base,unknown,1,low,hkpSimpleShapePhantom::sub@0x140A83CD0
+hkpStorageMeshShape,0x0,hkBaseObject,base,unknown,1,low,FUN_140b4bbb0@0x140B4BBB0
+hkpStorageSampledHeightFieldShape,0x0,hkpSampledHeightFieldShape,base,unknown,1,low,sub_140A4B970@0x140A6A410
+hkpTriSampledHeightFieldCollection,0x0,hkpShapeCollection,base,unknown,1,low,FUN_140a6baf0@0x140A6BAF0
+hkxMaterial,0x0,hkxAttributeHolder,base,unknown,1,low,FUN_140bc6f50@0x140BC6F50
+hkxNode,0x0,hkxAttributeHolder,base,unknown,1,low,FUN_140bc6a00@0x140BC6A00
+AbstractHeap,0x30,undefined8,4,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0x40,undefined4,5,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0x48,undefined8,2,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0x50,undefined8,3,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0x58,undefined8,3,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0xA4,undefined1,7,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AbstractHeap,0xA5,undefined1,6,known,1,low,FUN_140c0e3a0@0x140C0E3A0
+AccumulatingValueModifierEffect,0x0,ValueModifierEffect,base,known,1,low,FUN_14053d2b0@0x14053D2B0
+ActionInput,0x8,longlong,3,known,1,low,FUN_1401a19c0@0x1401A19C0
+ActionInput,0x10,longlong,5,known,1,low,FUN_1401a19c0@0x1401A19C0
+ActionInput,0x18,undefined8,4,known,1,low,FUN_1401a19c0@0x1401A19C0
+ActionInput,0x20,undefined4,2,known,1,low,FUN_1401a19c0@0x1401A19C0
+ActiveEffect,0x8,ReferenceEffectController,embedded,known,1,low,ActiveEffect::sub_14053FA50@0x14053FA50
+ActiveEffect,0x40,undefined8,3,known,1,low,ActiveEffect::Constructor@0x14053DB70
+ActiveEffect,0x48,EffectItem *,4,known,1,low,ActiveEffect::Constructor@0x14053DB70
+Actor,0x0,TESObjectREFR,base,known,1,low,FUN_1405cdda0@0x1405CDDA0
+Actor,0x98,MagicTarget,embedded,known,1,low,FUN_1405cdda0@0x1405CDDA0
+Actor,0xB8,ActorState,embedded,known,1,low,Actor_CTOR@0x1405CDBF0
+Actor,0xD8,IPostAnimationChannelUpdateFunctor,embedded,known,1,low,FUN_1405cdda0@0x1405CDDA0
+ActorMagicCaster,0x0,MagicCaster,base,known,1,low,FUN_1405418c0@0x1405418C0
+ActorMagicCaster,0x48,SimpleAnimationGraphManagerHolder,embedded,known,1,low,FUN_1405418c0@0x1405418C0
+ActorMagicCaster,0x68,BSAttachTechniques__AttachTechniqueInput,embedded,known,1,low,FUN_1405418c0@0x1405418C0
+ActorMagicCaster,0xB8,undefined8,2,known,1,low,FUN_1405417b0@0x1405417B0
+ActorMagicCaster,0xF4,undefined4,3,known,1,low,FUN_1405417b0@0x1405417B0
+ActorValueInfo,0x30,TESDescription,embedded,known,1,low,FUN_1403e3850@0x1403E3850
+ActorValueInfo,0x40,TESIcon,embedded,known,1,low,FUN_1403e3850@0x1403E3850
+ActorValueInfo,0x50,byte *,3,known,1,low,FUN_1403e3850@0x1403E3850
+ActorValueMeter,0x48,undefined4,3,known,1,low,FUN_140881870@0x140881870
+AddCellGrassTask,0x0,BSTask,base,known,1,low,FUN_14015f720@0x14015F720
+AddCellGrassTask,0x38,TESObjectCELL *,2,known,1,low,FUN_14015f720@0x14015F720
+AlchemyItem,0x0,MagicItem,base,known,1,low,FUN_1400f6240@0x1400F6240
+AlchemyItem,0xC8,TESIcon,embedded,known,1,low,FUN_1400f6090@0x1400F6090
+AlchemyItem,0xF0,BaseFormComponent,embedded,known,1,low,FUN_1400f6240@0x1400F6240
+AlchemyItem,0x100,BGSEquipType,embedded,known,1,low,FUN_1400f6090@0x1400F6090
+AlchemyItem,0x120,BGSPickupPutdownSounds,embedded,known,1,low,FUN_1400f6090@0x1400F6090
+AlchemyItem,0x158,TESIcon,embedded,known,1,low,FUN_1400f6090@0x1400F6090
+ArrowProjectile,0x0,MissileProjectile,base,known,1,low,FUN_140731f40@0x140731F40
+Atmosphere,0x0,SkyObject,base,known,1,low,FUN_1403ab920@0x1403AB920
+BGSApparatus,0x0,TESObjectMISC,base,known,1,low,FUN_140209270@0x140209270
+BGSApparatus,0x100,BaseFormComponent,embedded,known,1,low,FUN_140209270@0x140209270
+BGSApparatus,0x110,TESDescription,embedded,known,1,low,FUN_140209160@0x140209160
+BGSCollisionLayer,0x20,TESDescription,embedded,known,1,low,BGSCollisionLayer::ctor@0x1402BF140
+BGSColorForm,0x0,TESForm,base,known,1,low,sub_1402AACB0@0x1402C0320
+BGSDecalNode,0x140,char,3,known,1,low,FUN_1401b1140@0x1401B1140
+BGSDefaultObjectManager,0x0,TESForm,base,known,1,low,BGSDefaultObjectManager::ctor@0x1402C07E0
+BGSEncounterZone,0x0,TESForm,base,known,1,low,BGSEncounterZone::BGSEncounterZone@0x140237FA0
+BGSEntryPointFunctionDataActivateChoice,0x10,undefined8,2,known,1,low,FUN_140330600@0x140330600
+BGSEntryPointFunctionDataActivateChoice,0x22,undefined2,3,known,1,low,FUN_140330600@0x140330600
+BGSExplosion,0x0,TESObject,base,known,1,low,FUN_14020ccf0@0x14020CCF0
+BGSExplosion,0x40,TESModel,embedded,known,1,low,FUN_14020cbc0@0x14020CBC0
+BGSExplosion,0x68,TESEnchantableForm,embedded,known,1,low,FUN_14020cbc0@0x14020CBC0
+BGSFootstep,0x0,TESForm,base,known,1,low,FUN_1402c14f0@0x1402C14F0
+BGSFootstepSet,0x0,TESForm,base,known,1,low,FUN_1402c1a60@0x1402C1A60
+BGSHazard,0x40,TESModel,embedded,known,1,low,FUN_14020e000@0x14020E000
+BGSHazard,0x70,TESImageSpaceModifiableForm,embedded,known,1,low,FUN_14020e000@0x14020E000
+BGSIdleMarker,0x58,BGSIdleCollection,embedded,known,1,low,FUN_140332d90@0x140332D90
+BGSLightingTemplate,0x0,TESForm,base,known,1,low,FUN_14023e2d0@0x14023E2D0
+BGSMessage,0x30,TESDescription,embedded,known,1,low,FUN_1402c81f0@0x1402C81F0
+BGSMovableStatic,0x10,BGSDestructibleObjectForm,embedded,known,1,low,FUN_14020ff70@0x14020FF70
+BGSMusicSingleTrack,0x0,BGSMusicTrack,base,known,1,low,BGSMusicSingleTrack::sub@0x1402CAA30
+BGSNote,0x0,TESObject,base,known,1,low,BGSNote::sub@0x140335D60
+BGSNote,0x68,TESIcon,embedded,known,1,low,FUN_140335c70@0x140335C70
+BGSNote,0x78,BGSPickupPutdownSounds,embedded,known,1,low,FUN_140335c70@0x140335C70
+BGSPerk,0x30,TESDescription,embedded,known,1,low,FUN_140337ca0@0x140337CA0
+BGSPerk,0x40,TESIcon,embedded,known,1,low,FUN_140337ca0@0x140337CA0
+BGSProjectile,0x0,TESObject,base,known,1,low,FUN_1402110a0@0x1402110A0
+BGSReferenceEffect,0x0,TESForm,base,known,1,low,BGSReferenceEffect::BGSReferenceEffect@0x140247B40
+BGSReverbParameters,0x0,TESForm,base,known,1,low,FUN_1402cd170@0x1402CD170
+BGSSaveFormBuffer,0x0,BGSSaveGameBuffer,base,known,1,low,BGSSaveFormBuffer::BGSSaveFormBuffer@0x140599440
+BGSSaveLoadManager,0x2B0,BSThread,embedded,known,1,low,FUN_140586760@0x140586760
+BGSStaticCollection,0x0,TESObject,base,known,1,low,FUN_140212470@0x140212470
+BGSStoryManagerBranchNode,0x0,TESForm,base,known,1,low,BGSStoryManagerNodeBase::sub_140175C20@0x140175C20
+BGSStoryManagerTreeForm,0x0,TESForm,base,known,1,low,FUN_14036df10@0x14036DF10
+BGSTextureSet,0x0,TESObject,base,known,1,low,FUN_1402d1290@0x1402D1290
+BGSTextureSet,0x30,NiObject,embedded,known,1,low,FUN_1402d11a0@0x1402D11A0
+BGSVolumetricLighting,0x0,TESForm,base,known,1,low,FUN_14020f800@0x14020F800
+BSAnimGroupSequence,0xB8,longlong,2,known,1,low,FUN_1401cdf90@0x1401CDF90
+BSBloodSplatterShaderProperty,0x0,BSShaderProperty,base,known,1,low,BSBloodSplatterShaderProperty::sub@0x1412D87A0
+BSBodyMorphOffsetsExtraData,0x0,NiExtraData,base,known,1,low,FUN_140d4dde0@0x140D4DDE0
+BSBodyMorphOffsetsExtraData,0x18,int,2,known,1,low,FUN_140d4dd90@0x140D4DD90
+BSBound,0x0,NiExtraData,base,known,1,low,BSBound::BSBound@0x140D54D50
+BSClearZNode,0x0,NiNode,base,known,1,low,BSClearZNode::BSClearZNode@0x14130BA00
+BSCubeMapCamera,0x0,NiCamera,base,known,1,low,FUN_141301ed0@0x141301ED0
+BSCullingProcess,0x0,NiCullingProcess,base,known,1,low,FUN_140d50bd0@0x140D50BD0
+BSDecalPlacementVectorExtraData,0x0,NiExtraData,base,known,1,low,BSDecalPlacementVectorExtraData::sub_140D62D10@0x140D62D10
+BSDecalPlacementVectorExtraData,0x18,undefined4,2,known,1,low,FUN_140d62ca0@0x140D62CA0
+BSDismemberSkinInstance,0x0,NiSkinInstance,base,known,1,low,FUN_140c6bd10@0x140C6BD10
+BSDistantObjectLargeRefExtraData,0x18,undefined1,2,known,1,low,FUN_140d59800@0x140D59800
+BSDistantTreeShaderProperty,0x0,BSShaderProperty,base,known,1,low,FUN_141301090@0x141301090
+BSDynamicLines,0x158,undefined2,4,known,1,low,FUN_141317cf0@0x141317CF0
+BSDynamicLines,0x15A,undefined2,3,known,1,low,FUN_141317cf0@0x141317CF0
+BSDynamicLines,0x160,undefined4,5,known,1,low,FUN_141317cf0@0x141317CF0
+BSDynamicTriShape,0x148,ulonglong,2,known,1,low,FUN_140c72250@0x140C72250
+BSDynamicTriShape,0x158,ushort,4,known,1,low,FUN_140c72250@0x140C72250
+BSDynamicTriShape,0x15A,ushort,3,known,1,low,FUN_140c72250@0x140C72250
+BSDynamicTriShape,0x170,undefined4,5,known,1,low,FUN_140c72250@0x140C72250
+BSEffectShaderMaterial,0x0,BSShaderMaterial,base,known,1,low,FUN_1412fe5a0@0x1412FE5A0
+BSEffectShaderProperty,0x0,BSShaderProperty,base,known,1,low,BSEffectShaderProperty::sub_1412D5110@0x1412D5110
+BSFaceGenBaseMorphExtraData,0x0,NiExtraData,base,known,1,low,FUN_1403d7f20@0x1403D7F20
+BSFaceGenKeyframeMultiple,0x8,Type__enum_4,2,known,1,low,FUN_1403d0a60@0x1403D0A60
+BSFaceGenModelExtraData,0x0,NiExtraData,base,known,1,low,FUN_14036aca0@0x14036ACA0
+BSFaceGenModelExtraData,0x18,longlong,2,known,1,low,FUN_14036aca0@0x14036ACA0
+BSFile,0x0,NiFile,base,known,1,low,FUN_140c35390@0x140C35390
+BSFurnitureMarkerNode,0x0,NiExtraData,base,known,1,low,BSFurnitureMarkerNode::__vecDelDtor@0x140D54830
+BSGeometry,0x0,NiAVObject,base,known,1,low,FUN_140c712c0@0x140C712C0
+BSGeometry,0x138,undefined8,2,known,1,low,FUN_140c71a80@0x140C71A80
+BSGeometry,0x148,undefined8,3,known,1,low,FUN_140c71a80@0x140C71A80
+BSGeometryListCullingProcess,0x0,BSCullingProcess,base,known,1,low,FUN_140d58800@0x140D58800
+BSImagespaceShader,0x0,BSShader,base,known,1,low,FUN_14130c710@0x14130C710
+BSImagespaceShaderBlur3,0x0,BSImagespaceShader,base,known,1,low,FUN_14129f200@0x14129F200
+BSImagespaceShaderISTemporalAA,0x0,BSImagespaceShader,base,known,1,low,FUN_1412ad350@0x1412AD350
+BSLODMultiIndexTriShape,0x0,BSMultiIndexTriShape,base,known,1,low,FUN_141330570@0x141330570
+BSLightingShaderMaterialBase,0x0,BSShaderMaterial,base,known,1,low,FUN_1412cede0@0x1412CEDE0
+BSLightingShaderMaterialFacegenTint,0x0,BSLightingShaderMaterialBase,base,known,1,low,BSLightingShaderMaterialFacegenTint::Ctor@0x1412D2690
+BSLightingShaderMaterialHairTint,0x0,BSLightingShaderMaterialBase,base,known,1,low,BSLightingShaderMaterialHairTint::Ctor@0x1412D28B0
+BSLightingShaderMaterialSnow,0x0,BSLightingShaderMaterialBase,base,known,1,low,BSLightingShaderMaterialSnow::Ctor@0x1412D38F0
+BSLightingShaderProperty,0x0,BSShaderProperty,base,known,1,low,BSLightingShaderProperty::sub_1412C52E0@0x1412C52E0
+BSLines,0x158,undefined2,5,known,1,low,FUN_141317730@0x141317730
+BSLines,0x15A,undefined2,4,known,1,low,FUN_141317730@0x141317730
+BSMeshLODTriShape,0x0,BSTriShape,base,known,1,low,FUN_141330080@0x141330080
+BSMultiBound,0x0,NiObject,base,known,1,low,FUN_140d33800@0x140D33800
+BSMultiBoundAABB,0x0,BSMultiBoundShape,base,known,1,low,FUN_1401c1c00@0x1401C1C00
+BSMultiBoundRoom,0x0,BSMultiBoundNode,base,known,1,low,BSMultiBoundRoom::sub@0x140D33AD0
+BSMultiBoundShape,0x0,NiObject,base,known,1,low,BSMultiBoundShape::ctor@0x140D48540
+BSOrderedNode,0x0,BSNiNode,base,known,1,low,FUN_141317220@0x141317220
+BSParabolicCullingProcess,0x0,BSCullingProcess,base,known,1,low,FUN_14132c230@0x14132C230
+BSParticleShaderProperty,0x0,BSShaderProperty,base,known,1,low,FUN_1412dd4f0@0x1412DD4F0
+BSPortalSharedNode,0x140,NiTimeController *,2,known,1,low,FUN_140d4ced0@0x140D4CED0
+BSScaleformTranslator,0x0,GRefCountImplCore,base,known,1,low,FUN_140f4cc30@0x140F4CC30
+BSSceneGraph,0x128,longlong *,4,known,1,low,FUN_140d57720@0x140D57720
+BSSceneGraph,0x138,undefined1,3,known,1,low,FUN_140d57720@0x140D57720
+BSSegmentedTriShape,0x0,NiTriShape,base,known,1,low,FUN_140c90300@0x140C90300
+BSShaderAccumulator,0x0,NiAlphaAccumulator,base,known,1,low,BSShaderAccumulator::sub_1412C9F50@0x1412C9F50
+BSShaderProperty,0x0,NiObjectNET,base,known,1,low,FUN_1412913d0@0x1412913D0
+BSShadowDirectionalLight,0x0,BSShadowLight,base,known,1,low,FUN_141324960@0x141324960
+BSShadowFrustumLight,0x56C,float,4,known,1,low,FUN_14132cab0@0x14132CAB0
+BSShadowFrustumLight,0x570,float,5,known,1,low,FUN_14132cab0@0x14132CAB0
+BSShadowLight,0x0,BSLight,base,known,1,low,FUN_1413048d0@0x1413048D0
+BSSkinnedDecalTriShape,0x158,undefined2,5,known,1,low,FUN_140c67650@0x140C67650
+BSSkinnedDecalTriShape,0x15A,undefined2,4,known,1,low,FUN_140c67650@0x140C67650
+BSSkinnedDecalTriShape,0x160,undefined8,6,known,1,low,FUN_140c67650@0x140C67650
+BSSkyShaderProperty,0x0,BSShaderProperty,base,known,1,low,BSSkyShaderProperty::sub@0x1412FBA20
+BSSmallBlockAllocator,0x0,IMemoryStoreBase,base,known,1,low,FUN_140c0c8f0@0x140C0C8F0
+BSStream,0x0,NiStream,base,known,1,low,FUN_14014cc20@0x14014CC20
+BSSubIndexLandTriShape,0x0,BSSubIndexTriShape,base,known,1,low,FUN_141333fa0@0x141333FA0
+BSTempEffect,0x10,undefined4,3,known,1,low,BSTempEffect::ctor@0x140446AD0
+BSTempEffectDebris,0x0,BSTempEffect,base,known,1,low,FUN_1404479b0@0x1404479B0
+BSTempEffectGeometryDecal,0x38,longlong *,5,known,1,low,FUN_140448650@0x140448650
+BSTempEffectGeometryDecal,0xA4,undefined4,8,known,1,low,FUN_140448650@0x140448650
+BSTempEffectGeometryDecal,0xAC,undefined4,10,known,1,low,FUN_140448650@0x140448650
+BSTempEffectParticle,0x0,BSTempEffect,base,known,1,low,BSTempEffect::sub_14044B6A0@0x14044B6A0
+BSTempEffectParticle,0x40,undefined8,4,known,1,low,FUN_14044b790@0x14044B790
+BSTempEffectParticle,0x88,longlong,5,known,1,low,FUN_14044b790@0x14044B790
+BSTempEffectSPG,0x0,BSTempEffect,base,known,1,low,BSTempEffectSPG::BSTempEffectSPG@0x140451220
+BSTempEffectSimpleDecal,0x170,undefined8,2,known,1,low,BSTempEffect::sub_14044D420@0x14044D420
+BSTempEffectWeaponBlood,0x0,BSTempEffect,base,known,1,low,BSTempEffect::sub_1404522C0@0x1404522C0
+BSTempEffectWeaponBlood,0x30,longlong,3,known,1,low,BSTempEffect::sub_1404522C0@0x1404522C0
+BSTerrainEffect,0x0,BSTempEffect,base,known,1,low,Func1@0x140453600
+BSTreeNode,0x0,BSLeafAnimNode,base,known,1,low,FUN_1412930c0@0x1412930C0
+BSTriShape,0x158,undefined2,5,known,1,low,FUN_140c67560@0x140C67560
+BSTriShape,0x15A,undefined2,4,known,1,low,FUN_140c67560@0x140C67560
+BSUtilityShader,0x0,NiRefObject,base,known,1,low,BSUtilityShader::Ctor@0x14130DCE0
+BSValueNode,0x0,BSNiNode,base,known,1,low,NiNode::sub_140D38EE0@0x140D38EE0
+BSWaterShaderMaterial,0x0,BSShaderMaterial,base,known,1,low,NiPick::Results::sub@0x141302910
+BSWaterShaderProperty,0x0,BSShaderProperty,base,known,1,low,BSWaterShaderProperty::sub_1412D7980@0x1412D7980
+BSXAudio2GameSound,0x0,BSGameSound,base,known,1,low,FUN_140bfd120@0x140BFD120
+BSXFlags,0x18,undefined4,2,known,1,low,FUN_140d38990@0x140D38990
+BShkbAnimationGraph,0xC0,hkbCharacter,embedded,known,1,low,BShkbAnimationGraph::sub_140AEAFB0@0x140AEAFB0
+BarrierProjectile,0x0,Projectile,base,known,1,low,FUN_140732960@0x140732960
+BarterMenu,0x0,IMenu,base,known,1,low,BarterMenu::dtor_impl@0x140851B70
+BookMenu,0x0,IMenu,base,known,1,low,FUN_140857330@0x140857330
+Character,0x0,Actor,base,known,1,low,Character::ctor@0x1406928C0
+Clouds,0x0,SkyObject,base,known,1,low,FUN_1403ac040@0x1403AC040
+CombatInventoryItem,0x0,NiRefObject,base,known,1,low,CombatInventoryItem::sub@0x14077DB20
+CombatMagicCasterReanimate,0x0,NiRefObject,base,known,1,low,FUN_140785ea0@0x140785EA0
+ConeProjectile,0x0,Projectile,base,known,1,low,TESObjectREFR::sub_140735300@0x140735300
+Console,0x0,IMenu,base,known,1,low,FUN_14085a130@0x14085A130
+ConsoleNativeUIMenu,0x0,IMenu,base,known,1,low,ConsoleNativeUIMenu::__vecDelDtor@0x14085C590
+ContainerMenu,0x0,IMenu,base,known,1,low,ContainerMenu::dtor_impl@0x14085CCB0
+CraftingMenu,0x0,IMenu,base,known,1,low,IMenu::sub_140862C00@0x140862C00
+CreationClubMenu,0x0,IMenu,base,known,1,low,FUN_14050d680@0x14050D680
+CreationClubMenu,0x40,GRefCountImplCore,embedded,known,1,low,FUN_14050d680@0x14050D680
+CreditsMenu,0x0,IMenu,base,known,1,low,FUN_140875120@0x140875120
+CreditsMenu,0x30,GRefCountImplCore,embedded,known,1,low,FUN_140875120@0x140875120
+DialogueMenu,0x0,IMenu,base,known,1,low,FUN_140875ca0@0x140875CA0
+DialoguePackage,0xF1,undefined1,4,known,1,low,FUN_14070e070@0x14070E070
+EffectSetting,0x30,BGSMenuDisplayObject,embedded,known,1,low,FUN_1400fa430@0x1400FA430
+ExtraCount,0x10,undefined2,2,known,1,low,FUN_1401352b0@0x1401352B0
+ExtraGhost,0x10,undefined1,2,known,1,low,Func1@0x140135320
+ExtraGroupConstraint,0x10,undefined4,2,known,1,low,FUN_14013f280@0x14013F280
+ExtraGroupConstraint,0x40,undefined4,8,known,1,low,FUN_14013f280@0x14013F280
+ExtraGroupConstraint,0x44,undefined4,9,known,1,low,FUN_14013f280@0x14013F280
+ExtraPackage,0x1C,undefined2,3,known,1,low,FUN_1401357c0@0x1401357C0
+ExtraRank,0x10,undefined4,2,known,1,low,FUN_140135270@0x140135270
+ExtraSayToTopicInfo,0x38,undefined8,2,known,1,low,FUN_14013a6c0@0x14013A6C0
+ExtraSoul,0x10,undefined1,2,known,1,low,FUN_140135490@0x140135490
+FavoritesMenu,0x0,IMenu,base,known,1,low,FUN_140877ce0@0x140877CE0
+GiftMenu,0x0,IMenu,base,known,1,low,FUN_14087a0d0@0x14087A0D0
+GridCellArray,0x0,GridArray,base,known,1,low,FUN_1401d4dd0@0x1401D4DD0
+HUDMenu,0x0,IMenu,base,known,1,low,FUN_14087d420@0x14087D420
+Hazard,0x0,TESObjectREFR,base,known,1,low,FUN_140740780@0x140740780
+Hazard,0xB8,Actor_vtbl_184 *,2,known,1,low,Hazard::sub_140740660@0x140740660
+ImageSpaceEffectDepthOfField,0x0,ImageSpaceEffect,base,known,1,low,FUN_1412f8f70@0x1412F8F70
+ImageSpaceModifierInstance,0x14,undefined4,3,known,1,low,FUN_14024d460@0x14024D460
+ImageSpaceModifierInstance,0x20,undefined4,2,known,1,low,FUN_14024d460@0x14024D460
+ImageSpaceModifierInstance,0x28,uint,5,known,1,low,FUN_14024d460@0x14024D460
+ImageSpaceModifierInstanceDOF,0x64,undefined4,2,known,1,low,FUN_14024d550@0x14024D550
+ImageSpaceModifierInstanceDOF,0x68,undefined4,5,known,1,low,FUN_14024d550@0x14024D550
+ImageSpaceModifierInstanceDOF,0x6C,undefined4,6,known,1,low,FUN_14024d550@0x14024D550
+ImageSpaceModifierInstanceForm,0x0,ImageSpaceModifierInstance,base,known,1,low,FUN_14024e170@0x14024E170
+IngredientItem,0x0,MagicItem,base,known,1,low,FUN_1400feee0@0x1400FEEE0
+IngredientItem,0xC8,TESIcon,embedded,known,1,low,FUN_1400fed70@0x1400FED70
+IngredientItem,0xD8,BaseFormComponent,embedded,known,1,low,FUN_1400feee0@0x1400FEEE0
+IngredientItem,0xE8,BGSEquipType,embedded,known,1,low,FUN_1400fed70@0x1400FED70
+IngredientItem,0x108,BGSPickupPutdownSounds,embedded,known,1,low,FUN_1400fed70@0x1400FED70
+IngredientItem,0x120,BaseFormComponent,embedded,known,1,low,FUN_1400feee0@0x1400FEEE0
+InventoryMenu,0x0,IMenu,base,known,1,low,FUN_14088d100@0x14088D100
+JournalMenu,0x0,IMenu,base,known,1,low,FUN_1408f3950@0x1408F3950
+JournalMenu,0x48,GRefCountImplCore,embedded,known,1,low,FUN_1408f3720@0x1408F3720
+JournalMenu,0x80,GRefCountImplCore,embedded,known,1,low,FUN_1408f3950@0x1408F3950
+JournalMenu,0x98,GRefCountImplCore,embedded,known,1,low,FUN_1408f3720@0x1408F3720
+Journal_QuestsTab,0x0,GRefCountImplCore,base,known,1,low,Journal_QuestsTab::sub_1408E9A00@0x1408E9A00
+KinectMenu,0x0,IMenu,base,known,1,low,Func9@0x14053B9E0
+LoadStorageWrapper,0x20,longlong,2,known,1,low,FUN_14059a400@0x14059A400
+LoadWaitSpinner,0x0,IMenu,base,known,1,low,FUN_14053c190@0x14053C190
+LoadingMenu,0x0,IMenu,base,known,1,low,LoadingMenu::dtor_impl@0x140895930
+LockpickingMenu,0x0,IMenu,base,known,1,low,FUN_140896230@0x140896230
+MagicItem,0x0,TESObject,base,known,1,low,FUN_140100590@0x140100590
+MagicMenu,0x0,IMenu,base,known,1,low,FUN_14089aa90@0x14089AA90
+Main,0x18,undefined8,2,known,1,low,FUN_1405acc20@0x1405ACC20
+Main,0x20,undefined8,3,known,1,low,FUN_1405acc20@0x1405ACC20
+MainMenu,0x0,IMenu,base,known,1,low,MainMenu::dtor_impl@0x1408A14B0
+MainMenu,0x40,GRefCountImplCore,embedded,known,1,low,MainMenu::dtor_impl@0x1408A14B0
+MapMenu,0x0,IMenu,base,known,1,low,sub_1408A8130@0x1408E3AA0
+MessageBoxData,0x38,undefined4,6,known,1,low,FUN_1408ac6d0@0x1408AC6D0
+MessageBoxData,0x48,undefined4,7,known,1,low,FUN_1408ac6d0@0x1408AC6D0
+MessageBoxData,0x4C,undefined1,5,known,1,low,FUN_1408ac6d0@0x1408AC6D0
+MessageBoxMenu,0x0,IMenu,base,known,1,low,FUN_1408ab0c0@0x1408AB0C0
+MissileProjectile,0x0,Projectile,base,known,1,low,FUN_140744b40@0x140744B40
+ModManagerMenu,0x0,IMenu,base,known,1,low,sub_1404F37B0@0x1405230A0
+ModManagerMenu,0x40,GRefCountImplCore,embedded,known,1,low,sub_1404F37B0@0x1405230A0
+ModelReferenceEffect,0x48,SimpleAnimationGraphManagerHolder,embedded,known,1,low,ModelReferenceEffect::sub_140557D80@0x140557D80
+ModelReferenceEffect,0x68,BSAttachTechniques__AttachTechniqueInput,embedded,known,1,low,ModelReferenceEffect::sub_140557D80@0x140557D80
+Moon,0x0,SkyObject,base,known,1,low,Moon::sub_1403AD620@0x1403AD620
+Moon,0xB0,undefined4,3,known,1,low,FUN_1403ad380@0x1403AD380
+Moon,0xB4,undefined4,4,known,1,low,FUN_1403ad380@0x1403AD380
+Moon,0xB8,undefined4,5,known,1,low,FUN_1403ad380@0x1403AD380
+Moon,0xBC,undefined4,6,known,1,low,FUN_1403ad380@0x1403AD380
+Moon,0xC0,undefined4,7,known,1,low,FUN_1403ad380@0x1403AD380
+Moon,0xC4,undefined4,8,known,1,low,FUN_1403ad380@0x1403AD380
+MovementControllerNPC,0x0,MovementControllerAI,base,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+MovementControllerNPC,0x120,IMovementInterface,embedded,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+MovementControllerNPC,0x128,IMovementInterface,embedded,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+MovementControllerNPC,0x130,IMovementSelectIdle,embedded,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+MovementControllerNPC,0x138,IMovementInterface,embedded,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+MovementControllerNPC,0x140,IMovementInterface,embedded,known,1,low,FUN_1406ecdf0@0x1406ECDF0
+NiAVObject,0x0,NiObjectNET,base,known,1,low,FUN_140c56ac0@0x140C56AC0
+NiAlphaAccumulator,0x0,NiBackToFrontAccumulator,base,known,1,low,`scalar_deleting_destructor_@0x140C83780
+NiBSPNode,0x0,NiNode,base,known,1,low,FUN_140c84840@0x140C84840
+NiBinaryExtraData,0x0,NiExtraData,base,known,1,low,NiBinaryExtraData::Func1@0x140C83F00
+NiColorData,0x0,NiObject,base,known,1,low,FUN_140251390@0x140251390
+NiColorInterpolator,0x28,longlong,2,known,1,low,FUN_140cd1c60@0x140CD1C60
+NiControllerManager,0xA8,undefined1,3,known,1,low,FUN_140cc00f0@0x140CC00F0
+NiControllerSequence,0x18,uint,3,known,1,low,NiObject::sub_140CC5730@0x140CC5730
+NiControllerSequence,0x1C,uint,4,known,1,low,NiObject::sub_140CC5730@0x140CC5730
+NiCullingProcess,0x8,undefined1,3,known,1,low,FUN_140c79300@0x140C79300
+NiFile,0x20,uint,4,known,1,low,FUN_140c24fd0@0x140C24FD0
+NiFile,0x40,uint,3,known,1,low,FUN_140c24fd0@0x140C24FD0
+NiFloatData,0x0,NiObject,base,known,1,low,FUN_1402513c0@0x1402513C0
+NiFloatInterpolator,0x18,undefined4,2,known,1,low,FUN_140cd0d20@0x140CD0D20
+NiFloatsExtraData,0x0,NiExtraData,base,known,1,low,NiFloatsExtraData::__vecDelDtor@0x140C85660
+NiGeometry,0x0,NiAVObject,base,known,1,low,FUN_140c7f3f0@0x140C7F3F0
+NiGeometry,0x120,longlong,2,known,1,low,NiAVObject::sub_140C80B80@0x140C80B80
+NiGeometryData,0x10,undefined2,2,known,1,low,FUN_140c70620@0x140C70620
+NiGeometryData,0x30,NiObject_vtbl *,4,known,1,low,FUN_140c70620@0x140C70620
+NiGeometryData,0x40,NiObject_vtbl *,6,known,1,low,FUN_140c70620@0x140C70620
+NiInterpController,0x0,NiTimeController,base,known,1,low,NiInterpController::NiInterpController@0x140CCF0F0
+NiInterpolator,0x0,NiObject,base,known,1,low,FUN_140cdb040@0x140CDB040
+NiMultiTargetTransformController,0x0,NiTimeController,base,known,1,low,FUN_140ccd5c0@0x140CCD5C0
+NiNode,0x0,NiAVObject,base,known,1,low,NiNode::sub_140C57AF0@0x140C57AF0
+NiObjectNET,0x0,NiObject,base,known,1,low,NiObjectNET::ctor@0x140C61520
+NiPSysData,0x0,NiParticlesData,base,known,1,low,FUN_140d139e0@0x140D139E0
+NiPSysGravityModifier,0x0,NiPSysModifier,base,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x30,undefined8,3,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x44,undefined4,5,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x48,undefined4,6,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x4C,undefined4,7,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x50,undefined4,8,known,1,low,FUN_140d06140@0x140D06140
+NiPSysGravityModifier,0x54,undefined4,9,known,1,low,FUN_140d06140@0x140D06140
+NiPSysModifier,0x18,uint,3,known,1,low,FUN_140d0aa20@0x140D0AA20
+NiParticles,0x0,BSGeometry,base,known,1,low,FUN_140c79d50@0x140C79D50
+NiParticles,0x158,longlong *,2,known,1,low,FUN_140c79ca0@0x140C79CA0
+NiParticlesData,0x0,NiObject,base,known,1,low,FUN_140c87fe0@0x140C87FE0
+NiSkinData,0x0,NiObject,base,known,1,low,FUN_140c830f0@0x140C830F0
+NiSkinPartition,0x0,NiObject,base,known,1,low,FUN_140c7c880@0x140C7C880
+NiSpotLight,0x0,NiPointLight,base,known,1,low,FUN_140c89a30@0x140C89A30
+NiStringExtraData,0x0,NiExtraData,base,known,1,low,NiStringExtraData::__vecDelDtor@0x140C6C2D0
+NiStringsExtraData,0x0,NiExtraData,base,known,1,low,FUN_140c645a0@0x140C645A0
+NiSwitchNode,0x0,NiNode,base,known,1,low,FUN_140c63050@0x140C63050
+NiSwitchStringExtraData,0x0,NiExtraData,base,known,1,low,FUN_140c8a250@0x140C8A250
+NiTextKeyExtraData,0x0,NiExtraData,base,known,1,low,FUN_140cf3ba0@0x140CF3BA0
+NiTexture,0x0,NiObject,base,known,1,low,FUN_140c68de0@0x140C68DE0
+NiTimeController,0x0,NiObject,base,known,1,low,NiTimeController::ctor@0x140C6D150
+Pathing,0x0,BSPathing,base,known,1,low,FUN_140472f60@0x140472F60
+PlayerCharacter,0x0,Actor,base,known,1,low,FUN_140699df0@0x140699DF0
+RaceSexMenu,0x0,IMenu,base,known,1,low,BGSProcedureUseMagicExecState::sub@0x1408AFD50
+SafeZoneMenu,0x0,IMenu,base,known,1,low,SafeZoneMenu::__vecDelDtor@0x1408BD600
+SaveStorageWrapper,0x20,longlong,2,known,1,low,SaveStorageWrapper_CTOR@0x14059A120
+ScrollItem,0xE8,TESModelTextureSwap,embedded,known,1,low,FUN_140104c10@0x140104C10
+ScrollItem,0x120,BGSDestructibleObjectForm,embedded,known,1,low,FUN_140104c10@0x140104C10
+ScrollItem,0x130,BGSPickupPutdownSounds,embedded,known,1,low,FUN_140104c10@0x140104C10
+ScrollItem,0x148,TESWeightForm,embedded,known,1,low,FUN_140104c10@0x140104C10
+ScrollItem,0x158,TESValueForm,embedded,known,1,low,FUN_140104c10@0x140104C10
+Sky,0x278,ReferenceEffectController,embedded,known,1,low,FUN_1403b0be0@0x1403B0BE0
+SkyrimVM,0x0,BSScript__IFreezeQuery,base,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x8,BSScript__IStackCallbackSaveInterface,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x218,BSScript__IMemoryPagePolicy,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x240,BSScript__ILoader,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x278,SkyrimScript__Logger,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x590,SkyrimScript__Profiler,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x670,SkyrimScript__SavePatcher,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x27E0,BSTCommonLLMessageQueue_BSTSmartPointer_SkyrimScript__DelayFunctor_BSTSmartPointerIntrusiveRefCount__,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x4820,BSTCommonLLMessageQueue_BSTSmartPointer_SkyrimScript__DelayFunctor_BSTSmartPointerIntrusiveRefCount__,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x6860,BSTCommonLLMessageQueue_BSTSmartPointer_SkyrimScript__DelayFunctor_BSTSmartPointerIntrusiveRefCount__,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SkyrimVM,0x88A0,BSTCommonLLMessageQueue_BSTSmartPointer_SkyrimScript__DelayFunctor_BSTSmartPointerIntrusiveRefCount__,embedded,known,1,low,sub_1408E5DE0@0x140921230
+SleepWaitMenu,0x0,IMenu,base,known,1,low,FUN_1408bd840@0x1408BD840
+SpawnHazardEffect,0x0,ActiveEffect,base,known,1,low,SpawnHazardEffect::__vecDelDtor@0x1405C1670
+SpellItem,0x0,MagicItem,base,known,1,low,FUN_1401053e0@0x1401053E0
+SpellItem,0x90,BGSEquipType,embedded,known,1,low,FUN_1401052d0@0x1401052D0
+SpellItem,0xA0,BGSMenuDisplayObject,embedded,known,1,low,FUN_1401052d0@0x1401052D0
+SpellItem,0xB0,TESDescription,embedded,known,1,low,FUN_1401052d0@0x1401052D0
+StandardItemData,0x8,longlong,3,known,1,low,FUN_140854e40@0x140854E40
+Stars,0x0,SkyObject,base,known,1,low,FUN_1403b9bf0@0x1403B9BF0
+StatsMenu,0x0,IMenu,base,known,1,low,FUN_1408beeb0@0x1408BEEB0
+StatsNode,0x0,SimpleAnimationGraphManagerHolder,base,known,1,low,FUN_1408c8d90@0x1408C8D90
+StatsNode,0x44,undefined4,2,known,1,low,FUN_1408c8c20@0x1408C8C20
+Sun,0x0,SkyObject,base,known,1,low,FUN_1403ba660@0x1403BA660
+TES,0x0,ICellAttachDetachEventSource,base,known,1,low,FUN_140151430@0x140151430
+TESActorBase,0x30,TESActorBaseData,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0x88,TESContainer,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0xA0,TESSpellList,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0xB0,TESAIForm,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0xF0,BGSDestructibleObjectForm,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0x100,BGSSkinForm,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0x110,BGSKeywordForm,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0x128,BGSAttackDataForm,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESActorBase,0x138,BGSPerkRankArray,embedded,known,1,low,FUN_14036ad20@0x14036AD20
+TESAmmo,0x0,TESObject,base,known,1,low,FUN_140214070@0x140214070
+TESAmmo,0x78,TESIcon,embedded,known,1,low,FUN_140213ec0@0x140213EC0
+TESAmmo,0xA0,BaseFormComponent,embedded,known,1,low,FUN_140214070@0x140214070
+TESAmmo,0xB0,BaseFormComponent,embedded,known,1,low,FUN_140214070@0x140214070
+TESAmmo,0xD0,BGSPickupPutdownSounds,embedded,known,1,low,FUN_140213ec0@0x140213EC0
+TESAmmo,0xE8,TESDescription,embedded,known,1,low,FUN_140213ec0@0x140213EC0
+TESBoundObject,0x0,TESForm,base,known,1,low,FUN_1402211f0@0x1402211F0
+TESClass,0x30,TESDescription,embedded,known,1,low,FUN_140353760@0x140353760
+TESCombatStyle,0x0,TESForm,base,known,1,low,FUN_140215150@0x140215150
+TESFaction,0x30,TESReactionForm,embedded,known,1,low,FUN_1403544b0@0x1403544B0
+TESFlora,0xC8,TESProduceForm,embedded,known,1,low,FUN_140218a10@0x140218A10
+TESFullName,0x10,BGSDestructibleObjectForm,embedded,known,1,low,FUN_14020fec0@0x14020FEC0
+TESFullName,0x20,TESObjectSTAT,embedded,known,1,low,FUN_14020fec0@0x14020FEC0
+TESGrass,0x30,TESModel,embedded,known,1,low,FUN_14021b490@0x14021B490
+TESKey,0x0,TESObjectMISC,base,known,1,low,FUN_14021beb0@0x14021BEB0
+TESLevCharacter,0x58,TESModelTextureSwap,embedded,known,1,low,FUN_14021c1e0@0x14021C1E0
+TESLevItem,0x30,TESLeveledList,embedded,known,1,low,FUN_14021cb30@0x14021CB30
+TESNPC,0x150,TESRaceForm,embedded,known,1,low,FUN_14035c0b0@0x14035C0B0
+TESNPC,0x160,BGSOverridePackCollection,embedded,known,1,low,FUN_14035c0b0@0x14035C0B0
+TESObject,0x0,TESForm,base,known,1,low,FUN_1402206f0@0x1402206F0
+TESObjectACTI,0x0,TESObject,base,known,1,low,TESObjectACTI::dtor_impl@0x1402238E0
+TESObjectACTI,0x90,BGSKeywordForm,embedded,known,1,low,TESObjectACTI::ctor@0x1402237D0
+TESObjectARMA,0x0,TESObject,base,known,1,low,FUN_140226370@0x140226370
+TESObjectARMA,0x20,TESRaceForm,embedded,known,1,low,FUN_140226270@0x140226270
+TESObjectARMA,0x30,BGSBipedObjectForm,embedded,known,1,low,FUN_140226270@0x140226270
+TESObjectARMO,0x0,TESObject,base,known,1,low,TESObjectARMO::sub@0x140227AA0
+TESObjectARMO,0x40,TESRaceForm,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x50,TESEnchantableForm,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x68,BaseFormComponent,embedded,known,1,low,TESObjectARMO::sub@0x140227AA0
+TESObjectARMO,0x78,BaseFormComponent,embedded,known,1,low,TESObjectARMO::sub@0x140227AA0
+TESObjectARMO,0x98,BGSPickupPutdownSounds,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x1A0,BGSEquipType,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x1B0,BGSBipedObjectForm,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x1C0,BGSBlockBashData,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectARMO,0x1F0,TESDescription,embedded,known,1,low,FUN_1402278b0@0x1402278B0
+TESObjectBOOK,0x0,TESObject,base,known,1,low,FUN_140229360@0x140229360
+TESObjectBOOK,0x78,TESIcon,embedded,known,1,low,FUN_1402291b0@0x1402291B0
+TESObjectBOOK,0x88,BaseFormComponent,embedded,known,1,low,FUN_140229360@0x140229360
+TESObjectBOOK,0x98,BaseFormComponent,embedded,known,1,low,FUN_140229360@0x140229360
+TESObjectBOOK,0xA8,TESDescription,embedded,known,1,low,FUN_1402291b0@0x1402291B0
+TESObjectBOOK,0xE0,BGSPickupPutdownSounds,embedded,known,1,low,FUN_1402291b0@0x1402291B0
+TESObjectBOOK,0xF8,BGSKeywordForm,embedded,known,1,low,FUN_1402291b0@0x1402291B0
+TESObjectBOOK,0x128,TESDescription,embedded,known,1,low,FUN_1402291b0@0x1402291B0
+TESObjectCONT,0x0,TESObject,base,known,1,low,TESObjectCONT::dtor_impl@0x14022AF90
+TESObjectCONT,0x90,BaseFormComponent,embedded,known,1,low,TESObjectCONT::dtor_impl@0x14022AF90
+TESObjectCONT,0xA0,BGSDestructibleObjectForm,embedded,known,1,low,FUN_14022ae90@0x14022AE90
+TESObjectDOOR,0x0,TESObject,base,known,1,low,FUN_14022c2e0@0x14022C2E0
+TESObjectLIGH,0x0,TESObject,base,known,1,low,FUN_14021e590@0x14021E590
+TESObjectLIGH,0x78,TESIcon,embedded,known,1,low,FUN_14021e3f0@0x14021E3F0
+TESObjectLIGH,0xA0,BaseFormComponent,embedded,known,1,low,FUN_14021e590@0x14021E590
+TESObjectLIGH,0xB0,BaseFormComponent,embedded,known,1,low,FUN_14021e590@0x14021E590
+TESObjectLIGH,0xC0,BGSDestructibleObjectForm,embedded,known,1,low,FUN_14021e3f0@0x14021E3F0
+TESObjectLIGH,0xD0,BGSEquipType,embedded,known,1,low,FUN_14021e3f0@0x14021E3F0
+TESObjectMISC,0x0,TESObject,base,known,1,low,FUN_14022ff50@0x14022FF50
+TESObjectMISC,0x78,TESIcon,embedded,known,1,low,FUN_14022fde0@0x14022FDE0
+TESObjectMISC,0x88,BaseFormComponent,embedded,known,1,low,FUN_14022ff50@0x14022FF50
+TESObjectMISC,0x98,BaseFormComponent,embedded,known,1,low,FUN_14022ff50@0x14022FF50
+TESObjectMISC,0xD0,BGSPickupPutdownSounds,embedded,known,1,low,FUN_14022fde0@0x14022FDE0
+TESObjectSTAT,0x30,TESModelTextureSwap,embedded,known,1,low,sub_14021F640@0x140230980
+TESObjectTREE,0x0,TESObject,base,known,1,low,FUN_140231100@0x140231100
+TESObjectTREE,0x68,TESProduceForm,embedded,known,1,low,FUN_140230fc0@0x140230FC0
+TESObjectWEAP,0x0,TESObject,base,known,1,low,FUN_140232300@0x140232300
+TESObjectWEAP,0x78,TESIcon,embedded,known,1,low,FUN_140232070@0x140232070
+TESObjectWEAP,0x88,TESEnchantableForm,embedded,known,1,low,FUN_140232070@0x140232070
+TESObjectWEAP,0xA0,BaseFormComponent,embedded,known,1,low,FUN_140232300@0x140232300
+TESObjectWEAP,0xB0,BaseFormComponent,embedded,known,1,low,FUN_140232300@0x140232300
+TESObjectWEAP,0xC0,BaseFormComponent,embedded,known,1,low,FUN_140232300@0x140232300
+TESObjectWEAP,0xE0,BGSEquipType,embedded,known,1,low,FUN_140232070@0x140232070
+TESObjectWEAP,0x110,BGSPickupPutdownSounds,embedded,known,1,low,FUN_140232070@0x140232070
+TESObjectWEAP,0x128,BGSBlockBashData,embedded,known,1,low,FUN_140232070@0x140232070
+TESObjectWEAP,0x158,TESDescription,embedded,known,1,low,FUN_140232070@0x140232070
+TESQuest,0x0,TESForm,base,known,1,low,FUN_14036e130@0x14036E130
+TESRace,0x30,TESDescription,embedded,known,1,low,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60
+TESRace,0x50,BGSSkinForm,embedded,known,1,low,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60
+TESRace,0x60,BGSBipedObjectForm,embedded,known,1,low,BGSWaterCollisionManager__BGSWaterUpdateI::sub@0x140383E60
+TESShout,0x30,BGSMenuDisplayObject,embedded,known,1,low,FUN_140329590@0x140329590
+TESShout,0x40,BGSEquipType,embedded,known,1,low,FUN_140329590@0x140329590
+TESShout,0x50,TESDescription,embedded,known,1,low,FUN_140329590@0x140329590
+TESSoulGem,0x0,TESObjectMISC,base,known,1,low,FUN_140237910@0x140237910
+TESTopic,0x31,undefined1,2,known,1,low,sub_1403703C0@0x14038E200
+TESWaterForm,0x30,BaseFormComponent,embedded,known,1,low,BGSMusicTrackFormWrapper::sub@0x1402ABC90
+ThirdPersonState,0x10,undefined8,2,known,1,low,FUN_14084f150@0x14084F150
+ThirdPersonState,0x18,undefined4,3,known,1,low,FUN_14084f150@0x14084F150
+TitleSequenceMenu,0x0,IMenu,base,known,1,low,TitleSequenceMenu::__vecDelDtor@0x1408CE0B0
+TrainingMenu,0x0,IMenu,base,known,1,low,Func4@0x1408CE300
+TweenMenuCameraState,0x10,undefined8,2,known,1,low,FUN_140850dc0@0x140850DC0
+TweenMenuCameraState,0x18,undefined4,3,known,1,low,FUN_140850dc0@0x140850DC0
+VATSCameraState,0x10,undefined8,2,known,1,low,FUN_1408512d0@0x1408512D0
+VATSCameraState,0x18,undefined4,3,known,1,low,FUN_1408512d0@0x1408512D0
+WeaponEnchantmentController,0x8,undefined8,2,known,1,low,FUN_14055d5f0@0x14055D5F0
+WeaponEnchantmentController,0x10,longlong *,3,known,1,low,FUN_14055d5f0@0x14055D5F0
+ZeroOverheadHeap,0x8,SIZE_T,2,known,1,low,FUN_140c0ba90@0x140C0BA90
+ZeroOverheadHeap,0x10,undefined8,3,known,1,low,FUN_140c0ba90@0x140C0BA90
+bhkCharProxyController,0x10,bhkCharacterController,embedded,known,1,low,FUN_140deeef0@0x140DEEEF0
+bhkCharProxyController,0x340,bhkCharacterProxy,embedded,known,1,low,FUN_140deeef0@0x140DEEEF0
+bhkCharRigidBodyController,0x0,bhkCharacterController,base,known,1,low,FUN_140df1510@0x140DF1510
+bhkCharRigidBodyController,0x340,bhkCharacterRigidBody,embedded,known,1,low,FUN_140df1510@0x140DF1510
+bhkCharacterController,0x120,NiExtraData,embedded,known,1,low,bhkCharacterController::sub@0x140DBE500
+bhkCharacterController,0x150,NiExtraData,embedded,known,1,low,bhkCharacterController::sub@0x140DBE500
+bhkCharacterController,0x1E0,hkpCharacterContext,embedded,known,1,low,bhkCharacterController::sub@0x140DBE500
+bhkCharacterRigidBody,0x0,bhkSerializable,base,known,1,low,bhkCharacterRigidBody::sub@0x140E345F0
+bhkCompressedMeshShapeData,0x0,NiObject,base,known,1,low,FUN_140dff6d0@0x140DFF6D0
+bhkExtraData,0x0,NiExtraData,base,known,1,low,FUN_140e17b60@0x140E17B60
+bhkListShape,0x0,bhkShapeCollection,base,known,1,low,FUN_140e0b550@0x140E0B550
+bhkNiCollisionObject,0x0,NiRefObject,base,known,1,low,bhkNiCollisionObject::dtor@0x140DC5A20
+bhkPhantom,0x0,bhkWorldObject,base,known,1,low,FUN_140ddcd60@0x140DDCD60
+bhkRagdollTemplate,0x0,NiExtraData,base,known,1,low,FUN_140df5220@0x140DF5220
+bhkRigidBody,0x0,bhkEntity,base,known,1,low,FUN_140db2160@0x140DB2160
+bhkShapePhantom,0x0,bhkPhantom,base,known,1,low,sub_140D5E430@0x140DE0960
+bhkThreadMemorySource,0x0,hkMemoryAllocator,base,known,1,low,FUN_140e36f60@0x140E36F60
+bhkThreadMemorySource,0x8,IMemoryHeap,embedded,known,1,low,FUN_140e36f60@0x140E36F60
+bhkWorld,0x0,bhkSerializable,base,known,1,low,bhkSerializable::sub_140DA47C0@0x140DA47C0
+hkAvoidBox,0x0,hkpAabbPhantom,base,known,1,low,FUN_140de6940@0x140DE6940
+hkBaseObject,0x10,hkParserBuffer,embedded,known,1,low,hkXmlLexAnalyzer::Func1@0x140BEC0E0
+hkBaseObject,0x20,BGSWaterCollisionManager__BGSWaterUpdateI,embedded,known,1,low,BGSWaterCollisionManager::bhkPlaceableWater::Func1@0x14029ED90
+hkBaseObject,0x28,hkBaseObject,embedded,known,1,low,hkpCollisionCallbackUtil::Func1@0x140A7E310
+hkBaseObject,0x58,hkParserBuffer,embedded,known,1,low,FUN_140b92040@0x140B92040
+hkLifoAllocator,0x10,undefined4,2,known,1,low,FUN_1409c6e90@0x1409C6E90
+hkMemoryAllocator,0x8,IMemoryStore,embedded,known,1,low,FUN_140e36da0@0x140E36DA0
+hkMoppBvTreeShapeBase,0x28,hkReferencedObject *,3,known,1,low,FUN_140a62870@0x140A62870
+hkOstream,0x10,longlong,2,known,1,low,FUN_1409d2d10@0x1409D2D10
+hkaAnimationControl,0x38,longlong,2,known,1,low,FUN_140b1e470@0x140B1E470
+hkaDefaultAnimationControl,0x38,undefined8,2,known,1,low,FUN_140b16ed0@0x140B16ED0
+hkaDefaultAnimationControl,0x68,undefined4,4,known,1,low,FUN_140b16ed0@0x140B16ED0
+hkaFootstepAnalysisInfo,0x68,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0x78,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0x88,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0x98,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0xA8,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0xB8,int,2,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0xC0,undefined4,4,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0xC4,undefined4,5,known,1,low,FUN_140b75880@0x140B75880
+hkaFootstepAnalysisInfo,0xC8,undefined4,3,known,1,low,FUN_140b75880@0x140B75880
+hkbClipGenerator,0x0,hkBaseObject,base,known,1,low,FUN_140a0ba50@0x140A0BA50
+hkbNode,0x48,hkReferencedObject *,2,known,1,low,FUN_140a27ae0@0x140A27AE0
+hkbNode,0x50,hkReferencedObject *,3,known,1,low,FUN_140a27ae0@0x140A27AE0
+hkbRagdollDriver,0x1C,undefined1,3,known,1,low,FUN_1409ea990@0x1409EA990
+hkbRagdollDriver,0x80,undefined8,2,known,1,low,FUN_1409ea990@0x1409EA990
+hkpAabbPhantom,0x4C,undefined4,3,known,1,low,hkpAabbPhantom_CTOR@0x140A6FAC0
+hkpAction,0x30,hkReferencedObject *,2,known,1,low,FUN_140a71800@0x140A71800
+hkpAction,0x38,longlong,3,known,1,low,FUN_140b51830@0x140B51830
+hkpBallGun,0x48,undefined4,2,known,1,low,FUN_140ac8990@0x140AC8990
+hkpBoxShape,0x20,undefined4,3,known,1,low,hkpBoxShape_CTOR@0x140A58C00
+hkpBreakableConstraintData,0x30,hkReferencedObject *,2,known,1,low,FUN_140a979f0@0x140A979F0
+hkpBroadPhase,0x10,undefined2,2,known,1,low,FUN_140b423c0@0x140B423C0
+hkpBroadPhase,0x12,undefined2,3,known,1,low,FUN_140b423c0@0x140B423C0
+hkpBroadPhase,0x14,undefined4,4,known,1,low,FUN_140b423c0@0x140B423C0
+hkpBvShape,0x20,undefined8,2,known,1,low,FUN_140a58740@0x140A58740
+hkpBvShape,0x30,hkReferencedObject *,3,known,1,low,FUN_140a58740@0x140A58740
+hkpCachingShapePhantom,0x4C,undefined4,4,known,1,low,sub_140A68850@0x140A87A90
+hkpCapsuleShape,0x20,undefined4,4,known,1,low,FUN_140a5d300@0x140A5D300
+hkpCapsuleShape,0x3C,undefined4,4,known,1,low,FUN_140a5d300@0x140A5D300
+hkpCapsuleShape,0x4C,undefined4,4,known,1,low,FUN_140a5d300@0x140A5D300
+hkpCharacterContext,0x18,hkReferencedObject *,2,known,1,low,FUN_140ab91f0@0x140AB91F0
+hkpCharacterContext,0x20,undefined4,3,known,1,low,FUN_140ab91f0@0x140AB91F0
+hkpCharacterContext,0x24,undefined4,3,known,1,low,FUN_140ab91f0@0x140AB91F0
+hkpCompressedMeshShape,0x30,int,2,known,1,low,FUN_140e3a710@0x140E3A710
+hkpCompressedMeshShape,0x40,undefined4,3,known,1,low,FUN_140e3a710@0x140E3A710
+hkpCompressedSampledHeightFieldShape,0x84,undefined4,4,known,1,low,FUN_140a69da0@0x140A69DA0
+hkpCompressedSampledHeightFieldShape,0x88,undefined4,5,known,1,low,FUN_140a69da0@0x140A69DA0
+hkpConstrainedSystemFilter,0x50,hkReferencedObject *,2,known,1,low,FUN_140ac7030@0x140AC7030
+hkpConstraintChainInstance,0x18,hkReferencedObject *,2,known,1,low,FUN_140a99dc0@0x140A99DC0
+hkpConstraintInstance,0x18,undefined8,4,known,1,low,FUN_140a85090@0x140A85090
+hkpConstraintInstance,0x30,undefined8,3,known,1,low,FUN_140a85090@0x140A85090
+hkpConvexTransformShapeBase,0x20,undefined4,3,known,1,low,FUN_140a59450@0x140A59450
+hkpConvexTransformShapeBase,0x30,hkReferencedObject *,4,known,1,low,FUN_140a59450@0x140A59450
+hkpConvexVerticesShape,0x20,undefined4,2,known,1,low,FUN_140b5def0@0x140B5DEF0
+hkpCylinderShape,0x20,undefined4,5,known,1,low,hkpCylinderShape_CTOR@0x140A640C0
+hkpEaseConstraintsAction,0x0,hkpArrayAction,base,known,1,low,sub_140B15F20@0x140B64CD0
+hkpEntity,0x150,hkpKeyframedRigidMotion,embedded,known,1,low,GFxMovieDefImpl::BindTaskData::dtor@0x140A6C0D0
+hkpExtendedMeshShape,0xF8,undefined4,3,known,1,low,sub_140B25430@0x140B7AD20
+hkpExtendedMeshShape,0x13C,undefined4,2,known,1,low,sub_140B25430@0x140B7AD20
+hkpGunProjectile,0x20,hkReferencedObject *,3,known,1,low,FUN_140aca120@0x140ACA120
+hkpGunProjectile,0x30,undefined8,2,known,1,low,FUN_140aca120@0x140ACA120
+hkpMalleableConstraintData,0x18,undefined8,2,known,1,low,FUN_140a9b480@0x140A9B480
+hkpMeshShape,0x40,undefined4,3,known,1,low,FUN_140b79e70@0x140B79E70
+hkpMeshShape,0x6C,undefined4,2,known,1,low,FUN_140b79e70@0x140B79E70
+hkpMoppBvTreeShape,0x58,hkReferencedObject *,2,known,1,low,FUN_140a62a60@0x140A62A60
+hkpMotorAction,0x54,undefined4,5,known,1,low,FUN_140ac46d0@0x140AC46D0
+hkpMouseSpringAction,0x60,undefined4,4,known,1,low,FUN_140abb450@0x140ABB450
+hkpMouseSpringAction,0x64,int,5,known,1,low,FUN_140abb450@0x140ABB450
+hkpMouseSpringAction,0x6C,undefined4,6,known,1,low,FUN_140abb450@0x140ABB450
+hkpMultiSphereShape,0x20,int,3,known,1,low,FUN_140a67290@0x140A67290
+hkpPairCollisionFilter,0x58,hkReferencedObject *,2,known,1,low,FUN_140a923d0@0x140A923D0
+hkpProjectileGun,0x58,undefined8,2,known,1,low,FUN_140aca5d0@0x140ACA5D0
+hkpProjectileGun,0x60,undefined8,3,known,1,low,FUN_140aca5d0@0x140ACA5D0
+hkpRemoveTerminalsMoppModifier,0x28,longlong *,4,known,1,low,FUN_140a62380@0x140A62380
+hkpReorientAction,0x60,undefined4,5,known,1,low,FUN_140ac49d0@0x140AC49D0
+hkpReorientAction,0x64,undefined4,6,known,1,low,FUN_140ac49d0@0x140AC49D0
+hkpRigidBody,0x150,hkpFixedRigidMotion,embedded,known,1,low,hkpRigidBody::ctor@0x140A6DFC0
+hkpSimpleConstraintContactMgr,0x18,longlong,2,known,1,low,FUN_140a9eba0@0x140A9EBA0
+hkpSimpleConstraintContactMgr,0xA0,longlong,3,known,1,low,FUN_140a9eba0@0x140A9EBA0
+hkpSimpleConstraintContactMgr,0xA8,longlong,4,known,1,low,FUN_140a9eba0@0x140A9EBA0
+hkpSimpleContactConstraintData,0x38,undefined8,2,known,1,low,FUN_140aaec40@0x140AAEC40
+hkpSimpleMeshShape,0x60,undefined4,2,known,1,low,FUN_140e7d0c0@0x140E7D0C0
+hkpSimpleShapePhantom,0x4C,undefined4,4,known,1,low,FUN_140a83c70@0x140A83C70
+hkpSimulation,0x18,undefined8,2,known,1,low,FUN_140a8e6a0@0x140A8E6A0
+hkpSimulationIsland,0x20,undefined8,2,known,1,low,FUN_140a9d480@0x140A9D480
+hkpSphereShape,0x20,undefined4,2,known,1,low,FUN_140a5c510@0x140A5C510
+hkpTransformShape,0x28,hkReferencedObject *,2,known,1,low,sub_140A459A0@0x140A67DB0
+hkpTriSampledHeightFieldBvTreeShape,0x30,hkReferencedObject *,2,known,1,low,FUN_140a6b060@0x140A6B060
+hkpTriSampledHeightFieldBvTreeShape,0x3C,undefined1,3,known,1,low,FUN_140a6b060@0x140A6B060
+hkpTriSampledHeightFieldCollection,0x30,hkReferencedObject *,2,known,1,low,FUN_140a6baf0@0x140A6BAF0
+hkpTriSampledHeightFieldCollection,0x3C,undefined4,3,known,1,low,FUN_140a6baf0@0x140A6BAF0
+hkpTriggerVolume,0x48,hkpEntity *,2,known,1,low,sub_140A8DF60@0x140AC52E0

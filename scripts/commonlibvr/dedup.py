@@ -8,9 +8,12 @@ signatures pointed at `/SkyrimSE.pdb/*` twins; PDB struct fields point at `*.con
 `dtm.replaceDataType(dup, keeper)` merges a duplicate away AND rewires every reference
 to the keeper -- so they finally resolve to the canonical populated type.
 
-Two SAFE passes (only unambiguous same-size merges; size-conflicts are flagged, never
+Three SAFE passes (only unambiguous same-size merges; size-conflicts are flagged, never
 auto-merged -- the in-memory `Memory::Allocate` size is ground truth, not CommonLib or
 the PDB blindly):
+  0. A type shadowing a real Ghidra builtin (a PDB-imported `bool` typedef next to the
+     true BooleanDataType, a `GUID` struct next to GuidDataType) -> that builtin.  See
+     purge_builtin_shadows; it runs first.
   A. `X.conflict*` -> `X` in the SAME category (Ghidra's conflict copy IS a dup of the
      same-category, same-name type). Same size only.
   B. `/SkyrimSE.pdb/X` -> the UNIQUE same-size `/types.h/X` (skip if 0 or >1 /types.h
@@ -64,6 +67,76 @@ def _all_conflicts(dtm):
         if '.conflict' in d.getName():
             out.append(d)
     return out
+
+
+def purge_builtin_shadows(cp, dtm, apply, mon):
+    """Merge every non-builtin type that shadows a real Ghidra builtin into the builtin.
+
+    Ghidra's PDB analyzer mints its own per-module primitives (``bool``, ``char``,
+    ``GUID``, ...) instead of reusing the builtins.  Left alone they sit as inert
+    duplicates until a manual clean-up deletes the wrong one and orphans every field
+    and signature using it into ``-BAD-`` (3535 ``bool`` fields across SE+AE in the
+    alandtse fork).  replaceDataType rewires those references onto the builtin first.
+
+    Only a builtin's own NAME qualifies and the builtin is always the keeper, so this
+    is not leaf-name reuse between two user types (ghidra_import_gen keeps that
+    narrowed to identical C++ full names / definitions).  Every shadow must have the
+    builtin's size (a 0-length opaque stub excepted); a group with any disagreeing
+    size is reported, never merged.  Dynamic/factory builtins (the variable-length
+    ``string``) cannot be a replaceDataType target and are skipped.
+    """
+    import ghidra.program.model.data as D
+
+    by_name = {}
+    it = dtm.getAllDataTypes()
+    while it.hasNext():
+        d = it.next()
+        by_name.setdefault(d.getName(), []).append(d)
+
+    merges = []       # (shadow, builtin)
+    conflicts = []    # (name, [(size, category), ...])
+    for name, dts in sorted(by_name.items()):
+        if len(dts) < 2:
+            continue
+        builtins = [d for d in dts if isinstance(d, D.BuiltIn)
+                    and not isinstance(d, (D.Dynamic, D.FactoryDataType))]
+        if not builtins:
+            continue
+        keeper = builtins[0]
+        shadows = [d for d in dts if not isinstance(d, D.BuiltIn)]
+        if not shadows:
+            continue
+        if any(d.getLength() > 0 and d.getLength() != keeper.getLength() for d in shadows):
+            conflicts.append((name, [(d.getLength(), str(d.getCategoryPath())) for d in dts]))
+            continue
+        merges.extend((d, keeper) for d in shadows)
+
+    print('purge_builtin_shadows (%s): %d shadow merges queued, %d size-conflicts'
+          % (cp.getName(), len(merges), len(conflicts)))
+    for shadow, keeper in merges[:15]:
+        print('   merge %s -> %s' % (shadow.getPathName(), keeper.getPathName()))
+    for name, variants in conflicts[:15]:
+        print('   size-conflict %s: %s' % (name, variants))
+    if not apply:
+        print('  DRY-RUN: set CLVR_DEDUP=go to apply.')
+        return (len(merges), 0, len(conflicts))
+
+    merged = errors = 0
+    success = False
+    tx = cp.startTransaction('dedup: purge builtin shadows')
+    try:
+        for shadow, keeper in merges:
+            try:
+                dtm.replaceDataType(shadow, keeper, True)
+                merged += 1
+            except Exception:
+                errors += 1
+        success = True
+    finally:
+        cp.endTransaction(tx, success)
+    print('purge_builtin_shadows APPLIED (%s): merged=%d errors=%d'
+          % (cp.getName(), merged, errors))
+    return (len(merges), merged, errors)
 
 
 def purge_conflicts(cp, dtm, apply, mon):
@@ -149,6 +222,10 @@ def run():
     from ghidra.program.model.data import Structure
     cp = currentProgram  # noqa: F821
     dtm = cp.getDataTypeManager()
+
+    # Pass -1: merge any shadow of a real Ghidra builtin (bool, char, GUID, ...) into
+    # the builtin, so a later manual delete can never orphan its references.
+    purge_builtin_shadows(cp, dtm, APPLY, monitor)  # noqa: F821
 
     # Pass 0: collapse every .conflict copy onto its canonical twin (all datatype
     # kinds, incl. the cyclic vtable/funcdef plumbing the struct passes miss).

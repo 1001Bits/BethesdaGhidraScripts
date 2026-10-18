@@ -251,6 +251,9 @@ def _section_for_span(sections: Iterable[Dict[str, Any]], rva: int,
     return None
 
 
+_UNW_FLAG_CHAININFO = 0x4
+
+
 def _valid_unwind_info(data: bytes, offset: int, sections: List[Dict[str, Any]],
                        image_size: int) -> bool:
     """Validate enough UNWIND_INFO to attest its owning function boundary."""
@@ -279,8 +282,10 @@ def _valid_unwind_info(data: bytes, offset: int, sections: List[Dict[str, Any]],
         opcode, op_info = packed & 0x0F, packed >> 4
         if opcode > 10 or (opcode == 1 and op_info not in (0, 1)):
             return False
-        if opcode == 3 and op_info != 0:
-            return False
+        # UWOP_SET_FPREG (3): OpInfo is *reserved*, not required-zero.  Real
+        # MSVC output carries non-zero values there, and the sibling
+        # extractors (pe_layout / pe_unwind boundary path) accept them, so
+        # rejecting it only dropped genuine function starts.
         if opcode in (6, 7) and version != 2:
             return False
         if opcode == 10 and op_info not in (0, 1):
@@ -323,7 +328,11 @@ def _runtime_function_starts(path: str, sections: Iterable[Dict[str, Any]],
 
     Only records inside IMAGE_DIRECTORY_ENTRY_EXCEPTION are authoritative.
     Scanning all of a section named ``.pdata`` can mistake unrelated bytes or
-    raw alignment padding for function boundaries.
+    raw alignment padding for function boundaries.  Chained (CHAININFO)
+    records are function fragments and are excluded.  ``function_starts`` is
+    advisory manifest data: it is not an identity key and is never hashed or
+    compared, so manifests written before this filter still verify;
+    ``load_fresh_lineage`` recomputes it once the hashes prove the files.
     """
     if machine != 0x8664 or pointer_size != 8 or not exception_directory:
         return []
@@ -352,6 +361,12 @@ def _runtime_function_starts(path: str, sections: Iterable[Dict[str, Any]],
                 or not _valid_unwind_info(data, unwind_offset, sections,
                                           image_size)):
             continue
+        # UNW_FLAG_CHAININFO marks a *fragment* of another function (a split
+        # body / cold block whose unwind data chains to its parent), not an
+        # entry point.  Its BeginAddress is mid-function, so it must never
+        # attest a function boundary (createFunction / verified_entry).
+        if (data[unwind_offset] >> 3) & _UNW_FLAG_CHAININFO:
+            continue
         starts.add(begin)
     return sorted(starts)
 
@@ -377,6 +392,111 @@ def manifest_matches(expected: Dict[str, Any], actual: Dict[str, Any]) -> Tuple[
             reasons.append("{}: expected {!r}, got {!r}".format(
                 key, expected.get(key), actual.get(key)))
     return not reasons, reasons
+
+
+# Optional-header fields Steamless rewrites: AddressOfEntryPoint (restored
+# from the .bind stub to the real entry) and CheckSum (zeroed).  Offsets are
+# identical for PE32 and PE32+.
+_OPTIONAL_ENTRY = (16, 20)
+_OPTIONAL_CHECKSUM = (64, 68)
+
+
+def _pe_headers(path: str) -> Tuple[int, bytes, bytes]:
+    """``(e_lfanew, coff_header, optional_header)`` of a validated PE."""
+    with open(path, "rb") as fh:
+        fh.seek(0x3C)
+        pe_offset = struct.unpack("<I", _read_exact(fh, 4))[0]
+        fh.seek(pe_offset + 4)
+        coff = _read_exact(fh, 20)
+        optional = _read_exact(fh, struct.unpack_from("<H", coff, 16)[0])
+    return pe_offset, coff, optional
+
+
+def _masked_optional_header(optional: bytes) -> bytes:
+    data = bytearray(optional)
+    for start, end in (_OPTIONAL_ENTRY, _OPTIONAL_CHECKSUM):
+        data[start:end] = b"\0" * (end - start)
+    return bytes(data)
+
+
+def _rva_section_name(sections: Iterable[Dict[str, Any]], rva: int) -> Optional[str]:
+    section = _section_for_span(sections, rva)
+    return None if section is None else str(section.get("name", ""))
+
+
+def prove_section_equivalence(source_path: str, artifact_path: str) -> Optional[Dict[str, Any]]:
+    """Prove that two PE files map to byte-identical images, or return None.
+
+    Steamless sometimes only rewrites headers: the "unpacked" artifact and the
+    packed source then differ in SHA-256 although a Ghidra Program imported
+    from either holds exactly the same code and data.  The proof requires the
+    same ABI and image geometry, an identical section table (name, RVA,
+    virtual and raw size, characteristics) and byte-identical raw data for
+    EVERY section.  An executable whose code really was encrypted can never
+    qualify, so accepting the source on this evidence weakens nothing.
+
+    The PE headers must agree too: an identical COFF header and an identical
+    optional header -- every data directory (import, exception, TLS, ...)
+    included -- except for exactly what SteamStub removal changes.  The entry
+    point may differ only when the source's lies in its ``.bind`` stub and the
+    artifact's in an executable section outside ``.bind``; the CheckSum may
+    differ.  The DOS stub / Rich header before ``e_lfanew`` is not compared
+    (Steamless zeroes it; it is never executed or referenced).
+    """
+    source, artifact = inspect_pe(source_path), inspect_pe(artifact_path)
+    for key in ("machine", "pointer_size", "image_base", "image_size"):
+        if source.get(key) != artifact.get(key):
+            return None
+    if len(source["sections"]) != len(artifact["sections"]) or not source["sections"]:
+        return None
+    source_lfanew, source_coff, source_optional = _pe_headers(source_path)
+    artifact_lfanew, artifact_coff, artifact_optional = _pe_headers(artifact_path)
+    if (source_lfanew != artifact_lfanew or source_coff != artifact_coff
+            or len(source_optional) < _OPTIONAL_CHECKSUM[1]
+            or _masked_optional_header(source_optional)
+            != _masked_optional_header(artifact_optional)
+            or source.get("data_directories") != artifact.get("data_directories")):
+        return None
+    header_differences = []
+    source_entry = struct.unpack_from("<I", source_optional, _OPTIONAL_ENTRY[0])[0]
+    artifact_entry = struct.unpack_from("<I", artifact_optional, _OPTIONAL_ENTRY[0])[0]
+    if source_entry != artifact_entry:
+        entry_section = _section_for_span(artifact["sections"], artifact_entry)
+        if (str(_rva_section_name(source["sections"], source_entry)).lower()
+                not in (".bind", "bind")
+                or entry_section is None or not entry_section.get("executable")
+                or str(entry_section.get("name", "")).lower() in (".bind", "bind")):
+            return None
+        header_differences.append("entry_point")
+    if (source_optional[_OPTIONAL_CHECKSUM[0]:_OPTIONAL_CHECKSUM[1]]
+            != artifact_optional[_OPTIONAL_CHECKSUM[0]:_OPTIONAL_CHECKSUM[1]]):
+        header_differences.append("checksum")
+    digest = hashlib.sha256()
+    total = 0
+    with open(source_path, "rb") as left, open(artifact_path, "rb") as right:
+        for first, second in zip(source["sections"], artifact["sections"]):
+            for key in ("name", "rva", "virtual_size", "raw_size", "characteristics"):
+                if first.get(key) != second.get(key):
+                    return None
+            left.seek(int(first["raw_offset"]))
+            right.seek(int(second["raw_offset"]))
+            size = int(first["raw_size"])
+            data = left.read(size)
+            if len(data) != size or data != right.read(size):
+                return None
+            digest.update(data)
+            total += size
+    return {
+        "proof": "all sections byte-identical",
+        "source_sha256": source["sha256"],
+        "artifact_sha256": artifact["sha256"],
+        "sections": len(source["sections"]),
+        "section_bytes": total,
+        "sections_sha256": digest.hexdigest(),
+        "header_differences": header_differences,
+        "source_entry_rva": source_entry,
+        "artifact_entry_rva": artifact_entry,
+    }
 
 
 def write_manifest(path: str, manifest: Dict[str, Any]) -> None:
@@ -411,11 +531,35 @@ def artifact_is_fresh(source: str, artifact: str, sidecar: Optional[str] = None)
     Mtime/size-only cache validation is intentionally not accepted.  The
     default sidecar path is ``artifact + '.identity.json'``.
     """
+    return _fresh_lineage(source, artifact, sidecar) is not None
+
+
+def load_fresh_lineage(source: str, artifact: str,
+                       sidecar: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the ``{source, artifact, ...}`` sidecar of a fresh *artifact*.
+
+    ``None`` when ``artifact_is_fresh`` would be False.  ``function_starts``
+    is advisory, so a sidecar written by an older extractor still verifies --
+    and would hand its stale start set (e.g. chained .pdata fragments) to
+    every importer generated from it.  Once both SHA-256s are proven equal to
+    the files on disk, the starts are recomputed from those exact files.
+    """
+    fresh = _fresh_lineage(source, artifact, sidecar)
+    if fresh is None:
+        return None
+    payload, actual_source, actual_artifact = fresh
+    payload["source"]["function_starts"] = actual_source["function_starts"]
+    payload["artifact"]["function_starts"] = actual_artifact["function_starts"]
+    return payload
+
+
+def _fresh_lineage(source: str, artifact: str, sidecar: Optional[str] = None):
+    """``(payload, source_manifest, artifact_manifest)`` or ``None``."""
     if not os.path.isfile(source) or not os.path.isfile(artifact):
-        return False
+        return None
     sidecar = sidecar or artifact + ".identity.json"
     if not os.path.isfile(sidecar):
-        return False
+        return None
     try:
         payload = read_manifest(sidecar)
         expected = payload.get("source")
@@ -436,13 +580,15 @@ def artifact_is_fresh(source: str, artifact: str, sidecar: Optional[str] = None)
                 or not producer.get("name")
                 or not producer.get("sha256")
                 or not isinstance(metadata.get("arguments"), list)):
-            return False
+            return None
         actual = inspect_pe(source)
         actual_artifact = inspect_pe(artifact)
-        return (manifest_matches(expected, actual)[0]
-                and manifest_matches(expected_artifact, actual_artifact)[0])
+        if (manifest_matches(expected, actual)[0]
+                and manifest_matches(expected_artifact, actual_artifact)[0]):
+            return payload, actual, actual_artifact
+        return None
     except (OSError, ValueError, PEIdentityError, json.JSONDecodeError):
-        return False
+        return None
 
 
 def make_artifact_sidecar(source: str, artifact: str, **metadata: Any) -> Dict[str, Any]:
@@ -550,17 +696,83 @@ def _verify_loaded_program_layout(program, expected: Dict[str, Any],
         raise PEIdentityError("Program identity requires mapped PE sections")
 
 
-def verify_ghidra_program(program, expected_manifests: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+class TargetManifest(dict):
+    """Manifest of an explicitly supplied copy of the imported executable.
+
+    ``target_pe`` remembers that file (launcher ``--target-pe`` /
+    ``BGS_TARGET_PE``) so ``verify_ghidra_program`` can accept it when the
+    Program's recorded import path now holds a different build.  It compares
+    and serialises exactly like the plain manifest dict.
+    """
+
+    def __init__(self, manifest: Dict[str, Any], target_pe: str):
+        super().__init__(manifest)
+        self.target_pe = str(target_pe)
+
+
+def _same_path(first: str, second: str) -> bool:
+    return (os.path.normcase(os.path.abspath(first)) ==
+            os.path.normcase(os.path.abspath(second)))
+
+
+def _verify_explicit_target(program, manifests: List[Dict[str, Any]],
+                            target_pe: str,
+                            stored_hash: Optional[str]) -> Dict[str, Any]:
+    """Accept *target_pe* in place of a recorded path that holds other bytes.
+
+    The import-time SHA-256 is the only link between the Program and a file
+    at another path, so it is mandatory: the file must hash to it and match an
+    allowed manifest, and live anchors plus mapped sections must agree.
+    """
+    if not os.path.isfile(target_pe):
+        raise PEIdentityError(
+            "explicit target PE is not a regular file: {}".format(target_pe))
+    if not _is_sha256(stored_hash):
+        raise PEIdentityError(
+            "an explicit target PE requires the Program's exact import-time "
+            "SHA-256")
+    actual = inspect_pe(target_pe)
+    if str(actual.get("sha256") or "").lower() != stored_hash:
+        raise PEIdentityError(
+            "explicit target PE is not the imported executable: SHA-256 {} "
+            "!= import-time {}".format(actual.get("sha256"), stored_hash))
+    expected = next(
+        (candidate for candidate in manifests
+         if str(candidate.get("sha256") or "").lower() == stored_hash
+         and manifest_matches(candidate, actual)[0]), None)
+    if expected is None:
+        raise PEIdentityError(
+            "explicit target PE matches no allowed manifest")
+    _verify_loaded_program_layout(
+        program, expected, verify_anchors=True, require_sections=True)
+    return expected
+
+
+def verify_ghidra_program(program, expected_manifests: Iterable[Dict[str, Any]],
+                          target_pe: Optional[str] = None) -> Dict[str, Any]:
     """Verify a loaded Ghidra Program against exact PE manifests.
 
     This deliberately accepts a duck-typed Program so importing this module
     never requires Ghidra.  It protects standalone PyGhidra mutators from the
     stale-program case where the file at ``getExecutablePath()`` was replaced
     after the Program was imported.
+
+    An extant recorded path is authoritative unless an explicit target PE is
+    supplied -- ``target_pe`` or a :class:`TargetManifest` among the
+    manifests.  That file then stands in for the recorded one, but only when
+    it hashes to the Program's exact import-time SHA-256 (the stale-path case:
+    a project whose recorded path now holds another build).
     """
     manifests = list(expected_manifests)
     executable_path = _program_executable_path(program)
     stored_hash = _program_import_sha256(program)
+    explicit = target_pe or next(
+        (candidate.target_pe for candidate in manifests
+         if getattr(candidate, "target_pe", None)), None)
+
+    if (explicit and executable_path and os.path.isfile(executable_path)
+            and not _same_path(explicit, executable_path)):
+        return _verify_explicit_target(program, manifests, explicit, stored_hash)
 
     if executable_path and os.path.isfile(executable_path):
         # An extant path is authoritative.  Never fall back to import metadata

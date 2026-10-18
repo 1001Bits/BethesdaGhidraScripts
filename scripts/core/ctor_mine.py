@@ -13,20 +13,23 @@ a_param`` assignments out of the pcode.  Proposals -- (class, offset,
 type, name) -- are written to a CSV, unknown-slot fillers first.
 
 NON-DESTRUCTIVE: only decompiles + writes a CSV; never modifies the
-program.  Knobs (env):
-  BGS_CTOR_CSV          output path (default: <repo>/scripts/core/refs/ctor_fields_<prog>.csv)
+program.  The CSV is replaced atomically and only by a healthy run: a
+decompiler that does not start, or fails (almost) every function, raises and
+leaves the previous evidence in place.  Knobs (env):
+  BGS_CTOR_CSV          output path (default: <repo>/scripts/core/refs/ctor_fields_<folder>_<prog>.csv)
   BGS_CTOR_CATEGORY     only mine structs whose category path contains this
                         substring (default: empty = all structs)
   BGS_CTOR_MAX_CLASSES  cap classes mined (0 = all)
   BGS_CTOR_TIMEOUT      decompile seconds per function (default 45)
 """
-import csv
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ctor_plan as cp_plan  # noqa: E402
 from evidence_identity import bind_evidence  # noqa: E402
+from review_queue import (CTORS, open_decompiler, queue_paths,  # noqa: E402
+                          require_decompile_health, write_csv_atomically)
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CATEGORY = os.environ.get('BGS_CTOR_CATEGORY', '')
@@ -210,12 +213,31 @@ def _const_addr_off(vn, depth=0):
     return None
 
 
-def _constructed_class(hf, this_name, vtmap):
-    """If the function stores a known vtable address to ``this+0``, return
-    the class name (from vtmap).  Identifies a constructor STRUCTURALLY --
-    a ctor writes its class vtable to offset 0 -- so it works regardless of
-    whether the function carries a constructor-shaped NAME (ours don't)."""
+def pick_constructed_class(stored_classes, virtual):
+    """Own class from the vtables written to ``this+0``, in address order.
+
+    With an INLINED base, more than one vtable is stored.  A constructor
+    writes base-first, so its own class is the LAST store; a destructor
+    writes its own vtable first and the bases after it.  Constructors are
+    never virtual, so a function that sits in a vtable is the destructor
+    shape.  (The old "first store" rule attributed every such constructor's
+    fields to its BASE class.)
+    """
+    ordered = []
+    for cls in stored_classes:
+        if not ordered or ordered[-1] != cls:
+            ordered.append(cls)
+    if not ordered:
+        return None
+    if len(set(ordered)) == 1:
+        return ordered[0]
+    return ordered[0] if virtual else ordered[-1]
+
+
+def _this_vtable_stores(hf, this_name, vtmap):
+    """Classes whose vtable is stored to ``this+0``, ordered by address."""
     from ghidra.program.model.pcode import PcodeOp
+    stores = []
     it = hf.getPcodeOps()
     while it.hasNext():
         op = it.next()
@@ -228,8 +250,33 @@ def _constructed_class(hf, this_name, vtmap):
             continue
         v = _const_addr_off(ins[2])
         if v is not None and v in vtmap:
-            return vtmap[v]
-    return None
+            seq = op.getSeqnum()
+            stores.append((int(seq.getTarget().getOffset()),
+                           int(seq.getTime()), vtmap[v]))
+    stores.sort(key=lambda item: (item[0], item[1]))
+    return [cls for _addr, _time, cls in stores]
+
+
+def _is_vtable_referenced(prog, function):
+    """True when a data slot (a vtable entry) points at the function."""
+    memory = prog.getMemory()
+    refs = prog.getReferenceManager().getReferencesTo(function.getEntryPoint())
+    for ref in refs:
+        if not ref.getReferenceType().isData():
+            continue
+        block = memory.getBlock(ref.getFromAddress())
+        if block is not None and not block.isExecute():
+            return True
+    return False
+
+
+def _constructed_class(hf, this_name, vtmap, virtual=False):
+    """If the function stores a known vtable address to ``this+0``, return
+    the class name (from vtmap).  Identifies a constructor STRUCTURALLY --
+    a ctor writes its class vtable to offset 0 -- so it works regardless of
+    whether the function carries a constructor-shaped NAME (ours don't)."""
+    return pick_constructed_class(
+        _this_vtable_stores(hf, this_name, vtmap), virtual)
 
 
 def run():
@@ -238,9 +285,8 @@ def run():
     dtm = prog.getDataTypeManager()
     fm = prog.getFunctionManager()
 
-    out_csv = os.environ.get('BGS_CTOR_CSV') or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'refs',
-        'ctor_fields_%s.csv' % prog.getName().replace('.', '_'))
+    # The same path the launchers and ctor_apply use (BGS_CTOR_CSV wins).
+    out_csv = queue_paths(CTORS, prog)[0]
 
     unk_by_class = {}
     for dt in dtm.getAllDataTypes():
@@ -268,16 +314,24 @@ def run():
             f = fm.getFunctionContaining(ref.getFromAddress())
             if f is not None:
                 cand_funcs.add(f)
-    cand_list = list(cand_funcs)
+    # Deterministic order: a set of Java objects has no stable iteration
+    # order, so the MAX_CLASSES slice mined different functions every run.
+    cand_list = sorted(cand_funcs,
+                       key=lambda fn: int(fn.getEntryPoint().getOffset()))
     if MAX_CLASSES:
         cand_list = cand_list[:MAX_CLASSES * 6]
 
     decomp = DecompInterface()
-    decomp.openProgram(prog)
     # second decompiler for callee-class resolution -- calling decompile on
     # the main interface again would invalidate the in-flight HighFunction.
     decomp2 = DecompInterface()
-    decomp2.openProgram(prog)
+    try:
+        open_decompiler(decomp, prog, 'ctor-mine')
+        open_decompiler(decomp2, prog, 'ctor-mine (callee resolver)')
+    except Exception:
+        decomp.dispose()
+        decomp2.dispose()
+        raise
     ctor_class_memo = {}                     # callee entry -> class or None
 
     def callee_class(fn):
@@ -292,28 +346,37 @@ def run():
                 lsm2 = hf2.getLocalSymbolMap()
                 if lsm2.getNumParams() >= 1:
                     ctor_class_memo[ea] = _constructed_class(
-                        hf2, lsm2.getParamSymbol(0).getName(), vtmap)
+                        hf2, lsm2.getParamSymbol(0).getName(), vtmap,
+                        virtual=_is_vtable_referenced(prog, fn))
         except Exception:
             pass
         return ctor_class_memo[ea]
 
     rows = []
     named = typed_unk = n_embed = 0
+    attempted = failed = 0
+    failures = []
     evidence_by_class = {}                  # cls -> [(function, assignments, embedded)]
     print('ctor-mine: %d unk-bearing structs, %d unk-class vtables, '
           '%d functions reference a target vtable'
           % (len(unk_by_class), len(target_vt), len(cand_list)))
     for f in cand_list:
+        attempted += 1
         try:
             r = decomp.decompileFunction(f, TIMEOUT, monitor)  # noqa: F821
             if not (r and r.decompileCompleted()):
+                failed += 1
+                if len(failures) < 5:
+                    failures.append('%s: %s' % (
+                        f.getName(), r.getErrorMessage() if r else 'no result'))
                 continue
             hf = r.getHighFunction()
             lsm = hf.getLocalSymbolMap()
             if lsm.getNumParams() < 1:
                 continue
             this_name = lsm.getParamSymbol(0).getName()
-            cls = _constructed_class(hf, this_name, vtmap)
+            cls = _constructed_class(hf, this_name, vtmap,
+                                     virtual=_is_vtable_referenced(prog, f))
             if cls is None or cls not in unk_by_class:
                 continue
             asg = _ctor_assignments(hf, this_name)
@@ -322,10 +385,16 @@ def run():
                 continue
             source = '{}@0x{:X}'.format(f.getName(), f.getEntryPoint().getOffset())
             evidence_by_class.setdefault(cls, []).append((source, asg, emb))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001  (one bad function, not the pass)
+            failed += 1
+            if len(failures) < 5:
+                failures.append('%s: %s' % (f.getName(), exc))
             continue
     decomp.dispose()
     decomp2.dispose()
+    # Before anything is written: a broken decompiler must not replace the
+    # last good evidence with an empty CSV (nor print the sentinel).
+    require_decompile_health('ctor-mine', attempted, failed, failures)
 
     for cls, class_evidence in evidence_by_class.items():
         unk = unk_by_class.get(cls, set())
@@ -362,23 +431,25 @@ def run():
     classes_done = len(evidence_by_class)
 
     rows.sort(key=lambda r: (r[6] != 'high', r[4] != 'unknown', r[0], int(r[1], 16)))
-    if not os.path.isdir(os.path.dirname(out_csv)):
-        os.makedirs(os.path.dirname(out_csv))
-    with open(out_csv, 'w', newline='') as fh:
-        w = csv.writer(fh)
-        w.writerow(['class', 'offset', 'type', 'name', 'slot_state',
-                    'votes', 'confidence', 'constructors', 'decision'])
-        for r in rows:
-            w.writerow(r)
+    write_csv_atomically(out_csv, ['class', 'offset', 'type', 'name',
+                                   'slot_state', 'votes', 'confidence',
+                                   'constructors', 'decision'], rows)
     # Rows contain class-relative member offsets, not executable addresses.
     bind_evidence(out_csv, prog, 'ctor_fields', address_coordinate='NONE')
     print('ctor-mine (%s): %d classes mined, %d field proposals '
           '(%d name a field, %d embedded-object types, %d fill an unknown slot)'
           % (prog.getName(), classes_done, len(rows), named, n_embed, typed_unk))
+    if failed:
+        print('  %d of %d decompile(s) failed (first: %s)'
+              % (failed, attempted, '; '.join(failures[:3])))
     for r in rows[:20]:
         print('   %s +%s %s %s [%s] votes=%s conf=%s' % r[:7])
     print('  -> ' + out_csv)
 
 
-if 'currentProgram' in globals():
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
     run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('ctor_mine'))

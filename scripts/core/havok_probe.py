@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_DIR   = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 TYPE_MAX = 36
 
 
@@ -172,7 +173,7 @@ def main():
     if "/" in pname:
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         root = project.getProjectData().getRootFolder()
         match = []
 
@@ -189,7 +190,7 @@ def main():
         consumer = java.lang.Object()
         # okToUpgrade=True: PPC debug build may need a minor language upgrade;
         # done in-memory, not persisted (we never save).
-        program = match[0].getDomainObject(consumer, True, False, monitor)
+        program = open_program(match[0], consumer, monitor, write=False)
         try:
             probe(program)
         finally:

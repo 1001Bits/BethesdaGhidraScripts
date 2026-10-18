@@ -30,8 +30,21 @@ def _append_comment(listing, address, text):
     old = listing.getComment(CodeUnit.PLATE_COMMENT, address) or ""
     kept = [line for line in old.splitlines() if not line.startswith(MARKER)]
     kept.append(text)
-    listing.setComment(address, CodeUnit.PLATE_COMMENT,
-                       "\n".join(line for line in kept if line))
+    new = "\n".join(line for line in kept if line)
+    if new == old:
+        # Idempotent: rewriting an identical comment is still a program
+        # change, which kept the sequencer from ever reaching a fixed point.
+        return False
+    listing.setComment(address, CodeUnit.PLATE_COMMENT, new)
+    return True
+
+
+def _set_bookmark(bookmarks, address, note):
+    existing = bookmarks.getBookmark(address, "Analysis", "BGS PE Unwind")
+    if existing is not None and str(existing.getComment() or "") == note:
+        return False
+    bookmarks.setBookmark(address, "Analysis", "BGS PE Unwind", note)
+    return True
 
 
 def run():
@@ -42,17 +55,21 @@ def run():
     if cp.getDefaultPointerSize() != 8:
         print("pe-unwind: AMD64 runtime-function format does not apply to " + cp.getName())
         return
-    from binary_identity import (PEIdentityError, _program_executable_path,
-                                 verify_ghidra_program)
+    from binary_identity import PEIdentityError, verify_ghidra_program
     from pe_unwind import extract_runtime_functions
+    from target_pe import driver_target_path
 
     # Ghidra records Windows paths in URI-like form (for example
     # ``/C:/Games/...``).  Use the central normalizer so the identity guard
-    # checks the real backing file instead of rejecting a valid import.
-    executable_path = _program_executable_path(cp) or ""
+    # checks the real backing file instead of rejecting a valid import.  A
+    # launcher that verified a ``--target-pe`` candidate passes it through
+    # BGS_TARGET_PE; verify_ghidra_program below still proves it is the file.
+    executable_path = driver_target_path(cp)
     if not executable_path or not os.path.isfile(executable_path):
         raise RuntimeError(
-            "pe-unwind requires the exact imported executable to remain available")
+            "pe-unwind requires the exact imported executable to remain "
+            "available (or a launcher --target-pe candidate): {}".format(
+                executable_path or "<no path recorded>"))
     try:
         extracted = extract_runtime_functions(executable_path)
         verify_ghidra_program(cp, [extracted["target"]])
@@ -72,7 +89,7 @@ def run():
 
     valid = len(runtime_functions)
     rejected = len(extracted.get("rejected", []))
-    existing = created = annotated = 0
+    existing = created = annotated = fragments = failed = 0
     success = False
     had_parent_transaction = (
         APPLY and cp.getCurrentTransactionInfo() is not None)
@@ -106,25 +123,29 @@ def run():
             function = fm.getFunctionAt(start)
             if function is not None:
                 existing += 1
+            elif unwind_info.get("chained"):
+                # UNW_FLAG_CHAININFO describes a NON-ENTRY fragment of the
+                # function named by the chained record (a quarter to 40% of
+                # .pdata in these games).  It is not a function start.
+                fragments += 1
+                continue
+            elif fm.getFunctionContaining(start) is not None:
+                # Never split or rewrite an existing function body merely
+                # because Ghidra's analysis disagrees with linker ranges.
+                rejected += 1
+                continue
             elif APPLY:
-                containing = fm.getFunctionContaining(start)
-                if containing is not None:
-                    # Never split or rewrite an existing function body merely
-                    # because Ghidra's analysis disagrees with linker ranges.
-                    rejected += 1
-                    continue
+                made = True
                 if listing.getInstructionAt(start) is None:
-                    _require_command_success(
-                        DisassembleCommand(start, None, True).applyTo(  # noqa: F821
-                            cp, monitor), "disassembly")
-                _require_command_success(
-                    CreateFunctionCmd(start).applyTo(cp, monitor),  # noqa: F821
-                    "function creation")
-                function = fm.getFunctionAt(start)
+                    made = bool(DisassembleCommand(start, None, True).applyTo(  # noqa: F821
+                        cp, monitor))
+                made = made and bool(
+                    CreateFunctionCmd(start).applyTo(cp, monitor))  # noqa: F821
+                function = fm.getFunctionAt(start) if made else None
                 if function is None:
-                    raise RuntimeError(
-                        "pe-unwind function creation reported success but "
-                        "no entry exists")
+                    # One conflicting address must not void ~100k good rows.
+                    failed += 1
+                    continue
                 created += 1
             else:
                 created += 1  # would-create
@@ -142,10 +163,14 @@ def run():
                         flags, prolog, handler_text, chain_text))
             if APPLY and function is not None:
                 _append_comment(listing, start, note)
-                bookmarks.setBookmark(start, "Analysis", "BGS PE Unwind", note)
+                _set_bookmark(bookmarks, start, note)
                 annotated += 1
             elif not APPLY:
                 annotated += 1
+        # Isolated failures are reported; a systematic one rolls the pass back.
+        _require_command_success(
+            failed <= max(10, valid // 100),
+            "function creation ({} of {} entries)".format(failed, valid))
         success = True
     finally:
         if tx is not None:
@@ -154,11 +179,17 @@ def run():
                 raise RuntimeError(
                     "pe-unwind improvement transaction did not commit")
 
-    print("pe-unwind (%s): %s valid=%d existing=%d %s=%d %s=%d rejected=%d" % (
-        cp.getName(), "APPLIED" if APPLY else "DRY-RUN", valid, existing,
-        "created" if APPLY else "would-create", created,
-        "annotated" if APPLY else "would-annotate", annotated, rejected))
+    print("pe-unwind (%s): %s valid=%d existing=%d %s=%d %s=%d "
+          "chained-fragments=%d create-failed=%d rejected=%d" % (
+              cp.getName(), "APPLIED" if APPLY else "DRY-RUN", valid, existing,
+              "created" if APPLY else "would-create", created,
+              "annotated" if APPLY else "would-annotate", annotated,
+              fragments, failed, rejected))
 
 
-if "currentProgram" in globals():
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
     run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line("pe_unwind_enrich"))

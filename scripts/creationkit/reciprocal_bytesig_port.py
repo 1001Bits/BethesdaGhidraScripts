@@ -22,12 +22,20 @@ Safety properties:
 * an existing non-default target function name is never replaced;
 * dry-run is the default and every proposal/decision is written to an
   identity-bound CSV plus a SHA-256 sidecar;
-* applying names requires an explicit ``--apply`` or ``apply=True``.
+* applying names requires an explicit ``--apply`` or ``apply=True``; an apply
+  writes NEW timestamped preflight and result ledgers under ``build/evidence/``
+  (never overwritten) and records its provenance in program options keyed by
+  the configuration, so one port never overwrites another's;
+* with ``copy_prototypes`` a prototype is copied only when no data type it
+  depends on collides with a different target type at the same path (Ghidra
+  would otherwise add ``.conflict`` copies), never over a USER_DEFINED,
+  IMPORTED or custom-storage target prototype, and the replaced prototype and
+  its source are written to the ledger.
 
 Standalone usage (the project must not be open in the Ghidra GUI)::
 
     python scripts/creationkit/bytesig_port_skyrim_to_ck.py \
-      --project-dir C:\\GhidraProjects --project-name ExampleProject \
+      --project-dir C:\\GhidraProjects --project-name Combined \
       --target-path /CreationKit.exe
 
 Add ``--apply`` only after reviewing the CSV.  Sources can be selected with a
@@ -49,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import hashlib
 import json
 import os
@@ -67,9 +76,11 @@ REPO_DIR = SCRIPT_DIR.parent.parent
 CORE_DIR = REPO_DIR / "scripts" / "core"
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 DEFAULT_EVIDENCE = SCRIPT_DIR / "refs" / "skyrim_to_creationkit_1_6_1378_1.csv"
+APPLY_LEDGER_DIR = REPO_DIR / "build" / "evidence"
 
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 # Shared matcher.  It imports Capstone/Numpy lazily for masked matching only.
 from bytesig_port import (  # noqa: E402
@@ -107,6 +118,23 @@ class PortConfig:
     save_description: str
     source_help: str
     allowed_source_sha256: tuple[tuple[str, str], ...]
+    # Qualified source names matching this regex are never proposed (e.g.
+    # vtable-slot placeholders whose slot number is build-specific).
+    excluded_name_re: str = ""
+    # Optional ``(local_name, target_rva) -> local_name`` applied before
+    # proposals are resolved, e.g. to replace a source-build address embedded
+    # in a name (``sub_1400FBA60``) with the target's own address.
+    local_name_rewrite: object = None
+    # When true, the source function's prototype (return/parameter types,
+    # calling convention) is applied together with its name, and the data
+    # types it references are copied into the target.  Only a target whose
+    # signature source is DEFAULT/ANALYSIS is touched; a USER_DEFINED or
+    # IMPORTED prototype is kept.  Sources stay open read-only until apply.
+    copy_prototypes: bool = False
+    # Program-option namespace of this configuration's apply provenance
+    # (default: the evidence file stem).  Distinct per configuration so two
+    # ports into one program never overwrite each other's record.
+    provenance_key: str = ""
 
     def __post_init__(self) -> None:
         sha = str(self.target_sha256).strip().lower()
@@ -156,6 +184,12 @@ class PortConfig:
         object.__setattr__(
             self, "allowed_source_sha256", tuple(normalized_identities))
         object.__setattr__(self, "default_evidence", Path(self.default_evidence))
+        key = str(self.provenance_key or self.default_evidence.stem).strip()
+        # '.' separates Ghidra option groups; keep the key one plain segment.
+        key = re.sub(r"[^A-Za-z0-9_-]+", "_", key).strip("_")
+        if not key:
+            raise ValueError("provenance_key must not be empty")
+        object.__setattr__(self, "provenance_key", key)
 
     def source_sha256_for_path(self, path: str) -> str:
         normalized = "/" + str(path).strip().strip("/")
@@ -180,7 +214,7 @@ SKYRIM_CONFIG = PortConfig(
         "Creation Kit reciprocal-unique Skyrim byte-signature names"),
     source_help=(
         "repeatable configured identity-pinned source; defaults to analyzed "
-        "AE 1.6.1170 and SE 1.5.97 programs in ExampleProject"),
+        "AE 1.6.1170 and SE 1.5.97 programs in Combined"),
     allowed_source_sha256=(
         ("/Skyrim/SkyrimAE_1_6_1170.exe",
          "80c1ea737d33c6bfac09b101b8d77ab0f9f6630128c3ed052f9d945bed54e7e4"),
@@ -208,6 +242,13 @@ CSV_FIELDS = (
     "source_program_path",
     "source_name_type",
     "source_rva",
+    "mode",
+    "prototype_outcome",
+    "target_prototype_before",
+    "target_prototype_source_before",
+    "prototype_after",
+    "prototype_types_added",
+    "prototype_type_conflicts",
 )
 
 
@@ -590,6 +631,13 @@ def _match_source(
                 expected_source_sha256))
 
     names, extraction_stats = _extract_source_names(source_program)
+    if config.excluded_name_re:
+        excluded = re.compile(config.excluded_name_re)
+        kept = {qualified: item for qualified, item in names.items()
+                if not excluded.search(qualified)}
+        extraction_stats["excluded_by_name_policy"] = len(names) - len(kept)
+        extraction_stats["accepted_names"] = len(kept)
+        names = kept
     source_sizes, _ = _function_boundaries(source_program)
     _, source_text_rva, source_text = _load_text_block(source_program)
 
@@ -673,6 +721,18 @@ def _match_source(
                 "skipped": len(masked_pairs),
                 "reason": "masked matcher dependency unavailable: {}".format(error),
             }
+
+    if config.local_name_rewrite is not None:
+        rewritten = []
+        for proposal in proposals:
+            local = config.local_name_rewrite(
+                proposal.local_name, proposal.target_rva)
+            if local != proposal.local_name:
+                proposal = dataclasses.replace(
+                    proposal, local_name=local,
+                    qualified_name="::".join(proposal.namespace + (local,)))
+            rewritten.append(proposal)
+        proposals = rewritten
 
     stats = {
         "source_tag": source_tag,
@@ -810,11 +870,17 @@ def _apply_mappings(
         target_program, accepted_pairs: Sequence[tuple[str, int]],
         mapping_decisions: dict[tuple[str, int], str],
         proposal_by_pair: dict[tuple[str, int], Proposal],
-        config: PortConfig = SKYRIM_CONFIG) -> dict[tuple[str, int], str]:
-    """Apply only mappings classified as ``would_apply`` in one transaction."""
+        config: PortConfig = SKYRIM_CONFIG,
+        source_programs: dict[str, object] | None = None,
+        prototype_records: dict | None = None) -> dict[tuple[str, int], str]:
+    """Apply only mappings classified as ``would_apply`` in one transaction.
+
+    ``prototype_records`` (optional dict) receives, per applied mapping, the
+    replaced prototype, its source and what was done to it."""
     from ghidra.program.model.symbol import SourceType
 
     outcomes = dict(mapping_decisions)
+    prototypes = Counter()
     base = target_program.getImageBase()
     manager = target_program.getFunctionManager()
     had_parent_transaction = (
@@ -847,9 +913,19 @@ def _apply_mappings(
                 function.getSymbol().setNameAndNamespace(
                     proposal.local_name, namespace, SourceType.ANALYSIS)
                 outcomes[key] = "applied"
+                if config.copy_prototypes and source_programs:
+                    record: dict = {}
+                    prototypes[_copy_prototype(
+                        source_programs.get(proposal.source_program_path),
+                        proposal.source_rva, function, record=record)] += 1
+                    if prototype_records is not None:
+                        prototype_records[key] = record
             except Exception as error:
                 outcomes[key] = "apply_error_{}".format(
                     type(error).__name__.replace(",", "_"))
+        if prototypes:
+            print("Prototypes: " + ", ".join(
+                "{}={}".format(k, v) for k, v in sorted(prototypes.items())))
         apply_errors = [decision for decision in outcomes.values()
                         if str(decision).startswith("apply_error_")]
         if apply_errors:
@@ -863,6 +939,135 @@ def _apply_mappings(
             raise RuntimeError(
                 "reciprocal byte-signature transaction did not commit")
     return outcomes
+
+
+def _type_kinds() -> dict:
+    """Ghidra data-type interfaces the dependency walk distinguishes."""
+    from ghidra.program.model.data import (
+        Array, BitFieldDataType, BuiltInDataType, Composite,
+        FunctionDefinition, Pointer, TypeDef)
+    return {"array": Array, "bitfield": BitFieldDataType,
+            "builtin": BuiltInDataType, "composite": Composite,
+            "function": FunctionDefinition, "pointer": Pointer,
+            "typedef": TypeDef}
+
+
+def _referenced_types(signature, kinds: dict | None = None) -> dict[str, object]:
+    """``{path: data type}`` of every named, non-built-in type a signature
+    depends on, transitively (typedef targets, members, function-pointer
+    signatures).  Pointers and arrays are derived and only walked through."""
+    kinds = kinds or _type_kinds()
+    pending = [signature.getReturnType()]
+    pending.extend(argument.getDataType() for argument in signature.getArguments())
+    named: dict[str, object] = {}
+    visited = set()
+    while pending:
+        data_type = pending.pop()
+        if data_type is None:
+            continue
+        path = str(data_type.getPathName())
+        if path in visited:
+            continue
+        visited.add(path)
+        if isinstance(data_type, (kinds["pointer"], kinds["array"])):
+            pending.append(data_type.getDataType())
+            continue
+        if isinstance(data_type, kinds["bitfield"]):
+            pending.append(data_type.getBaseDataType())
+            continue
+        if isinstance(data_type, kinds["builtin"]):
+            continue
+        named[path] = data_type
+        if isinstance(data_type, kinds["typedef"]):
+            pending.append(data_type.getDataType())
+        elif isinstance(data_type, kinds["composite"]):
+            pending.extend(component.getDataType()
+                           for component in data_type.getDefinedComponents())
+        elif isinstance(data_type, kinds["function"]):
+            pending.append(data_type.getReturnType())
+            pending.extend(argument.getDataType()
+                           for argument in data_type.getArguments())
+    return named
+
+
+def _prototype_type_plan(signature, target_dtm,
+                         kinds: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(conflicts, added)``: dependency paths where the target holds a
+    DIFFERENT type (applying would bind or ``.conflict``-rename them), and
+    paths the target lacks (applying adds them)."""
+    conflicts, added = [], []
+    for path, data_type in sorted(_referenced_types(signature, kinds).items()):
+        existing = target_dtm.getDataType(
+            data_type.getCategoryPath(), data_type.getName())
+        if existing is None:
+            added.append(path)
+        elif not existing.isEquivalent(data_type):
+            conflicts.append(path)
+    return conflicts, added
+
+
+def _copy_prototype(source_program, source_rva: int, target_function,
+                    record: dict | None = None, kinds: dict | None = None) -> str:
+    """Apply the source function's signature to the (just named) target.
+
+    Returns a short outcome label and fills ``record`` with the replaced
+    prototype and its source.  Never replaces a USER_DEFINED or IMPORTED
+    prototype or custom variable storage; never applies a source prototype
+    that is itself only DEFAULT; refuses when a type the prototype depends on
+    collides with a different target type at the same path, so Ghidra adds no
+    ``.conflict`` types.
+    """
+    from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
+    from ghidra.program.model.symbol import SourceType
+
+    record = {} if record is None else record
+
+    def done(outcome: str) -> str:
+        record["outcome"] = outcome
+        return outcome
+
+    try:
+        record["prototype_before"] = str(
+            target_function.getPrototypeString(True, True))
+    except Exception:
+        record["prototype_before"] = ""
+    record["prototype_source_before"] = str(target_function.getSignatureSource())
+    if source_program is None:
+        return done("no_source_program")
+    target_source = target_function.getSignatureSource()
+    if target_source in (SourceType.USER_DEFINED, SourceType.IMPORTED):
+        return done("kept_target_prototype")
+    if target_function.hasCustomVariableStorage():
+        return done("kept_target_custom_storage")
+    base = source_program.getImageBase()
+    source_function = source_program.getFunctionManager().getFunctionAt(
+        base.add(int(source_rva)))
+    if source_function is None:
+        return done("no_source_function")
+    if source_function.getSignatureSource() == SourceType.DEFAULT:
+        return done("source_prototype_default")
+    if source_function.hasUnknownCallingConventionName():
+        return done("source_convention_unknown")
+    signature = source_function.getSignature(True)
+    program = target_function.getProgram()
+    conflicts, added = _prototype_type_plan(
+        signature, program.getDataTypeManager(), kinds)
+    record["type_conflicts"] = conflicts
+    if conflicts:
+        return done("refused_type_conflict")
+    record["types_added"] = added
+    expected = set(_referenced_types(signature, kinds))
+    command = ApplyFunctionSignatureCmd(
+        target_function.getEntryPoint(), signature, SourceType.ANALYSIS)
+    if not command.applyTo(program):
+        return done("apply_signature_failed")
+    resolved = set(_referenced_types(target_function.getSignature(True), kinds))
+    if resolved - expected:
+        # The pre-check makes this unreachable; never keep renamed copies.
+        raise RuntimeError("prototype types resolved under other names: " +
+                           ", ".join(sorted(resolved - expected)[:5]))
+    record["prototype_after"] = str(target_function.getPrototypeString(True, True))
+    return done("prototype_applied")
 
 
 def _sha256_file(path: Path) -> str:
@@ -895,8 +1100,16 @@ def _write_evidence(
         mapping_decisions: dict[tuple[str, int], str],
         before_names: dict[tuple[str, int], str], target_manifest: dict,
         source_manifests: Sequence[dict], run_stats: Sequence[dict],
-        mode: str, config: PortConfig = SKYRIM_CONFIG) -> None:
+        mode: str, config: PortConfig = SKYRIM_CONFIG,
+        prototype_records: dict | None = None, exclusive: bool = False) -> None:
+    """Write the CSV + sidecar.  ``exclusive`` refuses an existing path, so an
+    apply ledger is never overwritten."""
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    prototype_records = prototype_records or {}
+    if exclusive:
+        # Reserve the name (fails when it exists); os.replace then fills it.
+        with open(evidence_path, "x", encoding="utf-8"):
+            pass
     descriptor, temporary = tempfile.mkstemp(
         prefix=evidence_path.name + ".", suffix=".tmp",
         dir=str(evidence_path.parent))
@@ -909,6 +1122,8 @@ def _write_evidence(
                 decision = proposal_decisions[proposal]
                 if decision == "accepted":
                     decision = mapping_decisions.get(pair, "accepted")
+                prototype = (prototype_records.get(pair, {})
+                             if decision == "applied" else {})
                 writer.writerow({
                     "target_sha256": config.target_sha256,
                     "target_program_path": target_manifest["program_path"],
@@ -925,6 +1140,16 @@ def _write_evidence(
                     "source_program_path": proposal.source_program_path,
                     "source_name_type": proposal.source_name_type,
                     "source_rva": "0x{:08X}".format(proposal.source_rva),
+                    "mode": mode,
+                    "prototype_outcome": prototype.get("outcome", ""),
+                    "target_prototype_before": prototype.get("prototype_before", ""),
+                    "target_prototype_source_before": prototype.get(
+                        "prototype_source_before", ""),
+                    "prototype_after": prototype.get("prototype_after", ""),
+                    "prototype_types_added": "|".join(
+                        prototype.get("types_added", ())),
+                    "prototype_type_conflicts": "|".join(
+                        prototype.get("type_conflicts", ())),
                 })
             stream.flush()
             os.fsync(stream.fileno())
@@ -966,9 +1191,34 @@ def _write_evidence(
         "sources": list(source_manifests),
         "proposal_count": len(proposals),
         "decision_counts": dict(sorted(counts.items())),
+        "prototype_outcomes": dict(sorted(Counter(
+            record.get("outcome", "") for record in prototype_records.values()
+        ).items())),
+        "copy_prototypes": bool(config.copy_prototypes),
+        "provenance_key": config.provenance_key,
         "run_stats": list(run_stats),
     }
     _atomic_json(Path(str(evidence_path) + ".identity.json"), sidecar)
+
+
+def _ledger_path(evidence_path: Path, mode: str,
+                 ledger_dir: Path | None = None, now: datetime | None = None) -> Path:
+    """A not-yet-existing ``<stem>.<mode>.<UTC>.csv`` under ``ledger_dir``."""
+    ledger_dir = Path(ledger_dir or APPLY_LEDGER_DIR)
+    now = now or datetime.now(timezone.utc)
+    stem = "{}.{}.{}".format(Path(evidence_path).stem, mode,
+                             now.strftime("%Y%m%dT%H%M%SZ"))
+    candidate = ledger_dir / (stem + ".csv")
+    serial = 1
+    while candidate.exists():
+        serial += 1
+        candidate = ledger_dir / "{}-{}.csv".format(stem, serial)
+    return candidate
+
+
+def _provenance_option(config: PortConfig, label: str) -> str:
+    """Per-configuration program-option name (no shared single slot)."""
+    return "BGS Reciprocal Bytesig [{}] {}".format(config.provenance_key, label)
 
 
 def _record_apply_provenance(
@@ -994,16 +1244,18 @@ def _record_apply_provenance(
         "Record reciprocal byte-signature provenance")
     success = False
     try:
-        info.setString("BGS Reciprocal Bytesig Target SHA256",
+        info.setString(_provenance_option(config, "Target SHA256"),
                        config.target_sha256)
-        info.setString("BGS Reciprocal Bytesig Evidence SHA256",
+        info.setString(_provenance_option(config, "Evidence SHA256"),
                        _sha256_file(evidence_path))
-        info.setLong("BGS Reciprocal Bytesig Accepted Count",
+        info.setString(_provenance_option(config, "Evidence Path"),
+                       str(evidence_path))
+        info.setLong(_provenance_option(config, "Accepted Count"),
                      int(len(accepted_pairs)))
-        info.setLong("BGS Reciprocal Bytesig Applied Count", int(applied))
-        info.setLong("BGS Reciprocal Bytesig Satisfied Count", int(satisfied))
+        info.setLong(_provenance_option(config, "Applied Count"), int(applied))
+        info.setLong(_provenance_option(config, "Satisfied Count"), int(satisfied))
         info.setString(
-            "BGS Reciprocal Bytesig Source Pins",
+            _provenance_option(config, "Source Pins"),
             json.dumps(dict(config.allowed_source_sha256), sort_keys=True))
         success = True
     finally:
@@ -1058,7 +1310,7 @@ def _run(
         source_specs: Sequence[tuple[str, str]],
         open_source: Callable[[str], tuple[object, Callable[[], None]]],
         evidence_path: Path, apply: bool, save: bool, monitor=None,
-        config: PortConfig = SKYRIM_CONFIG) -> dict:
+        config: PortConfig = SKYRIM_CONFIG, ledger_dir: Path | None = None) -> dict:
     target_manifest = _assert_target_identity(
         target_program, target_path, config=config)
     _assert_analysis_idle(target_program)
@@ -1071,9 +1323,13 @@ def _run(
     proposals: list[Proposal] = []
     source_manifests = []
     run_stats = []
+    held_sources: dict[str, tuple[object, Callable[[], None]]] = {}
     for source_tag, source_path in source_specs:
         print("Source {}: {}".format(source_tag, source_path))
         source_program, release = open_source(source_path)
+        if config.copy_prototypes:
+            held_sources[source_path] = (source_program, release)
+            release = lambda: None  # noqa: E731 -- released after apply
         try:
             _assert_analysis_idle(source_program)
             matched, stats, manifest = _match_source(
@@ -1095,25 +1351,54 @@ def _run(
     mapping_decisions, before_names = _target_mapping_decisions(
         target_program, accepted_pairs)
     # Persist a complete pre-mutation ledger even if an apply later fails.
-    _write_evidence(
-        evidence_path, proposals, proposal_decisions, mapping_decisions,
-        before_names, target_manifest, source_manifests, run_stats,
-        mode="apply_preflight" if apply else "dry_run", config=config)
+    # An apply never reuses the (overwritable) dry-run path: its preflight and
+    # result ledgers are new timestamped files.
+    if apply:
+        started = datetime.now(timezone.utc)
+        preflight_path = _ledger_path(evidence_path, "preflight", ledger_dir, started)
+        evidence_path = _ledger_path(evidence_path, "apply", ledger_dir, started)
+        _write_evidence(
+            preflight_path, proposals, proposal_decisions, mapping_decisions,
+            before_names, target_manifest, source_manifests, run_stats,
+            mode="apply_preflight", config=config, exclusive=True)
+    else:
+        _write_evidence(
+            evidence_path, proposals, proposal_decisions, mapping_decisions,
+            before_names, target_manifest, source_manifests, run_stats,
+            mode="dry_run", config=config)
 
     if apply:
+        prototype_records: dict = {}
         proposal_by_pair = {}
         accepted_pair_set = set(accepted_pairs)
         for proposal in proposals:
             pair = (proposal.qualified_name, proposal.target_rva)
             if pair in accepted_pair_set:
                 proposal_by_pair.setdefault(pair, proposal)
-        mapping_decisions = _apply_mappings(
-            target_program, accepted_pairs, mapping_decisions,
-            proposal_by_pair, config=config)
+        try:
+            mapping_decisions = _apply_mappings(
+                target_program, accepted_pairs, mapping_decisions,
+                proposal_by_pair, config=config,
+                source_programs={path: prog for path, (prog, _r)
+                                 in held_sources.items()},
+                prototype_records=prototype_records)
+        except Exception:
+            # The transaction rolled back: nothing was applied.  Leave a
+            # result ledger that says so instead of only the preflight one.
+            _write_evidence(
+                evidence_path, proposals, proposal_decisions, mapping_decisions,
+                before_names, target_manifest, source_manifests, run_stats,
+                mode="apply_rolled_back", config=config, exclusive=True)
+            raise
+        finally:
+            for _path, (_prog, release_source) in held_sources.items():
+                release_source()
+            held_sources.clear()
         _write_evidence(
             evidence_path, proposals, proposal_decisions, mapping_decisions,
             before_names, target_manifest, source_manifests, run_stats,
-            mode="apply", config=config)
+            mode="apply", config=config, prototype_records=prototype_records,
+            exclusive=True)
         _record_apply_provenance(
             target_program, evidence_path, mapping_decisions,
             accepted_pairs, config)
@@ -1122,6 +1407,10 @@ def _run(
                 from ghidra.util.task import ConsoleTaskMonitor
                 monitor = ConsoleTaskMonitor()
             target_program.save(config.save_description, monitor)
+
+    for _path, (_prog, release_source) in held_sources.items():
+        release_source()
+    held_sources.clear()
 
     final_counts = Counter()
     for proposal in proposals:
@@ -1148,7 +1437,7 @@ def run_live(
         source_specs: Sequence[tuple[str, str]] | None = None,
         evidence_path: str | os.PathLike | None = None,
         apply: bool = False, save: bool = False,
-        config: PortConfig = SKYRIM_CONFIG) -> dict:
+        config: PortConfig = SKYRIM_CONFIG, ledger_dir=None) -> dict:
     """Run against ``currentProgram`` without opening/locking the project.
 
     ``source_specs`` is a sequence of ``(tag, exact_project_path)`` pairs.
@@ -1169,7 +1458,7 @@ def run_live(
 
     def open_source(path: str):
         domain_file = _find_domain_file(root, path)
-        program = domain_file.getDomainObject(consumer, False, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         return program, lambda: program.release(consumer)
 
     return _run(
@@ -1183,6 +1472,7 @@ def run_live(
         save=save,
         monitor=monitor,
         config=config,
+        ledger_dir=Path(ledger_dir) if ledger_dir else None,
     )
 
 
@@ -1198,7 +1488,11 @@ def main(
     parser.add_argument(
         "--source", action="append", default=None,
         metavar="TAG=/PROJECT/PATH", help=config.source_help)
-    parser.add_argument("--evidence", default=str(config.default_evidence))
+    parser.add_argument("--evidence", default=str(config.default_evidence),
+                        help="dry-run evidence CSV (an apply writes new "
+                             "timestamped ledgers under --ledger-dir)")
+    parser.add_argument("--ledger-dir", default=str(APPLY_LEDGER_DIR),
+                        help="directory of the never-overwritten apply ledgers")
     parser.add_argument("--apply", action="store_true",
                         help="apply accepted names (default is dry-run)")
     args = parser.parse_args(argv)
@@ -1212,17 +1506,15 @@ def main(
 
     monitor = ConsoleTaskMonitor()
     consumer = java.lang.Object()
-    with pyghidra.open_project(
-            args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         root = project.getProjectData().getRootFolder()
         target_file = _find_domain_file(root, args.target_path)
-        target_program = target_file.getDomainObject(
-            consumer, bool(args.apply), False, monitor)
+        target_program = open_program(
+            target_file, consumer, monitor, write=bool(args.apply))
         try:
             def open_source(path: str):
                 source_file = _find_domain_file(root, path)
-                program = source_file.getDomainObject(
-                    consumer, False, False, monitor)
+                program = open_program(source_file, consumer, monitor, write=False)
                 return program, lambda: program.release(consumer)
 
             _run(
@@ -1235,6 +1527,7 @@ def main(
                 save=bool(args.apply),
                 monitor=monitor,
                 config=config,
+                ledger_dir=Path(args.ledger_dir),
             )
         finally:
             target_program.release(consumer)

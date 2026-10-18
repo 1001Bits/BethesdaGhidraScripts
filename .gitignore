@@ -26,3 +26,4 @@ __pycache__/
 /extras/normalized/
 /scripts/creationkit/refs/generated/
 /scripts/creationkit/refs/*_to_creationkit_*.csv*
+/FO4 PDB/

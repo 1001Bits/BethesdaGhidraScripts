@@ -87,3 +87,71 @@ def test_native_msf_rejects_file_size_not_bound_to_superblock(tmp_path):
     path.write_bytes(path.read_bytes() + b"extra")
     with pytest.raises(PDBMSFError, match="block count"):
         read_pdb_publics(path)
+
+
+def test_uninitialised_pad_bytes_are_accepted_but_a_missing_terminator_is_not(tmp_path):
+    """MSVC leaves S_PUB32 pad bytes uninitialised; only the terminator counts."""
+    name = b"Padded::Fn"
+    payload = struct.pack("<HIIH", 0x110E, 2, 0x20, 1) + name + b"\0"
+    pad = 0
+    while (len(payload) + 2) % 4:
+        pad += 1
+        payload += bytes([0xF0 + pad])
+    assert pad, "pick a name that needs padding"
+    path = tmp_path / "padded.pdb"
+    _minimal_pdb(path, struct.pack("<H", len(payload)) + payload)
+    assert read_pdb_publics(path).publics[0].name == "Padded::Fn"
+
+    # MSVC leaves the pad bytes uninitialised (0x61 'a' is common in the
+    # wild); only a missing terminator is corruption.
+    stray = payload[:-1] + b"a"
+    _minimal_pdb(path, struct.pack("<H", len(stray)) + stray)
+    assert read_pdb_publics(path).publics[0].name == "Padded::Fn"
+
+    unterminated = struct.pack("<HIIH", 0x110E, 2, 0x20, 1) + b"NoTerminator"
+    _minimal_pdb(path, struct.pack("<H", len(unterminated)) + unterminated)
+    with pytest.raises(PDBMSFError, match="padding"):
+        read_pdb_publics(path)
+
+
+def test_directory_block_map_spanning_several_pages(tmp_path):
+    """A 1 KiB-block, 400 MB PDB needs 7 block-map pages (LLVM refuses these)."""
+    block_size = 512
+    entries_per_page = block_size // 4
+    # A directory of 300 blocks needs 3 map pages: give one stream 38,000
+    # blocks so its block list alone is ~150 KB.
+    big_stream_blocks = 38_000
+    guid = uuid.UUID("22776620-B648-4C12-98F7-D51833DAFFC9")
+    info = struct.pack("<III", 20000404, 1234, 1) + guid.bytes_le
+    streams = [b"", info, b"\0" * (big_stream_blocks * block_size)]
+    directory = struct.pack("<I", len(streams))
+    directory += struct.pack("<{}I".format(len(streams)),
+                             *(len(s) for s in streams))
+    first_data_block = 64
+    info_block = first_data_block
+    big_blocks = list(range(info_block + 1, info_block + 1 + big_stream_blocks))
+    directory += struct.pack("<I", info_block)
+    directory += struct.pack("<{}I".format(big_stream_blocks), *big_blocks)
+    dir_blocks_count = (len(directory) + block_size - 1) // block_size
+    assert dir_blocks_count > entries_per_page          # needs > 1 map page
+    map_pages_count = (dir_blocks_count + entries_per_page - 1) // entries_per_page
+    dir_first = big_blocks[-1] + 1
+    dir_blocks = list(range(dir_first, dir_first + dir_blocks_count))
+    map_pages = list(range(3, 3 + map_pages_count))
+    total_blocks = dir_blocks[-1] + 1
+    image = bytearray(total_blocks * block_size)
+    image[:32] = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00"
+    struct.pack_into("<6I", image, 32, block_size, 1, total_blocks,
+                     len(directory), 0, map_pages[0])
+    struct.pack_into("<{}I".format(map_pages_count), image, 52, *map_pages)
+    map_bytes = struct.pack("<{}I".format(dir_blocks_count), *dir_blocks)
+    for index, page in enumerate(map_pages):
+        chunk = map_bytes[index * block_size:(index + 1) * block_size]
+        image[page * block_size:page * block_size + len(chunk)] = chunk
+    for index, block in enumerate(dir_blocks):
+        chunk = directory[index * block_size:(index + 1) * block_size]
+        image[block * block_size:block * block_size + len(chunk)] = chunk
+    image[info_block * block_size:info_block * block_size + len(info)] = info
+    path = tmp_path / "big.pdb"
+    path.write_bytes(image)
+    assert read_pdb_identity_native(path)["guid"] == str(guid).upper()

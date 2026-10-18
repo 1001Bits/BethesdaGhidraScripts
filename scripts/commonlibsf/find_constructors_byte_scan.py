@@ -25,6 +25,10 @@ from collections import defaultdict
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 SF_EXE = Path(r"C:/Games/Starfield 1.16.236/Starfield.exe")
 VTBL_NAMES_CSV = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf116_commonlib_names.csv"
@@ -121,13 +125,13 @@ def main():
     monitor = ConsoleTaskMonitor()
 
     PROJECT_DIR  = "C:/GhidraProjects"
-    PROJECT_NAME = "ExampleProject"
+    PROJECT_NAME = "Combined"
     PROGRAM_PATH = "/Starfield/Starfield 1.16.236"
 
-    with pyghidra.open_project(PROJECT_DIR, PROJECT_NAME, create=False) as project:
+    with open_user_project(PROJECT_DIR, PROJECT_NAME) as project:
         domain_file = project.getProjectData().getFile(PROGRAM_PATH)
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, False, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         try:
             fm = program.getFunctionManager()
             addr_factory = program.getAddressFactory()

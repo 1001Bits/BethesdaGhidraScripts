@@ -24,8 +24,10 @@ PROJECT_NAME = "BethesdaGhidraScripts"
 SCRIPT_PATH  = REPO_DIR / "scripts" / "commonlibsf" / "bsim_query_apply.py"
 DB_URL       = "file:/" + str(REPO_DIR / "bsim" / "SF_BSim").replace("\\", "/")
 sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 from pyghidra_result import end_outer_transaction, require_script_success
-from binary_identity import inspect_pe, verify_ghidra_program
+from binary_identity import verify_ghidra_program
+from target_pe import select_target_pe
 
 
 def main():
@@ -51,7 +53,7 @@ def main():
     print(f"Project:        {project_path}/{PROJECT_NAME}")
     print(f"Script:         {SCRIPT_PATH}")
 
-    with pyghidra.open_project(project_path, PROJECT_NAME, create=False) as project:
+    with open_user_project(project_path, PROJECT_NAME) as project:
         root = project.getProjectData().getRootFolder()
 
         def find(folder):
@@ -71,10 +73,12 @@ def main():
         print(f"Found program: {domain_file.getPathname()}")
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
-            executable = str(program.getExecutablePath() or '')
-            target_manifest = inspect_pe(executable)
+            # Ghidra records Windows paths as /C:/...; select_target_pe
+            # canonicalises that form (a raw path reads as C:\C:\...) and
+            # fails with an actionable message when the file is gone.
+            _executable, target_manifest = select_target_pe(program)
             verify_ghidra_program(program, [target_manifest])
             # Compose args list for the Jython/PyGhidra script
             script_args = ([DB_URL] + extra_args +

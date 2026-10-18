@@ -54,9 +54,22 @@ import importlib.util as _ilu  # noqa: E402
 _gpspec = _ilu.spec_from_file_location('clvr_globals_plan', os.path.join(SCRIPT_DIR, 'globals_plan.py'))
 gp = _ilu.module_from_spec(_gpspec)
 _gpspec.loader.exec_module(gp)
-_gspec = _ilu.spec_from_file_location('clvr_ghidra_util', os.path.join(SCRIPT_DIR, 'clvr_ghidra_util.py'))
-gu = _ilu.module_from_spec(_gspec)
-_gspec.loader.exec_module(gu)
+# Param-0 class detection is core's Structure-checking ``_param0_class_name``:
+# clvr_ghidra_util.param0_class_name only strips '*'/'64' off the type name, so
+# builtins (``longlong``, ``code *`` ...) voted as classes and demoted genuine
+# singletons.  Loaded by path (module dict, not script globals: its run() guard
+# stays false); sys.path is restored so core/ does not shadow sibling names.
+_saved_path = list(sys.path)
+try:
+    _chspec = _ilu.spec_from_file_location(
+        'bgs_core_globals_harvest',
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     'core', 'globals_harvest.py'))
+    _core_harvest = _ilu.module_from_spec(_chspec)
+    _chspec.loader.exec_module(_core_harvest)
+finally:
+    sys.path[:] = _saved_path
+_param0_class_name = _core_harvest._param0_class_name
 
 
 def _ram_addr(vn, mem, addr_space, depth=0):
@@ -191,7 +204,7 @@ def run():
                 callee = fm.getFunctionAt(target.getAddress())
                 if callee is None:
                     continue
-                cls = gu.param0_class_name(callee)
+                cls = _param0_class_name(callee)
                 if not cls:
                     continue
                 gaddr, is_ptr = _ram_addr(op.getInput(1), mem, addr_space)

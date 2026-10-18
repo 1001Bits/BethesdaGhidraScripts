@@ -37,7 +37,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from ghidra_project import open_user_project
+from ghidra_project import open_program, open_user_project
 from provenance import (PROGRAM_INFO_KEY, pdb_canary_name, validate_manifest)
 
 REPO_DIR   = Path(__file__).resolve().parent.parent.parent
@@ -644,7 +644,7 @@ def main():
             print("ERROR: program not found: %s" % args.program_path)
             sys.exit(3)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, False, False, monitor)
+        program = open_program(df, consumer, monitor, write=False)
         try:
             from binary_identity import (inspect_pe, verify_ghidra_program,
                                          _program_executable_path)

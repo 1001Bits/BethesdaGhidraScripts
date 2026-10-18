@@ -39,6 +39,7 @@ GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolv
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 from evidence_identity import read_binding, validate_evidence  # noqa: E402
 _GEN = re.compile(r'gen_name\((0x[0-9A-Fa-f]+),"([^"]*)"\)')
 
@@ -116,13 +117,13 @@ def main():
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
 
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         df = _resolve_program(project, args.program_path)
         if df is None:
             print("ERROR: program not found: %s" % args.program_path)
             sys.exit(3)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, True, False, monitor)
+        program = open_program(df, consumer, monitor, write=bool(args.apply))
         try:
             actual_sha256 = (program.getExecutableSHA256() or '').lower()
             if actual_sha256 != args.target_sha256.lower():
@@ -175,7 +176,8 @@ def main():
                 commit = True
             finally:
                 if tx is not None:
-                    program.endTransaction(tx, commit)
+                    if not program.endTransaction(tx, commit) and commit:
+                        raise RuntimeError("transaction did not commit; nothing was saved")
             placed = st["func_demangled"] + st["data_labeled"]
             if args.apply and commit and placed:
                 program.save("apply IDC labels", monitor)

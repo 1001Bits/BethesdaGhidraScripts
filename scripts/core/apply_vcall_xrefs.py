@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolve().parent.parent.parent / "tools" / "ghidra"))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 
 def parse_edges(path):
@@ -220,13 +221,13 @@ def main():
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
 
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         df = _resolve_program(project, args.program_path)
         if df is None:
             print("ERROR: program not found: %s" % args.program_path)
             sys.exit(3)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, True, False, monitor)
+        program = open_program(df, consumer, monitor, write=bool(args.apply))
         try:
             if trace_manifest is not None:
                 from binary_identity import verify_ghidra_program

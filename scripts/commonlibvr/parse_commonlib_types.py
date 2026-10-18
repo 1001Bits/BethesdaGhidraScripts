@@ -87,14 +87,20 @@ base.SKYRIM_H = os.path.join(CLVR_INCLUDE, 'RE', 'Skyrim.h')
 base.RE_INCLUDE = os.path.join(CLVR_INCLUDE, 'RE')
 base.SCRIPT_DIR = SCRIPT_DIR  # -> refs/anchors resolve under commonlibvr/ (none yet => no shift, soft-skip anchors)
 
-# Inheritance representation: EMBED bases as struct members (compositional) instead of
-# flattening. CLVR_EMBED=0 reverts to the powerof3 flatten behavior for comparison.
+# Inheritance representation: route flattening through embed_structs, which embeds
+# each base as a struct member when it receives DIRECT bases + OWN-only fields.
+# clang_types has no such mode: its record-layout parser always yields the full
+# nested base chain (pdb_bases) and no own/inherited field split, so today every
+# struct takes embed_structs' per-struct flat fallback and the result equals the
+# powerof3 flatten layout (byte-accurate, not compositional).  An earlier
+# ``clang_types.SKIP_NESTED_BASE_FIELDS = True`` here was a dead assignment (nothing
+# ever read it) and has been removed.  CLVR_EMBED=0 selects flatten_structs directly.
 if os.environ.get('CLVR_EMBED', '1') != '0':
     import ghidra_import_gen as _gig  # noqa: E402  (core dir already on sys.path)
-    import clang_types as _ct          # noqa: E402
     base._flatten_structs = _gig.embed_structs
-    _ct.SKIP_NESTED_BASE_FIELDS = True  # embed needs direct bases + own-only fields
-    print('Inheritance: EMBED bases (compositional). Set CLVR_EMBED=0 to flatten.')
+    print('Inheritance: embed_structs (falls back to a flat layout per struct: '
+          'clang_types provides no direct-base/own-field split). '
+          'Set CLVR_EMBED=0 to call flatten_structs directly.')
 
 base.VERSIONS = {
     'se': {
@@ -136,8 +142,12 @@ def _load_commonlibvr_reloc_parser():
 def _build_address_library():
     from address_library import AddressLibrary
     lib = AddressLibrary()
-    lib.se_db = lib.load_bin(os.path.join(_ADDRLIB_SSE, 'version-1-5-97-0.bin'))
-    lib.ae_db = lib.load_bin(os.path.join(_ADDRLIB_SSE, 'versionlib-1-6-1170-0.bin'))
+    # expected_version: a renamed / swapped .bin must fail here, not shift every
+    # SE or AE symbol (the powerof3 loader has always checked this).
+    lib.se_db = lib.load_bin(os.path.join(_ADDRLIB_SSE, 'version-1-5-97-0.bin'),
+                             expected_version=(1, 5, 97, 0))
+    lib.ae_db = lib.load_bin(os.path.join(_ADDRLIB_SSE, 'versionlib-1-6-1170-0.bin'),
+                             expected_version=(1, 6, 1170, 0))
     vr_csv = _VR_CSV if os.path.isfile(_VR_CSV) else _VR_CSV_FALLBACK
     lib.vr_db = AddressLibrary.load_csv(vr_csv)
     print('Address DBs: SE {}, AE {}, VR {} (from {})'.format(
@@ -145,12 +155,27 @@ def _build_address_library():
     return lib
 
 
-def _build_symbols(addr_lib):
+# The method tracker reads ``if (...) {`` inside an inline body as a method
+# definition; a relocation there belongs to the enclosing method, not to
+# ``Class::if``.
+_NOT_FUNCTION_NAMES = frozenset((
+    'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'case', 'catch',
+    'sizeof', 'alignof', 'decltype', 'static_assert', 'noexcept', 'typeid',
+    'new', 'delete', 'throw', 'co_return', 'co_await', 'co_yield', 'requires'))
+
+
+def _build_symbols(addr_lib, target_layouts=None):
     """Collect RELOCATION_ID functions + VariantID RTTI/VTABLE labels into the
     symbol-dict list run_version/generate_script consume. Mirrors the powerof3
-    main()'s symbol build, minus the powerof3-only Offset:: path."""
+    main()'s symbol build, minus the powerof3-only Offset:: path.
+
+    Every offset is checked against the staged executable of its runtime
+    (``base._validate_symbol_offsets``): a RELOCATION_ID is not proof of a
+    function, and VR offsets in .data/.rdata were shipped as functions."""
     import json as _json
     rp = _load_commonlibvr_reloc_parser()
+    if target_layouts is None:
+        target_layouts = base._load_target_layouts()
 
     func_syms, label_syms, off_map, statics, se_off_map, ae_off_map = rp.collect_relocations(
         base.RE_INCLUDE, addr_lib, verbose=True)
@@ -174,7 +199,11 @@ def _build_symbols(addr_lib):
         merged.append(fs)
 
     symbols = []
+    skipped_keywords = 0
     for fs in merged:
+        if fs['name'] in _NOT_FUNCTION_NAMES:
+            skipped_keywords += 1
+            continue
         full = '{}::{}'.format(fs['class_'], fs['name']) if fs.get('class_') else fs['name']
         sig = ''
         if fs.get('ret'):
@@ -185,6 +214,7 @@ def _build_symbols(addr_lib):
         if fs.get('se_off'): sym['s'] = fs['se_off']
         if fs.get('ae_off'): sym['a'] = fs['ae_off']
         if fs.get('vr_off'): sym['v'] = fs['vr_off']
+        base._validate_symbol_offsets(sym, 'func', target_layouts)
         symbols.append(sym)
 
     for lbl in label_syms:
@@ -192,15 +222,23 @@ def _build_symbols(addr_lib):
         if lbl.get('se_off'): sym['s'] = lbl['se_off']
         if lbl.get('ae_off'): sym['a'] = lbl['ae_off']
         if lbl.get('vr_off'): sym['v'] = lbl['vr_off']
+        base._validate_symbol_offsets(sym, 'label', target_layouts)
         symbols.append(sym)
+    rejected = sum(len(s.get('rejected_offsets', {})) for s in symbols)
+    print('Rejected {} offsets the staged executables contradict ({} staged); '
+          'skipped {} keyword "functions"'.format(
+              rejected, ', '.join(sorted(target_layouts)) or 'none',
+              skipped_keywords))
 
     # Normalize __ -> :: and attach address-library IDs (si/ai) by reverse lookup.
     import re as _re
     for s in symbols:
         if '__' in s['n']:
             s['n'] = _re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
-    se_rva_to_id = {v: k for k, v in addr_lib.se_db.items()}
-    ae_rva_to_id = {v: k for k, v in addr_lib.ae_db.items()}
+    # Never a last-wins {rva: id} dict: an RVA shared by two IDs gets no ID.
+    from address_library import unique_reverse_ids
+    se_rva_to_id, _se_ambiguous = unique_reverse_ids(addr_lib.se_db)
+    ae_rva_to_id, _ae_ambiguous = unique_reverse_ids(addr_lib.ae_db)
     for s in symbols:
         si = se_rva_to_id.get(s.get('s'))
         ai = ae_rva_to_id.get(s.get('a'))

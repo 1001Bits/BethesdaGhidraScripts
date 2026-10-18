@@ -5,7 +5,7 @@ method names extracted from SF 1.7 vtables.
 Pipeline:
   - Load sf17_vtable_slot_names.csv -> mapping (class, slot) -> real_name
   - Skip any 'real_name' that is itself FuncN-style (placeholder noise)
-  - In ExampleProject.gpr/Starfield 1.16.236, for each function whose name is
+  - In Combined.gpr/Starfield 1.16.236, for each function whose name is
     'Class::FuncN', look up (class, N).  If we have a real_name, rename.
 
 Output:
@@ -25,6 +25,10 @@ from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 SF17_SLOTS = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf17_vtable_slot_names.csv"
 
@@ -119,13 +123,13 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         domain_file = project.getProjectData().getFile(args.program)
         if domain_file is None:
             print(f"ERROR: program not found: {args.program}")
             sys.exit(2)
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
             actual_sha256 = (program.getExecutableSHA256() or '').lower()
             if actual_sha256 != args.target_sha256.lower():
@@ -214,7 +218,8 @@ def main():
                         print(f"  renamed={n_renamed}  no_map={n_no_mapping}  ambig={n_ambiguous}", flush=True)
                 commit = True
             finally:
-                program.endTransaction(txid, commit)
+                if not program.endTransaction(txid, commit) and commit:
+                    raise RuntimeError("transaction did not commit; nothing was saved")
 
             if commit:
                 print(f"\nSaving program ...")

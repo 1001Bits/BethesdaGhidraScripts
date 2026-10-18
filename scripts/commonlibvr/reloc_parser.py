@@ -38,6 +38,15 @@ _spec = importlib.util.spec_from_file_location('commonlibsse_reloc_parser', _BAS
 base_rp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base_rp)
 
+# Same trick for the Skyrim address library (``address_library`` is a per-game
+# module name): only its ``unique_reverse_ids`` is needed here.
+_al_spec = importlib.util.spec_from_file_location(
+    'commonlibsse_address_library',
+    os.path.join(os.path.dirname(_BASE_RP_PATH), 'address_library.py'))
+_base_al = importlib.util.module_from_spec(_al_spec)
+_al_spec.loader.exec_module(_base_al)
+unique_reverse_ids = _base_al.unique_reverse_ids
+
 # REL::VariantID(se, ae, vr) — single declaration form used by RTTI / NiRTTI:
 #   constexpr REL::VariantID RTTI_AlchemyItem(513850, 392218, 0x1ed6d60);
 _VARIANT_DECL_RE = re.compile(
@@ -175,23 +184,29 @@ def collect_src_relocations(src_dir, addr_lib, offset_id_map,
                             verbose=False, root_namespace='RE'):
     """src/**/*.cpp RELOCATION_ID functions, with VR offsets attached.
 
-    The base src scanner only records se_off/ae_off (powerof3 has no VR). Most
-    CommonLibVR functions are defined in src/, so we reverse-map each se_off back
-    to its SE id and look the VR offset up in vr_db — otherwise every src-defined
-    function would lose its VR binding.
+    Most CommonLibVR functions are defined in src/.  The base src scanner
+    carries the SE id it parsed (``se_id``) and resolves ``vr_off`` from it
+    directly (SE and VR share one ID namespace).  Only a symbol that somehow
+    lacks the id falls back to an RVA->ID reverse lookup through
+    ``unique_reverse_ids``: an RVA owned by two IDs yields no ID rather than
+    whichever came last.
     """
     func_syms = base_rp.collect_src_relocations(
         src_dir, addr_lib, offset_id_map,
         se_offset_map=se_offset_map, ae_offset_map=ae_offset_map,
         verbose=verbose, root_namespace=root_namespace)
 
-    se_off_to_id = {off: sid for sid, off in addr_lib.se_db.items()}
+    se_off_to_id = None
     vr_attached = 0
     for fs in func_syms:
-        se_off = fs.get('se_off')
-        if not se_off:
+        if fs.get('vr_off'):
+            vr_attached += 1
             continue
-        sid = se_off_to_id.get(se_off)
+        sid = fs.get('se_id')
+        if sid is None and fs.get('se_off'):
+            if se_off_to_id is None:
+                se_off_to_id, _ambiguous = unique_reverse_ids(addr_lib.se_db)
+            sid = se_off_to_id.get(fs['se_off'])
         if sid is None:
             continue
         vr_off = addr_lib.vr_db.get(sid)

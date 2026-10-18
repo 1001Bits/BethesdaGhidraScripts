@@ -18,8 +18,9 @@ with the R9 execute function, then renames the handler to Cmd_<name>.
 To suppress false positives it only accepts a (name,exec) pair whose CALL
 target is a *shared* register function (one reached by many such sites).
 
-NON-DESTRUCTIVE: only renames FUN_/sub_ handlers; never clobbers an
-existing name.  Dry-run default; BGS_ENRICH_APPLY=go to write.
+NON-DESTRUCTIVE: only renames FUN_/sub_/thunk_ placeholders whose symbol
+source is DEFAULT or ANALYSIS; never clobbers an existing (USER_DEFINED or
+IMPORTED) name.  Dry-run default; BGS_ENRICH_APPLY=go to write.
 Knobs: BGS_SFCMD_MINSHARE (min sites per register fn, default 8).
 """
 import os
@@ -30,6 +31,39 @@ MIN_SHARE = int(os.environ.get('BGS_SFCMD_MINSHARE', '4'))
 _NAME_RE = re.compile(r'^[A-Za-z_]\w{1,63}$')
 WINDOW_BACK = 6           # instrs before the name LEA to look for LEA R9
 WINDOW_FWD = 6            # instrs after to find the CALL
+_PLACEHOLDER_PREFIXES = ('FUN_', 'sub_', 'thunk_')
+
+
+def is_renamable_handler(function, source_type):
+    """May this handler be renamed?  Only a machine placeholder may.
+
+    The NAME must look like a placeholder AND the symbol must be DEFAULT or
+    ANALYSIS: a ``thunk_Foo`` / ``sub_Bar`` an analyst typed (USER_DEFINED)
+    or an importer stamped (IMPORTED) is somebody's name and is kept.
+    """
+    symbol = function.getSymbol()
+    if symbol is None:
+        return False
+    source = symbol.getSource()
+    if not (source == source_type.DEFAULT or source == source_type.ANALYSIS):
+        return False
+    return str(function.getName() or '').startswith(_PLACEHOLDER_PREFIXES)
+
+
+def decode_cstr(buf, count):
+    """Printable-ASCII C string from the first ``count`` bytes, else None.
+
+    ``buf`` holds Java (signed) or Python (unsigned) bytes.
+    """
+    out = []
+    for i in range(count):
+        ch = int(buf[i]) & 0xFF
+        if ch == 0:
+            break
+        if ch < 0x20 or ch > 0x7E:
+            return None
+        out.append(chr(ch))
+    return ''.join(out) if out else None
 
 
 def run():
@@ -50,20 +84,19 @@ def run():
     tlo = text.getStart().getOffset()
     thi = tlo + text.getSize()
 
+    import jpype
+    ByteArray = jpype.JArray(jpype.JByte)
+
     def cstr(va, maxlen=72):
         try:
             a = af.getAddress(va)
-            bs = bytearray(maxlen)
-            n = mem.getBytes(a, bs)
-            out = []
-            for i in range(n):
-                ch = bs[i] & 0xFF
-                if ch == 0:
-                    break
-                if ch < 0x20 or ch > 0x7E:
-                    return None
-                out.append(chr(ch))
-            return ''.join(out) if out else None
+            # A Python bytearray handed to a Java ``byte[]`` parameter is
+            # COPIED by JPype: Ghidra filled the copy and ``bs`` stayed all
+            # zero, so every string read came back None.  Read into a real
+            # Java array (the havok_mine pattern).
+            buf = ByteArray(maxlen)
+            n = mem.getBytes(a, buf)
+            return decode_cstr(buf, n)
         except Exception:
             return None
 
@@ -176,6 +209,9 @@ def run():
         by_exec.setdefault(exec_fn, set()).add((name, call_target))
 
     renamed = already = no_func = ambiguous = 0
+    errors = []
+    had_parent_transaction = (
+        APPLY and cp.getCurrentTransactionInfo() is not None)
     tx = cp.startTransaction('sf-console') if APPLY else None
     success = False
     try:
@@ -189,29 +225,38 @@ def run():
             if f is None:
                 no_func += 1
                 continue
-            cur = f.getName()
-            if not (cur.startswith('FUN_') or cur.startswith('sub_')
-                    or cur.startswith('thunk_')):
+            if not is_renamable_handler(f, SourceType):
                 already += 1
                 continue
             if APPLY:
                 try:
                     f.setName('Cmd_' + name, SourceType.ANALYSIS)
                     renamed += 1
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001  (duplicate name etc.)
+                    errors.append('Cmd_%s @ %X: %s' % (name, exec_fn, exc))
             else:
                 renamed += 1
         success = True
     finally:
         if tx is not None:
-            cp.endTransaction(tx, success)
+            committed = bool(cp.endTransaction(tx, success))
+            if success and not had_parent_transaction and not committed:
+                raise RuntimeError('sf-console transaction did not commit')
 
     print('  %s=%d  already-named=%d  no-func=%d  ambiguous=%d'
           % ('renamed' if APPLY else 'would-rename', renamed, already,
              no_func, ambiguous))
+    if errors:
+        print('  %d rename(s) FAILED:' % len(errors))
+        for line in errors[:20]:
+            print('    ' + line)
     for name, exec_fn, _ in good[:15]:
         print('   Cmd_%-26s -> %X' % (name, exec_fn))
 
 
-run()
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('console_harvest_sf'))

@@ -31,6 +31,7 @@ Public API:
   _setup_include_paths()  - build clang include args from CommonLib + stub dirs
 """
 
+import json
 import os
 import sys
 import re
@@ -48,8 +49,64 @@ _RUNTIME_STUB_DIRS = []
 # clang.exe discovery
 # ---------------------------------------------------------------------------
 
+_REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+_PINNED_CLANG = os.path.join(
+    _REPO_DIR, 'tools', 'llvm', 'bin',
+    'clang.exe' if os.name == 'nt' else 'clang')
+_USED_CLANG_VERSION = None
+
+
+class ToolchainMismatchError(RuntimeError):
+    """The selected Clang is not the release pinned in toolchain.lock.json."""
+
+
+def pinned_llvm_version():
+    with open(os.path.join(_REPO_DIR, 'toolchain.lock.json'),
+              encoding='utf-8') as handle:
+        return str(json.load(handle)['llvm']['version'])
+
+
+def clang_version(clang_binary):
+    """``X.Y.Z`` reported by ``clang --version`` (None when unparseable)."""
+    result = subprocess.run([clang_binary, '--version'], capture_output=True,
+                            text=True, encoding='utf-8', errors='replace')
+    match = re.search(r'clang version (\d+\.\d+\.\d+)', result.stdout or '')
+    return match.group(1) if match else None
+
+
+def require_pinned_clang(clang_binary):
+    """Refuse a Clang other than the locked release and record what was used.
+
+    Record layouts differ between LLVM releases (22,023 vs 22,219 structs for
+    the same CommonLibSSE headers under 22.1.5 vs the locked 20.1.8), so a
+    generator run outside ``run.py`` must not silently take whatever ``clang``
+    is first on PATH.  ``BGS_ALLOW_UNPINNED_CLANG=1`` is the explicit opt-out;
+    the importer's ``BGS_CLANG_VERSION`` then shows the deviation.
+    """
+    global _USED_CLANG_VERSION
+    actual = clang_version(clang_binary)
+    pinned = pinned_llvm_version()
+    if actual != pinned:
+        message = ('{} is clang {}, but toolchain.lock.json pins LLVM {} '
+                   '(expected at {}; run.py option 1 installs it)'.format(
+                       clang_binary, actual or 'of unknown version', pinned,
+                       _PINNED_CLANG))
+        if os.environ.get('BGS_ALLOW_UNPINNED_CLANG') != '1':
+            raise ToolchainMismatchError(
+                message + '.  Set BGS_ALLOW_UNPINNED_CLANG=1 to override.')
+        print('WARNING: ' + message)
+    _USED_CLANG_VERSION = actual or 'unknown'
+    return _USED_CLANG_VERSION
+
+
+def used_clang_version():
+    """Clang release verified for this process, for importer provenance."""
+    return _USED_CLANG_VERSION or 'none'
+
+
 def find_clang_binary():
-    """Locate Clang without bypassing a caller-prepended toolchain on PATH.
+    """Locate Clang: explicit override, the repository-pinned LLVM, then PATH.
 
     ``BGS_CLANG_BINARY`` is an optional exact executable override.  A bad
     override is an error rather than permission to silently select a different
@@ -64,8 +121,11 @@ def find_clang_binary():
                 'BGS_CLANG_BINARY does not name a file: {}'.format(candidate))
         return candidate
 
-    # run.py prepends the repository-pinned LLVM directory to PATH.  Honor it
-    # before registry/global-install probes, which may point at another LLVM.
+    # The locked toolchain wins even when a generator is run directly (run.py
+    # prepends the same directory to PATH); a global LLVM may be another release.
+    if os.path.isfile(_PINNED_CLANG):
+        return _PINNED_CLANG
+
     candidate = shutil.which('clang')
     if candidate:
         return candidate
@@ -130,6 +190,16 @@ _CLANG_TYPE_MAP = {
     'std::intptr_t': 'isize', 'intptr_t': 'isize',
 }
 
+# REX::EnumSet<E, U> (SSE/VR), REX::TEnumSet<E, U> (F4/SF commonlib-shared)
+# and SKSE::stl::enumeration<E, U>: enum E stored in U, often narrower than E
+# (EnumSet<FormType, std::uint8_t> is one byte).  U defaults to E's underlying
+# type and is then omitted from the printed type.
+_ENUMSET_RE = re.compile(r'^(?:\w+::)*(?:T?EnumSet|enumeration)\s*<(.+)>$')
+_SCALAR_WIDTH = {'bool': 1, 'i8': 1, 'u8': 1, 'i16': 2, 'u16': 2,
+                 'i32': 4, 'u32': 4, 'i64': 8, 'u64': 8}
+# ``enum:<E>:<width>`` -- an EnumSet field: enum E at its storage width.
+_ENUM_WIDTH_RE = re.compile(r'^(.*):(\d+)$')
+
 _KW_STRIP_RE = re.compile(r'\b(?:class|struct|union|enum)\s+')
 # Match the keyword anywhere as a whole word — covers `const T`, `T const`, and
 # `T *const` (where `*` is non-word so `\b` lies between it and `c`).
@@ -161,15 +231,25 @@ _PRIM_ALL = _PRIM_BARE | _PRIM_MULTI
 
 
 def _split_tmpl_args(inner):
+    """Split a comma-separated type list at the top level only.
+
+    Commas nested in template ``<>`` or in parentheses (function-pointer
+    parameter lists such as ``void (*)(int, float)``) do not split.
+    """
     args = []
     depth = 0
+    paren = 0
     start = 0
     for i, ch in enumerate(inner):
         if ch == '<':
             depth += 1
         elif ch == '>':
             depth -= 1
-        elif ch == ',' and depth == 0:
+        elif ch == '(':
+            paren += 1
+        elif ch == ')':
+            paren -= 1
+        elif ch == ',' and depth == 0 and paren <= 0:
             args.append(inner[start:i].strip())
             start = i + 1
     tail = inner[start:].strip()
@@ -232,6 +312,13 @@ def _qualify_type(name, root_ns='RE'):
                 name = name[:-len(t)].rstrip()
                 _changed = True
                 break
+        # Array bounds (``char[16]``, ``float[4][4]``) belong to the type, not
+        # to the name: qualifying them along made ``RE::char[16]``.
+        m_dim = re.search(r'\s*\[\d*\]$', name)
+        if not _changed and m_dim:
+            trailing = name[m_dim.start():] + trailing
+            name = name[:m_dim.start()].rstrip()
+            _changed = True
     name = name.strip()
     lt = name.find('<')
     if lt >= 0 and name.endswith('>'):
@@ -282,6 +369,21 @@ _PRIM_BYTE_SIZE = {
     'double': 8, 'long double': 8,
 }
 
+# Underlying-type -> byte size for enums (MSVC ABI; a plain ``enum X {}`` with
+# no fixed underlying type is ``int``).  Integer-like entries only.
+_ENUM_UNDERLYING_SIZE = {
+    k: v for k, v in _PRIM_BYTE_SIZE.items()
+    if k not in ('float', 'double', 'long double')
+}
+_ENUM_UNDERLYING_SIZE.update({
+    'short int': 2, 'unsigned short int': 2, 'signed short int': 2,
+    'long int': 4, 'unsigned long int': 4, 'signed long int': 4,
+    'long long int': 8, 'unsigned long long int': 8, 'signed long long int': 8,
+    'signed __int64': 8, '__int8': 1, '__int16': 2, '__int32': 4,
+    'unsigned __int8': 1, 'unsigned __int16': 2, 'unsigned __int32': 4,
+    'unsigned': 4, 'signed': 4,
+})
+
 
 def _is_function_pointer_type(raw: str) -> bool:
     """Detect function-pointer-shaped types in any depth:
@@ -328,11 +430,33 @@ def _record_type_to_pipeline(raw, root_ns='RE'):
         return 'ptr'
     if raw in _CLANG_TYPE_MAP:
         return _CLANG_TYPE_MAP[raw]
-    m_arr = re.match(r'^(.+)\[(\d+)\]$', raw)
+    # An EnumSet field is its named enum at the storage width, not the wrapper
+    # struct (whose only member is the bare integer): ``enum:<E>:<width>``, or
+    # ``enum:<E>`` when the storage is E's own underlying type.  A storage
+    # whose width is unknown keeps the wrapper (it at least has the right size).
+    m_es = _ENUMSET_RE.match(raw)
+    if m_es:
+        args = _split_tmpl_args(m_es.group(1))
+        width = (_SCALAR_WIDTH.get(_CLANG_TYPE_MAP.get(args[1]))
+                 if len(args) == 2 else None)
+        if args and args[0] and (len(args) == 1 or width):
+            qual = _qualify_type(args[0], root_ns)
+            return 'enum:{}:{}'.format(qual, width) if width else 'enum:' + qual
+    # Arrays.  ``T[2][3]`` is 2 x (3 x T): the LEFTMOST bracket is the outer
+    # dimension, so wrap from the rightmost bracket outwards
+    # (``arr:arr:T:3:2``).  ``T[]`` (flexible / incomplete array) has count 0.
+    m_arr = re.match(r'^(.*?)((?:\s*\[\d*\])+)$', raw)
     if m_arr:
-        elem_type = _record_type_to_pipeline(m_arr.group(1).strip(), root_ns)
-        count = int(m_arr.group(2))
-        return 'arr:{}:{}'.format(elem_type, count)
+        elem_raw = m_arr.group(1).strip()
+        if not elem_raw or re.search(r'\([^()]*[*&]\s*\)$', elem_raw):
+            # ``int (*)[3]`` / ``int (&)[3]``: pointer or reference to array.
+            # (``X::(unnamed at f.h:1:2)[3]`` also ends in ``)`` but is an
+            # array of an anonymous record.)
+            return 'ptr'
+        elem_type = _record_type_to_pipeline(elem_raw, root_ns)
+        for dim in reversed(re.findall(r'\[(\d*)\]', m_arr.group(2))):
+            elem_type = 'arr:{}:{}'.format(elem_type, int(dim) if dim else 0)
+        return elem_type
     if raw:
         return 'struct:' + _qualify_type(raw, root_ns)
     return 'ptr'
@@ -510,6 +634,155 @@ def _parse_line(line):
     return 0, None
 
 
+# ``file:line:col`` location token.  clang prints the file name only when it
+# differs from the previously printed one (``line:L:C`` / ``col:C`` otherwise),
+# so the parser has to carry the last file seen across lines.  A file name may
+# hold commas and quotes (``C:/Mods, Tools/O'Brien/RE/a.h``); it ends at the
+# first ``:L:C``.
+_AST_FILE_LOC = (r'((?:<scratch space>|<built-in>|<command line>'
+                 r'|(?:[A-Za-z]:)?[^\s<>:"][^<>:"]*?)):\d+:\d+(?!\d)')
+_AST_FILE_LOC_RE = re.compile(_AST_FILE_LOC)
+# Inside a source range a token starts right after ``<``, the ``, `` separator
+# or ``<Spelling=`` -- never mid-way, as ``3, line`` in ``<col:3, line:9:1>``.
+_AST_RANGE_LOC_RE = re.compile(r'(?:(?<=<)|(?<=, )|(?<==))' + _AST_FILE_LOC)
+
+
+def _ast_line_files(content):
+    """File names printed in one AST node's location part.
+
+    Returns ``(begin_file, last_file)``: ``begin_file`` is the file printed for
+    the node's begin location (None when that location carries no file name, so
+    the caller falls back to the file carried over from earlier lines, or the
+    string ``'<invalid sloc>'`` for a node without a source location), and
+    ``last_file`` is the last file name printed on the line (None when none),
+    which becomes the carried file for the following lines.
+    """
+    lt = content.find('<')
+    if lt < 0:
+        return None, None
+    # A ``<`` after the first quote is inside a type (``public 'X<int>'``).  The
+    # range itself may hold quotes (in a file name), so it is not cut at one.
+    quote = content.find("'")
+    if 0 <= quote < lt:
+        return None, None
+    head = content
+    begin_file = None
+    last_file = None
+    if head.startswith('<invalid sloc>', lt + 1):
+        begin_file = '<invalid sloc>'
+    if ':' not in head:
+        return begin_file, last_file
+    # The source range ``<begin[, end]>`` (it may nest ``<scratch space>``).
+    depth = 0
+    gt = -1
+    for i in range(lt, len(head)):
+        ch = head[i]
+        if ch == '<':
+            depth += 1
+        elif ch == '>':
+            depth -= 1
+            if depth == 0:
+                gt = i
+                break
+    if gt < 0:
+        return begin_file, last_file
+    for m in _AST_RANGE_LOC_RE.finditer(head, lt + 1, gt):
+        name = m.group(1)
+        if name == 'line':
+            continue
+        if m.start() == lt + 1:
+            begin_file = name
+        last_file = name
+    # A declaration's own location follows the range.  Anchored, so that a
+    # name printed later on the line (``~(lambda at f.h:9:53)``) is not read
+    # as a location.
+    pos = gt + 1
+    while pos < len(head) and head[pos] == ' ':
+        pos += 1
+    m = _AST_FILE_LOC_RE.match(head, pos)
+    if m and m.group(1) != 'line':
+        last_file = m.group(1)
+    return begin_file, last_file
+
+
+_ENUM_DECL_FLAGS = frozenset({
+    'class', 'struct', 'referenced', 'imported', 'implicit', 'used',
+    'invalid', 'hidden', 'unowned', 'definition',
+})
+
+
+def _parse_enum_decl(content):
+    """``(name, underlying)`` from an ``EnumDecl`` AST line.
+
+    ``underlying`` is None for a plain ``enum X {}`` (clang prints a quoted
+    underlying type only for scoped enums and enums with a fixed type);
+    ``name`` is None for anonymous enums.
+    """
+    quote = content.find("'")
+    head = content if quote < 0 else content[:quote]
+    underlying = None
+    if quote >= 0:
+        quoted = re.findall(r"'([^']*)'", content[quote:])
+        if quoted:
+            underlying = quoted[0]
+            # Desugared form: 'std::uint32_t':'unsigned int' -> 'unsigned int'
+            m2 = re.match(r"'[^']*':'([^']*)'", content[quote:])
+            if m2:
+                underlying = m2.group(1)
+    tokens = head.split()
+    if len(tokens) >= 2 and tokens[-2] == 'instantiated_from':
+        tokens = tokens[:-2]
+    name = tokens[-1] if tokens else ''
+    if (name in _ENUM_DECL_FLAGS or name.startswith('0x')
+            or not re.fullmatch(r'[A-Za-z_]\w*', name) or len(tokens) < 3):
+        return None, underlying
+    return name, underlying
+
+
+_ENUM_INIT_WRAPPERS = frozenset({'ConstantExpr', 'ImplicitCastExpr', 'ParenExpr'})
+_ENUM_INIT_UNKNOWN = object()
+
+
+def _eval_enum_init(children):
+    """Value of an enumerator from its initializer nodes when clang printed no
+    ``value: Int N`` line (enumerators of enums inside class templates).
+
+    ``children`` are the AST line contents below the ``EnumConstantDecl``.
+    Returns None when there is no initializer (implicit: previous + 1), an int
+    for a plain literal (optionally parenthesised / negated), or
+    ``_ENUM_INIT_UNKNOWN`` for anything else (dependent or compound
+    expressions) -- the caller must then drop the enum, not guess.
+    """
+    kinds = []
+    for child in children:
+        kind = child.split(' ', 1)[0]
+        if kind.endswith(('Comment', 'Attr')):
+            continue
+        kinds.append((kind, child))
+    if not kinds:
+        return None
+    while kinds and kinds[0][0] in _ENUM_INIT_WRAPPERS:
+        kinds.pop(0)
+    negate = False
+    if (len(kinds) >= 2 and kinds[0][0] == 'UnaryOperator'
+            and kinds[0][1].rstrip().endswith("prefix '-'")):
+        negate = True
+        kinds.pop(0)
+        while kinds and kinds[0][0] in _ENUM_INIT_WRAPPERS:
+            kinds.pop(0)
+    if len(kinds) != 1:
+        return _ENUM_INIT_UNKNOWN
+    kind, text = kinds[0]
+    last = text.rstrip().rsplit(' ', 1)[-1]
+    if kind in ('IntegerLiteral', 'CharacterLiteral') and re.fullmatch(r'\d+', last):
+        value = int(last)
+    elif kind == 'CXXBoolLiteralExpr' and last in ('true', 'false'):
+        value = 1 if last == 'true' else 0
+    else:
+        return _ENUM_INIT_UNKNOWN
+    return -value if negate else value
+
+
 def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/CommonLibSSE',
                     extra_scope_paths=None):
     """Parse clang -ast-dump text output for enums and virtual methods.
@@ -522,6 +795,13 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
     Returns:
         enums: dict full_name -> {name, full_name, size, category, values}
         ast_classes: dict full_name -> {name, full_name, bases, has_vtable, vmethods, category}
+        aliases: dict alias_full_name -> canonical type
+
+    ``vmethods`` maps a slot key to ``(ret, params)`` or to None when the
+    signature could not be parsed (the slot still exists; it just has no
+    prototype).  ``methods`` only ever holds parsed signatures.  Records with
+    ``record_kind == 'namespace'`` are pseudo-classes carrying the namespace's
+    free functions: they never have bases, vmethods or a vtable.
     """
     enums = {}
     ast_classes = {}
@@ -534,19 +814,30 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
     re_path_fwd = scope_paths[0]
 
     # Nesting stack: [(depth, kind, name, in_re)]
+    #   kind: 'namespace' | 'class' | 'enum'
+    #         | 'class_spec'  (ClassTemplate[Partial]SpecializationDecl: its
+    #                          whole subtree is ignored -- members of an
+    #                          instantiation must never be recorded on the
+    #                          enclosing namespace / class)
+    #         | 'anon'        (unnamed record: lambda closure, anonymous
+    #                          struct/union -- owns its methods, records none)
     stack = []
     cur_enum = None
     cur_enum_depth = 0
     pending_const_name = None
+    pending_const_depth = 0
+    pending_children = []
     last_enum_value = -1
 
-    _ENUM_SIZE = {
-        'unsigned char': 1, 'signed char': 1, 'char': 1,
-        'unsigned short': 2, 'short': 2,
-        'unsigned int': 4, 'int': 4,
-        'unsigned long': 4, 'long': 4,
-        'unsigned long long': 8, 'long long': 8,
-    }
+    # clang prints a file name only when it changes; carry the last one so a
+    # node located by ``<line:3:1, col:55>`` still resolves to its file.
+    cur_file = None
+    node_file = None
+
+    # (class record, vmethods key, depth) of the virtual method whose child
+    # lines are being read: clang prints ``Overrides: [ ... ]`` (and
+    # ``OverrideAttr`` for an explicit ``override``) below an override.
+    last_vm = None
 
     def _qual_prefix():
         return '::'.join(s[2] for s in stack if s[2])
@@ -558,30 +849,113 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
         ns_parts = [s[2] for s in stack if s[1] == 'namespace' and s[2]]
         return category_prefix + '/' + '/'.join(ns_parts) if ns_parts else category_prefix
 
-    def _src_is_re(content):
-        m = re.search(r'<([^>]+)>', content)
-        if not m:
+    def _src_is_re(_content=None):
+        """True when the current node's (carried) source file is in scope."""
+        if not node_file:
             return False
-        loc = m.group(1).replace('\\', '/')
+        loc = node_file.replace('\\', '/')
         return any(p in loc for p in scope_paths)
+
+    def _owner_class():
+        """``ast_classes`` record that directly owns a member declared at the
+        current position, or None.
+
+        The innermost enclosing scope must be a named class definition: a
+        member seen directly under a namespace (out-of-line definition), under
+        a template specialization or inside a lambda / anonymous record belongs
+        to no recorded class, and namespace pseudo-classes never own methods.
+        """
+        for s in reversed(stack):
+            if s[1] == 'enum':
+                continue
+            if s[1] != 'class':
+                return None
+            parts = [ss[2] for ss in stack if ss[1] in ('namespace', 'class') and ss[2]]
+            cls = ast_classes.get('::'.join(parts))
+            if cls is None or cls.get('record_kind') == 'namespace':
+                return None
+            return cls
+        return None
+
+    def _note_member_name(cls, name):
+        """Remember the order in which member names are first declared (MSVC
+        places a group of new virtual overloads where its name first appears
+        in the class, virtual or not)."""
+        order = cls.setdefault('_vm_decl_order', [])
+        if name not in order:
+            order.append(name)
+
+    def _finish_const():
+        """Commit the pending enumerator (implicit or literal-initialised)."""
+        nonlocal pending_const_name, pending_children, last_enum_value
+        if pending_const_name is None:
+            return
+        if cur_enum is not None and not cur_enum.get('_skip'):
+            value = _eval_enum_init(pending_children)
+            if value is _ENUM_INIT_UNKNOWN:
+                # No ``value:`` line and not a plain literal: numbering this
+                # and every following implicit enumerator would be a guess.
+                cur_enum['_skip'] = True
+            else:
+                last_enum_value = last_enum_value + 1 if value is None else value
+                cur_enum['values'].append((pending_const_name, last_enum_value))
+        pending_const_name = None
+        pending_children = []
+
+    def _close_enum():
+        nonlocal cur_enum, cur_enum_depth
+        _finish_const()
+        if cur_enum is not None:
+            if not cur_enum.pop('_skip', False):
+                enums[cur_enum['full_name']] = cur_enum
+        cur_enum = None
+        cur_enum_depth = 0
 
     for line in text.splitlines():
         depth, content = _parse_line(line)
         if content is None:
             continue
 
+        begin_file, last_file = _ast_line_files(content)
+        node_file = begin_file or cur_file
+        if last_file:
+            cur_file = last_file
+
+        if last_vm is not None and depth <= last_vm[2]:
+            last_vm = None
+
         # Pop stack entries at or deeper than current depth
         while stack and stack[-1][0] >= depth:
             popped = stack.pop()
             if popped[1] == 'enum' and cur_enum and cur_enum_depth >= depth:
-                if pending_const_name:
-                    last_enum_value += 1
+                _close_enum()
+
+        # Everything below a template specialization is ignored (see above).
+        if stack and stack[-1][1] == 'class_spec':
+            continue
+
+        # clang resolved the virtual above as an override (signature-aware,
+        # through typedefs and instantiated bases).  Missing in a template
+        # whose overridden base is dependent: clang cannot resolve it there.
+        if (last_vm is not None and depth == last_vm[2] + 1
+                and content.startswith(('Overrides: [', 'OverrideAttr '))):
+            overrides = last_vm[0].setdefault('_vm_overrides', [])
+            if last_vm[1] not in overrides:
+                overrides.append(last_vm[1])
+            continue
+
+        # Initializer nodes of the pending enumerator
+        if pending_const_name is not None and depth > pending_const_depth:
+            if content.startswith('value: Int'):
+                m = re.match(r'value:\s+Int\s+(-?\d+)', content)
+                if m and cur_enum and not cur_enum.get('_skip'):
+                    last_enum_value = int(m.group(1))
                     cur_enum['values'].append((pending_const_name, last_enum_value))
                     pending_const_name = None
-                if cur_enum.get('values') is not None:
-                    enums[cur_enum['full_name']] = cur_enum
-                cur_enum = None
-                cur_enum_depth = 0
+                    pending_children = []
+                    continue
+            pending_children.append(content)
+            continue
 
         # NamespaceDecl — name is the trailing identifier, but clang appends
         # modifier keywords ``nested`` (for ``namespace A::B {}`` form) and
@@ -612,24 +986,24 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
             stack.append((depth, 'namespace', ns_name, in_re))
             continue
 
+        # Template specializations / instantiations: push a frame so their
+        # members are not attributed to the enclosing scope, and skip them.
+        if content.startswith(('ClassTemplateSpecializationDecl ',
+                               'ClassTemplatePartialSpecializationDecl ')):
+            stack.append((depth, 'class_spec', '', False))
+            continue
+
         # EnumDecl
         if content.startswith('EnumDecl '):
-            m = re.search(r"(?:class\s+)?([a-zA-Z_]\w*)\s+'([^']*)'", content)
-            if m:
-                enum_name = m.group(1)
-                underlying = m.group(2)
-                # Strip desugared type: 'std::uint32_t':'unsigned int' -> 'unsigned int'
-                if ':' in underlying and "'" in underlying:
-                    underlying = underlying.split("'")[-1] if "':'" in underlying else underlying
-                m2 = re.search(r"'[^']*':'([^']*)'", content)
-                if m2:
-                    underlying = m2.group(1)
+            enum_name, underlying = _parse_enum_decl(content)
+            if enum_name:
                 in_re = _is_re() or _src_is_re(content)
                 prefix = _qual_prefix()
                 full_name = prefix + '::' + enum_name if prefix else enum_name
                 stack.append((depth, 'enum', enum_name, in_re))
-                if in_re and enum_name and (full_name not in enums or not enums[full_name]['values']):
-                    sz = _ENUM_SIZE.get(underlying, 4)
+                if in_re and (full_name not in enums or not enums[full_name]['values']):
+                    # A plain ``enum X {}`` prints no underlying type: int.
+                    sz = _ENUM_UNDERLYING_SIZE.get(underlying or 'int', 4)
                     cur_enum = {
                         'name': enum_name,
                         'full_name': full_name,
@@ -640,24 +1014,16 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                     cur_enum_depth = depth
                     last_enum_value = -1
                     pending_const_name = None
+                    pending_children = []
             continue
 
         # EnumConstantDecl
         if content.startswith('EnumConstantDecl ') and cur_enum:
-            if pending_const_name:
-                last_enum_value += 1
-                cur_enum['values'].append((pending_const_name, last_enum_value))
+            _finish_const()
             m = re.search(r"(\w+)\s+'", content)
             pending_const_name = m.group(1) if m else None
-            continue
-
-        # value: Int N
-        if pending_const_name and content.startswith('value: Int'):
-            m = re.match(r'value:\s+Int\s+(-?\d+)', content)
-            if m and cur_enum:
-                last_enum_value = int(m.group(1))
-                cur_enum['values'].append((pending_const_name, last_enum_value))
-            pending_const_name = None
+            pending_const_depth = depth
+            pending_children = []
             continue
 
         # TypeAliasDecl / TypedefDecl - using X = Y;  or  typedef Y X;
@@ -665,7 +1031,7 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
         # Canonical is what we want to point at.
         if content.startswith('TypeAliasDecl ') or content.startswith('TypedefDecl '):
             m = re.search(r"(?:TypeAliasDecl|TypedefDecl)\s+0x\w+\s+<[^>]*>\s+(?:<[^>]*>\s+)?(?:col:\d+\s+|line:\d+:\d+\s+)?(?:referenced\s+)?(?:implicit\s+)?(\w+)\s+'([^']*)'(?::'([^']*)')?", content)
-            if m and _is_re():
+            if m and (_is_re() or _src_is_re(content)):
                 alias_short = m.group(1)
                 canonical   = (m.group(3) or m.group(2) or '').strip()
                 if alias_short and canonical:
@@ -704,22 +1070,19 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                         'methods': {},
                         'category': _category(),
                     }
+            else:
+                # Unnamed record (lambda closure, anonymous struct/union): its
+                # methods (``operator()``) must not land on the enclosing class.
+                stack.append((depth, 'anon', '', _is_re()))
             continue
 
         # Base class specifier
         if content.startswith(('public ', 'private ', 'protected ')) and "'" in content:
             m = re.match(r"(?:public|private|protected)\s+'([^']+)'(?::'([^']*)')?", content)
             if m:
-                for s in reversed(stack):
-                    if s[1] == 'class':
-                        qn = _qual_prefix() + '::' + s[2] if _qual_prefix().endswith(s[2]) else '::'.join(ss[2] for ss in stack if ss[2])
-                        # Reconstruct full name from stack
-                        parts = [ss[2] for ss in stack if ss[1] in ('namespace', 'class') and ss[2]]
-                        fn = '::'.join(parts)
-                        if fn in ast_classes:
-                            base_name = m.group(2) or m.group(1)
-                            ast_classes[fn]['bases'].append(base_name)
-                        break
+                cls = _owner_class()
+                if cls is not None:
+                    cls['bases'].append(m.group(2) or m.group(1))
             continue
 
         # Method declarations (virtual and non-virtual)
@@ -729,36 +1092,44 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
             if m:
                 method_name = m.group(1)
                 method_sig = m.group(2)
-                parts = [s[2] for s in stack if s[1] in ('namespace', 'class') and s[2]]
-                fn = '::'.join(parts)
-                if fn in ast_classes:
-                    cls = ast_classes[fn]
-                    if method_name and '<' not in method_name:
-                        ret, params = _parse_method_sig(method_sig, root_ns)
-                        if is_virtual:
-                            cls['has_vtable'] = True
-                            existing = cls['vmethods'].get(method_name)
-                            if existing is None:
-                                cls['vmethods'][method_name] = (ret, params)
-                            elif existing != (ret, params):
-                                # Distinct C++ overload sharing the leaf name
-                                # gets its own vtable slot.  Disambiguate the
-                                # vmethods key by appending an index so the
-                                # downstream slot count matches the binary's
-                                # vtable layout — without this every overloaded
-                                # base virtual shifts subsequent slots one
-                                # earlier than the binary.  The alias is
-                                # stripped back to the leaf name when emitting
-                                # the slot label in _compute_vfuncs.
+                cls = _owner_class()
+                if cls is not None and method_name and '<' not in method_name:
+                    _note_member_name(cls, method_name)
+                    # None when the signature cannot be parsed: the method is
+                    # then recorded without one rather than as ``void f()``.
+                    parsed = _parse_method_sig(method_sig, root_ns)
+                    if is_virtual:
+                        cls['has_vtable'] = True
+                        # Every distinct declaration of a virtual in the class
+                        # body is its own vtable slot.  Overloads sharing the
+                        # leaf name get an indexed vmethods key so the
+                        # downstream slot count matches the binary's vtable
+                        # layout — without this every overloaded base virtual
+                        # shifts subsequent slots one earlier than the binary.
+                        # The alias is stripped back to the leaf name when
+                        # emitting the slot label in _compute_vfuncs.
+                        # Identity is the RAW signature text, so two overloads
+                        # whose signatures both fail to parse (or differ only
+                        # in cv-qualifiers) still count as two slots.
+                        raw_sigs = cls.setdefault('_vm_raw_sigs', {})
+                        aliases_of = cls.get('_overload_aliases', {})
+                        same_leaf = [method_name] + [
+                            k for k, leaf in aliases_of.items() if leaf == method_name]
+                        if not any(raw_sigs.get(k) == method_sig for k in same_leaf):
+                            key = method_name
+                            if key in cls['vmethods']:
                                 idx = 2
                                 while (method_name + '__overload_' + str(idx)) in cls['vmethods']:
                                     idx += 1
-                                cls['vmethods'][method_name + '__overload_' + str(idx)] = (ret, params)
-                                cls.setdefault('_overload_aliases', {})[
-                                    method_name + '__overload_' + str(idx)] = method_name
-                        if method_name not in cls['methods']:
-                            is_static = ' static' in content
-                            cls['methods'][method_name] = (ret, params, is_static)
+                                key = method_name + '__overload_' + str(idx)
+                                cls.setdefault('_overload_aliases', {})[key] = method_name
+                            cls['vmethods'][key] = parsed
+                            raw_sigs[key] = method_sig
+                            last_vm = (cls, key, depth)
+                    if parsed is not None and method_name not in cls['methods']:
+                        ret, params = parsed
+                        is_static = ' static' in content
+                        cls['methods'][method_name] = (ret, params, is_static)
             continue
 
         # Constructor declarations
@@ -767,13 +1138,12 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
             if m:
                 ctor_name = m.group(1)
                 ctor_sig = m.group(2)
-                parts = [s[2] for s in stack if s[1] in ('namespace', 'class') and s[2]]
-                fn = '::'.join(parts)
-                if fn in ast_classes:
-                    cls = ast_classes[fn]
+                cls = _owner_class()
+                if cls is not None:
                     if ctor_name == cls['name'] and ctor_name not in cls['methods']:
-                        _ret, params = _parse_method_sig(ctor_sig, root_ns)
-                        cls['methods'][ctor_name] = ('void', params, False)
+                        parsed = _parse_method_sig(ctor_sig, root_ns)
+                        if parsed is not None:
+                            cls['methods'][ctor_name] = ('void', parsed[1], False)
             continue
 
         # Free function declarations in namespaces (stored as pseudo-class methods)
@@ -798,47 +1168,151 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                     }
                 if fn and fn in ast_classes and func_name and '<' not in func_name:
                     cls = ast_classes[fn]
-                    if func_name not in cls['methods']:
-                        ret, params = _parse_method_sig(func_sig, root_ns)
-                        is_static = ' static' in content
-                        cls['methods'][func_name] = (ret, params, is_static)
+                    # Only the namespace pseudo-record may take free functions;
+                    # a real class that happens to share the name must not.
+                    if (cls.get('record_kind') == 'namespace'
+                            and func_name not in cls['methods']):
+                        parsed = _parse_method_sig(func_sig, root_ns)
+                        if parsed is not None:
+                            # A namespace-scope function has no ``this``; the
+                            # flag means "no implicit this" to the importer
+                            # (it used to prepend ``Namespace* this`` and shift
+                            # every argument register).
+                            cls['methods'][func_name] = (parsed[0], parsed[1], True)
+            continue
+
+        # ``using Base::Foo;`` declares the name ``Foo`` in this class, which
+        # fixes the position of a later ``virtual Foo`` overload group.
+        if content.startswith('UsingDecl '):
+            m = re.search(r'([A-Za-z_]\w*)\s*$', content)
+            cls = _owner_class()
+            if m and cls is not None:
+                _note_member_name(cls, m.group(1))
             continue
 
         # Virtual destructor
         if content.startswith('CXXDestructorDecl ') and ' virtual' in content:
-            parts = [s[2] for s in stack if s[1] in ('namespace', 'class') and s[2]]
-            fn = '::'.join(parts)
-            if fn in ast_classes:
-                cls = ast_classes[fn]
+            cls = _owner_class()
+            if cls is not None:
                 cls['has_vtable'] = True
                 dtor_name = '~' + cls['name']
+                _note_member_name(cls, dtor_name)
                 if dtor_name not in cls['vmethods']:
                     cls['vmethods'][dtor_name] = ('void', [])
             continue
 
-    if cur_enum and cur_enum.get('values') is not None:
-        if pending_const_name:
-            last_enum_value += 1
-            cur_enum['values'].append((pending_const_name, last_enum_value))
-        enums[cur_enum['full_name']] = cur_enum
+    if cur_enum is not None:
+        _close_enum()
 
     return enums, ast_classes, aliases
 
 
+_SIG_QUALIFIER = (
+    r'(?:__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)'
+    r'|\b(?:const|volatile|override|final|__restrict|restrict)\b'
+    r'|\bnoexcept\b(?:\s*\((?:[^()]|\([^()]*\))*\))?'
+    r'|\bthrow\s*\(\s*\)'
+    r'|&&?)')
+_SIG_TAIL_RE = re.compile(r'\s*' + _SIG_QUALIFIER + r'\s*$')
+_SIG_QUALS_ONLY_RE = re.compile(r'(?:\s*' + _SIG_QUALIFIER + r')*\s*')
+
+
+def _has_toplevel_paren(text):
+    """True when ``text`` has a parenthesis outside every template ``<>``."""
+    depth = 0
+    for ch in text:
+        if ch == '<':
+            depth += 1
+        elif ch == '>':
+            depth -= 1
+        elif ch in '()' and depth <= 0:
+            return True
+    return False
+
+
 def _parse_method_sig(sig, root_ns='RE'):
-    """Parse 'ReturnType (ParamTypes) const' into (ret_str, [(name, type_str)])."""
-    sig = sig.strip()
-    sig = re.sub(r'\)\s*(?:const|noexcept|override|\s)+$', ')', sig)
-    m = re.match(r'^(.+?)\s*\(([^)]*)\)\s*$', sig)
-    if not m:
-        return 'void', []
-    ret_raw = m.group(1).strip()
-    params_raw = m.group(2).strip()
+    """Parse a clang function type such as ``'Ret (P1, P2) const'`` into
+    ``(ret_str, [(name, type_str)])``.
+
+    Handles trailing qualifiers and calling-convention attributes
+    (``__attribute__((thiscall))`` on every x86 member function), parameters
+    that themselves contain parentheses or template commas, trailing return
+    types and C varargs (``...`` is dropped: the descriptor has no slot for it).
+
+    Returns None when the text is not a plain function type (for example a
+    function returning a function pointer, ``void (*(int))(float)``).  Callers
+    must then record *no* signature; inventing ``void f()`` hides overloads
+    and mis-types every call site.
+    """
+    sig = (sig or '').strip()
+    if not sig:
+        return None
+
+    ret_raw = None
+    # Trailing return type: ``auto (int) const -> RE::Foo``
+    if sig.startswith('auto') and '->' in sig:
+        open_idx = sig.find('(')
+        close_idx = -1
+        depth = 0
+        for i in (range(open_idx, len(sig)) if open_idx >= 0 else ()):
+            if sig[i] == '(':
+                depth += 1
+            elif sig[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    close_idx = i
+                    break
+        if close_idx > 0 and sig[:open_idx].strip() == 'auto':
+            rest = sig[close_idx + 1:]
+            arrow = rest.find('->')
+            if arrow >= 0 and _SIG_QUALS_ONLY_RE.fullmatch(rest[:arrow]):
+                ret_raw = rest[arrow + 2:].strip()
+                sig = sig[:close_idx + 1]
+
+    # Strip trailing qualifiers / attributes, in any order and number.
+    while True:
+        stripped = _SIG_TAIL_RE.sub('', sig)
+        if stripped == sig:
+            break
+        sig = stripped
+    sig = sig.rstrip()
+    if not sig.endswith(')'):
+        return None
+
+    # The parameter list is the last balanced parenthesis group.
+    depth = 0
+    open_idx = -1
+    for i in range(len(sig) - 1, -1, -1):
+        ch = sig[i]
+        if ch == ')':
+            depth += 1
+        elif ch == '(':
+            depth -= 1
+            if depth == 0:
+                open_idx = i
+                break
+    if open_idx < 0:
+        return None
+    head = sig[:open_idx].strip()
+    params_raw = sig[open_idx + 1:-1].strip()
+    # A head that still carries parentheses is a nested declarator
+    # (``void (*(int))(float)``, ``decltype(auto) ()``): not a plain signature.
+    if not head or _has_toplevel_paren(head):
+        return None
+    if ret_raw is None:
+        ret_raw = head
+    if not ret_raw or ret_raw == 'auto' or ret_raw.startswith('decltype'):
+        return None
+
     ret = _record_type_to_pipeline(ret_raw, root_ns)
     params = []
     if params_raw and params_raw != 'void':
-        for i, p in enumerate(params_raw.split(',')):
+        for i, p in enumerate(_split_tmpl_args(params_raw)):
             p = p.strip()
+            if p == '...':
+                continue
+            if not p:
+                return None
             ptype = _record_type_to_pipeline(p, root_ns)
             params.append(('p{}'.format(i), ptype))
     return ret, params
@@ -869,6 +1343,7 @@ def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
         has_vtable = False
         first_seen = False
         value_field_indents = []
+        boundaries = []   # offsets no field may span (vptrs, non-empty bases)
 
         for line in block.splitlines():
             line_r = line.rstrip()
@@ -911,6 +1386,8 @@ def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
                         bname = _qualify_type(
                             _KW_STRIP_RE.sub('', m_base.group(1)).strip(), root_ns)
                         bases.append((bname, base_off))
+                        if '(empty)' not in content:
+                            boundaries.append(base_off)
                 continue
 
             if '(empty)' in content:
@@ -919,6 +1396,9 @@ def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
             # Vtable pointer
             if 'vftable pointer' in content or 'vbtable pointer' in content:
                 has_vtable = True
+                m_off = re.match(r'^\s*(\d+)\s+\|', line_r)
+                if m_off:
+                    boundaries.append(int(m_off.group(1)))
                 continue
 
             # Field — plain offset (e.g. "  0 |") or bitfield ("0:0-7 |")
@@ -972,9 +1452,9 @@ def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
                 value_field_indents.append(indent)
 
         if type_name:
-            non_bf_fields = [f for f in fields if '_bf_bit_offset' not in f]
-            _backfill_sizes(non_bf_fields, sizeof_bytes,
-                            record_kind=record_kind, pointer_size=pointer_size)
+            _backfill_sizes(fields, sizeof_bytes,
+                            record_kind=record_kind, pointer_size=pointer_size,
+                            boundaries=boundaries)
             for f in fields:
                 if '_bf_bit_offset' in f:
                     f['type'] = 'bf:{}:{}'.format(f.pop('_bf_bit_offset'), f.pop('_bf_width'))
@@ -987,30 +1467,137 @@ def _parse_layouts_with_bases(text, root_ns='RE', pointer_size=8):
                 'record_kind': record_kind,
             }
 
+    # Struct-typed fields could only be sized by their gap above; now that
+    # every record's sizeof is known, stop them absorbing trailing padding.
+    _refine_field_sizes(results, pointer_size=pointer_size)
     return results
 
 
 
-def _backfill_sizes(fields, total_size, record_kind='struct', pointer_size=8):
-    _NATURAL = {
-        'bool': 1, 'i8': 1, 'u8': 1,
-        'i16': 2, 'u16': 2,
-        'i32': 4, 'u32': 4, 'f32': 4,
-        'i64': 8, 'u64': 8, 'f64': 8,
-        'ptr': pointer_size, 'usize': pointer_size, 'isize': pointer_size,
-    }
+_NATURAL_PRIM_SIZE = {
+    'bool': 1, 'i8': 1, 'u8': 1,
+    'i16': 2, 'u16': 2,
+    'i32': 4, 'u32': 4, 'f32': 4,
+    'i64': 8, 'u64': 8, 'f64': 8,
+}
+
+
+def _natural_size(type_desc, pointer_size=8, struct_sizes=None, enum_sizes=None):
+    """Byte size implied by a pipeline type descriptor, or None when unknown.
+
+    ``struct_sizes`` / ``enum_sizes`` map full type names to byte sizes; without
+    them only primitives, pointers, ``bytes:N`` and arrays of those resolve.
+    A zero-length array (``T[]``) is a *known* size of 0.
+    """
+    t = type_desc or ''
+    if t in _NATURAL_PRIM_SIZE:
+        return _NATURAL_PRIM_SIZE[t]
+    if t in ('usize', 'isize', 'ptr') or t.startswith('ptr:'):
+        return pointer_size
+    if t.startswith('bytes:'):
+        return int(t[6:]) if t[6:].isdigit() else None
+    if t.startswith('arr:'):
+        rest = t[4:]
+        last = rest.rfind(':')
+        if last <= 0 or not rest[last + 1:].isdigit():
+            return None
+        count = int(rest[last + 1:])
+        if count == 0:
+            return 0
+        elem = _natural_size(rest[:last], pointer_size, struct_sizes, enum_sizes)
+        return None if elem is None else elem * count
+    if t.startswith('struct:') or t.startswith('enum:'):
+        name = t.split(':', 1)[1]
+        m_width = _ENUM_WIDTH_RE.match(name) if t.startswith('enum:') else None
+        if m_width:
+            return int(m_width.group(2))      # EnumSet: the storage width
+        # Enum-typed fields come out of the record-layout dump as ``struct:``.
+        if enum_sizes and name in enum_sizes:
+            return enum_sizes[name] or None
+        if t.startswith('struct:') and struct_sizes:
+            return struct_sizes.get(name) or None   # 0 = opaque: unknown
+    return None
+
+
+def _is_bitfield(f):
+    return '_bf_bit_offset' in f or str(f.get('type', '')).startswith('bf:')
+
+
+def _backfill_sizes(fields, total_size, record_kind='struct', pointer_size=8,
+                    struct_sizes=None, enum_sizes=None, boundaries=()):
+    """Give every (non-bitfield) field a byte size.
+
+    The size comes from the field's TYPE whenever that is known; the distance
+    to the next field is only an upper bound.  A field must never absorb the
+    alignment padding that follows it: the importer types a field only when the
+    data type's length equals the recorded size, so an ``int`` enum, a 12-byte
+    struct, an array or a typed pointer that swallowed 4 bytes of padding
+    degraded to raw bytes.  Only a field whose type size is unknown falls back
+    to the gap up to the next higher offset.
+
+    ``boundaries`` are extra offsets nothing may span (vtable pointers, base
+    subobjects, bitfield units) -- used for the unknown-size fallback only.
+    """
+    offsets = sorted(set([f['offset'] for f in fields]) | set(boundaries or ()))
     for i, f in enumerate(fields):
-        if record_kind == 'union':
-            natural = _NATURAL.get(f.get('type', ''), 0)
-            f['size'] = natural or total_size
+        if _is_bitfield(f):
             continue
-        next_off = fields[i + 1]['offset'] if i + 1 < len(fields) else total_size
-        computed = max(next_off - f['offset'], 0)
-        natural = _NATURAL.get(f.get('type', ''), 0)
-        if natural and natural < computed:
+        natural = _natural_size(f.get('type', ''), pointer_size,
+                                struct_sizes, enum_sizes)
+        room = max(total_size - f['offset'], 0)
+        if record_kind == 'union':
+            f['size'] = min(natural, room) if natural else room
+            continue
+        if natural is None:
+            # Unknown type size: up to the next higher offset.  (List order is
+            # not monotonic -- members of a flattened anonymous union restart
+            # at the union's offset.)
+            higher = next((o for o in offsets if o > f['offset']), total_size)
+            f['size'] = max(min(higher, total_size) - f['offset'], 0)
+            continue
+        # Known type size.  Clamp to the next field only when that field really
+        # follows this one; a lower/equal next offset means overlapping union
+        # members, where the type size stands (it used to compute 0 and the
+        # field was dropped).
+        next_off = total_size
+        for g in fields[i + 1:]:
+            if not _is_bitfield(g):
+                next_off = g['offset']
+                break
+        limit = next_off - f['offset'] if next_off > f['offset'] else room
+        f['size'] = max(min(natural, limit), 0)
+
+
+def _refine_field_sizes(records, pointer_size=8, enum_sizes=None):
+    """Second sizing pass once every record (and enum) size is known.
+
+    ``_backfill_sizes`` runs per record while the layout dump is still being
+    read, so struct- and enum-typed fields were sized by the gap to the next
+    field.  Shrink those to the type's real size (never grow: a type larger
+    than its slot means the name resolved to the wrong type, and the gap-sized
+    field then degrades to raw bytes in the importer, which is the safe
+    outcome), and recover fields that computed to 0.
+    """
+    struct_sizes = {name: rec.get('size', 0) for name, rec in records.items()}
+    changed = 0
+    for rec in records.values():
+        total = rec.get('size', 0)
+        for f in rec.get('fields', []):
+            if _is_bitfield(f):
+                continue
+            natural = _natural_size(f.get('type', ''), pointer_size,
+                                    struct_sizes, enum_sizes)
+            if not natural:
+                continue
+            size = f.get('size', 0)
+            if size <= 0:
+                if f['offset'] + natural > total:
+                    continue
+            elif natural >= size:
+                continue
             f['size'] = natural
-        else:
-            f['size'] = computed
+            changed += 1
+    return changed
 
 
 def _split_ns(qualified):
@@ -1099,6 +1686,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
                 'vmethods': ast.get('vmethods', {}),
                 'methods': ast.get('methods', {}),
                 '_overload_aliases': dict(ast.get('_overload_aliases', {})),
+                '_vm_decl_order': list(ast.get('_vm_decl_order', [])),
+                '_vm_raw_sigs': dict(ast.get('_vm_raw_sigs', {})),
+                '_vm_overrides': list(ast.get('_vm_overrides', [])),
             }
         else:
             structs[key] = {
@@ -1113,6 +1703,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
                 'vmethods': ast.get('vmethods', {}),
                 'methods': ast.get('methods', {}),
                 '_overload_aliases': dict(ast.get('_overload_aliases', {})),
+                '_vm_decl_order': list(ast.get('_vm_decl_order', [])),
+                '_vm_raw_sigs': dict(ast.get('_vm_raw_sigs', {})),
+                '_vm_overrides': list(ast.get('_vm_overrides', [])),
             }
 
     # Add layout-only types (templates, types not in AST class list)
@@ -1135,6 +1728,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
         vmethods = {}
         methods  = {}
         aliases  = {}
+        decl_order = []
+        raw_sigs = {}
+        overrides = []
         has_vtbl = ldata['has_vtable']
         if '<' in lname:
             tmpl_base = _strip_outer_template(lname)
@@ -1145,6 +1741,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
                 vmethods = dict(tmpl_def.get('vmethods', {}))
                 methods  = dict(tmpl_def.get('methods',  {}))
                 aliases  = dict(tmpl_def.get('_overload_aliases', {}))
+                decl_order = list(tmpl_def.get('_vm_decl_order', []))
+                raw_sigs = dict(tmpl_def.get('_vm_raw_sigs', {}))
+                overrides = list(tmpl_def.get('_vm_overrides', []))
                 has_vtbl = has_vtbl or tmpl_def.get('has_vtable', False)
 
         structs[lname] = {
@@ -1160,6 +1759,9 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
             'vmethods': vmethods,
             'methods':  methods,
             '_overload_aliases': aliases,
+            '_vm_decl_order': decl_order,
+            '_vm_raw_sigs': raw_sigs,
+            '_vm_overrides': overrides,
         }
 
     return structs
@@ -1229,6 +1831,63 @@ def _compute_vfuncs(structs, root_ns='RE'):
         vmname_cache[full_name] = frozen
         return frozen
 
+    inherited_cache = {}
+
+    def inherited_vmethod_sigs(full_name, depth=0):
+        """Virtual methods declared anywhere in ``full_name``'s bases (primary
+        AND secondary chains), excluding its own: leaf name -> set of
+        ``(raw clang signature, parameter count)``, each None when unknown."""
+        if depth > 30:
+            return {}
+        if full_name in inherited_cache:
+            return inherited_cache[full_name]
+        inherited_cache[full_name] = {}
+        st = structs.get(full_name)
+        if not st:
+            return {}
+        result = {}
+        for base_name in st.get('bases', []):
+            bs = resolve(base_name)
+            if bs and bs['full_name'] != full_name:
+                aliases = bs.get('_overload_aliases', {})
+                raw_sigs = bs.get('_vm_raw_sigs', {})
+                for key, parsed in bs.get('vmethods', {}).items():
+                    result.setdefault(aliases.get(key, key), set()).add(
+                        (raw_sigs.get(key), len(parsed[1]) if parsed else None))
+                for leaf, sigs in inherited_vmethod_sigs(bs['full_name'], depth + 1).items():
+                    result.setdefault(leaf, set()).update(sigs)
+        inherited_cache[full_name] = result
+        return result
+
+    def overrides_inherited(st, key, inherited):
+        """True when ``st``'s virtual ``key`` overrides a same-named virtual of
+        a base outside the primary chain (``inherited``: see above).
+
+        A name match alone is not enough: ``virtual void s(float)`` next to a
+        secondary base's ``virtual void s()`` is a new overload with its own
+        primary slot.  clang's ``Overrides:`` marker is authoritative; without
+        one, signatures decide.  The raw text is only conclusive for a class
+        parsed as written: an instantiation carries its template's text
+        (``const T &`` vs the base's ``const E &``), and a dependent base hides
+        the override from clang, so there only a different parameter count
+        rules the override out.
+        """
+        sigs = inherited.get(st.get('_overload_aliases', {}).get(key, key))
+        if not sigs:
+            return False
+        if key in st.get('_vm_overrides', ()):
+            return True
+        own_raw = st.get('_vm_raw_sigs', {}).get(key)
+        if own_raw is None or any(raw is None for raw, _count in sigs):
+            return True     # nothing to compare: keep the name match
+        if any(raw == own_raw for raw, _count in sigs):
+            return True
+        if '<' not in st['full_name']:
+            return False
+        own = st.get('vmethods', {}).get(key)
+        own_count = len(own[1]) if own else None
+        return own_count is None or any(count in (None, own_count) for _raw, count in sigs)
+
     def total_slots(full_name, depth=0):
         if depth > 30:
             return 0
@@ -1250,10 +1909,69 @@ def _compute_vfuncs(structs, root_ns='RE'):
             if bs:
                 primary_base_names = all_vmethod_names(bs['full_name'])
             break
-        own_intro = sum(1 for n in st.get('vmethods', {}) if n not in primary_base_names)
+        own_intro = len(introduced(st, primary_base_names))
         result = base_count + own_intro
         slot_cache[full_name] = result
         return result
+
+    def introduced(st, primary_base_names):
+        """vmethods keys that take a NEW slot in ``st``'s primary vtable.
+
+        A destructor never does when the primary base chain already has a
+        virtual destructor: ``~Derived`` overrides ``~Base``'s slot even though
+        the names differ (counting it shifted every later slot by one).
+        """
+        # An override of a SECONDARY base's virtual lives in that base's
+        # vftable; it does not append a slot to the primary one either.
+        inherited = inherited_vmethod_sigs(st['full_name'])
+        base_has_dtor = any(n.startswith('~') for n in primary_base_names) or any(
+            n.startswith('~') for n in inherited)
+        intro = [n for n in st.get('vmethods', {})
+                 if n not in primary_base_names
+                 and not overrides_inherited(st, n, inherited)
+                 and not (base_has_dtor and n.startswith('~'))]
+        # MSVC slot order for NEW virtuals: overloads are grouped by name, the
+        # groups ordered by the first declaration of that name in the class
+        # (virtual or not), and each group laid out in REVERSE declaration
+        # order.  Matches clang's -fdump-vtable-layouts.
+        aliases = st.get('_overload_aliases', {})
+        leafs = [aliases.get(n, n) for n in intro]
+        if len(intro) < 2:
+            return intro
+        decl_pos = {}
+        for i, n in enumerate(st.get('_vm_decl_order') or ()):
+            decl_pos.setdefault(n, i)
+        first_seen = {}
+        for i, leaf in enumerate(leafs):
+            first_seen.setdefault(leaf, i)
+        if any(leaf not in decl_pos for leaf in leafs):
+            decl_pos = first_seen
+        ranked = sorted(range(len(intro)),
+                        key=lambda i: (decl_pos[leafs[i]], -i))
+        return [intro[i] for i in ranked]
+
+    def dtor_slot(full_name, depth=0):
+        """Primary-vtable slot index of the virtual destructor, or None."""
+        if depth > 30:
+            return None
+        st = structs.get(full_name)
+        if not st:
+            return None
+        base_names = frozenset()
+        base_start = 0
+        for base_name in st.get('bases', []):
+            bs = resolve(base_name)
+            if bs:
+                inherited = dtor_slot(bs['full_name'], depth + 1)
+                if inherited is not None:
+                    return inherited
+                base_names = all_vmethod_names(bs['full_name'])
+                base_start = total_slots(bs['full_name'])
+            break
+        for i, n in enumerate(introduced(st, base_names)):
+            if n.startswith('~'):
+                return base_start + i
+        return None
 
     count = 0
     for st in structs.values():
@@ -1272,17 +1990,26 @@ def _compute_vfuncs(structs, root_ns='RE'):
                 primary_base_names = all_vmethod_names(bs['full_name'])
                 base_start = total_slots(bs['full_name'])
             break
-        intro = [n for n in st.get('vmethods', {}) if n not in primary_base_names]
-        if not intro:
-            continue
+        intro = introduced(st, primary_base_names)
         # Strip overload-disambiguation suffixes (Name__overload_N) before
         # emitting slot labels.  The alias only exists so the vtable slot
         # count matches the binary; the user-visible name is the leaf name.
         aliases = st.get('_overload_aliases', {})
-        st['vfuncs'] = [
+        vfuncs = [
             (aliases.get(mname, mname), (base_start + i) * 8)
             for i, mname in enumerate(intro)
         ]
+        # An own virtual destructor overriding the base's relabels that slot
+        # (same result as the clang vtable-dump path).
+        own_dtors = [n for n in st.get('vmethods', {})
+                     if n.startswith('~') and n not in intro]
+        if own_dtors:
+            slot = dtor_slot(st['full_name'])
+            if slot is not None:
+                vfuncs.insert(0, (own_dtors[0], slot * 8))
+        if not vfuncs:
+            continue
+        st['vfuncs'] = vfuncs
         count += 1
 
     print('Computed vtable slots for {} structs from AST'.format(count))
@@ -1398,6 +2125,20 @@ def _is_safe_template_name(name: str) -> bool:
     return True
 
 
+def _strip_all_template_args(name):
+    """``RE::BSTArray<int, A<1>>::iterator`` -> ``RE::BSTArray::iterator``."""
+    out = []
+    depth = 0
+    for ch in name:
+        if ch == '<':
+            depth += 1
+        elif ch == '>':
+            depth -= 1
+        elif depth == 0:
+            out.append(ch)
+    return ''.join(out)
+
+
 def _resolve_aliases_in_descriptor(desc: str, alias_map, class_scope=None) -> str:
     """Rewrite a pipeline type descriptor by following alias chains.
 
@@ -1424,6 +2165,11 @@ def _resolve_aliases_in_descriptor(desc: str, alias_map, class_scope=None) -> st
         return 'arr:{}:{}'.format(inner, rest[last + 1:])
     if desc.startswith('struct:') or desc.startswith('enum:'):
         prefix, name = desc.split(':', 1)
+        width = ''
+        m_width = _ENUM_WIDTH_RE.match(name) if prefix == 'enum' else None
+        if m_width:
+            # ``enum:<E>:<width>`` (EnumSet): resolve E, keep the width.
+            name, width = m_width.group(1), ':' + m_width.group(2)
         # Try class-scope-qualified form first, so a method on RE::Foo that
         # mentions a typedef declared in RE::Foo (which the AST emitted as
         # `RE::TypedefName`) can hit the alias key `RE::Foo::TypedefName`.
@@ -1432,11 +2178,37 @@ def _resolve_aliases_in_descriptor(desc: str, alias_map, class_scope=None) -> st
             scoped = class_scope + '::' + short
             if scoped in alias_map and scoped != name:
                 name = scoped
+            elif '<' not in name and name.count('::') <= 1:
+                # (Only for a bare name -- ``size_type`` printed unqualified
+                # and then root-prefixed -- never for an explicitly qualified
+                # ``Other<X>::iterator``.)
+                # Methods of ``Tmpl<Args>`` are copies of the template
+                # definition's, whose class-local typedefs were recorded as
+                # ``Tmpl::size_type`` (members of an instantiation are never
+                # parsed).  Look the short name up there, then in the
+                # enclosing classes, as C++ name lookup would.
+                parts = _split_ns(_strip_all_template_args(class_scope))
+                for n_parts in range(len(parts), 1, -1):
+                    scoped = '::'.join(parts[:n_parts]) + '::' + short
+                    if scoped in alias_map and scoped != name:
+                        name = scoped
+                        break
         seen = set()
+        resolved = False
         while name in alias_map and name not in seen:
             seen.add(name)
             name = alias_map[name]
-        return prefix + ':' + name
+            resolved = True
+        if resolved:
+            # The alias target may be a primitive or an array (``using
+            # FormID = std::uint32_t``): map it like any other type instead of
+            # keeping the ``struct:`` prefix (``struct:unsigned int`` became an
+            # 8-byte pointer parameter).  The target is already qualified.
+            mapped = _record_type_to_pipeline(name, None)
+            if not mapped.startswith('struct:'):
+                return mapped
+            name = mapped[len('struct:'):]
+        return prefix + ':' + name + width
     return desc
 
 
@@ -1461,6 +2233,8 @@ def _apply_aliases_to_structs(structs, alias_map, verbose=False):
                 rewrites += 1
         # vmethods: { name: (ret, params) }
         for mname, info in list(st.get('vmethods', {}).items()):
+            if info is None:        # unparseable signature: slot only
+                continue
             ret, params = info
             new_ret    = _resolve_aliases_in_descriptor(ret, alias_map, class_scope=cls)
             new_params = [(pn, _resolve_aliases_in_descriptor(pt, alias_map, class_scope=cls))
@@ -1498,8 +2272,13 @@ def _pick_virtual_method_for_addr(structs, full_name, root_ns, depth=0):
     st = structs.get(full_name)
     if not st:
         return None
+    overloaded = set(st.get('_overload_aliases', {}).values())
     for vm in st.get('vmethods', {}):
         if vm.startswith(_VTABLE_BAD_METHOD_PREFIX):
+            continue
+        # ``&Class::Name`` is ambiguous for an overloaded virtual (and the
+        # ``Name__overload_N`` keys are not C++ names at all).
+        if vm in overloaded or '__overload_' in vm:
             continue
         if _OPERATOR_RE.match(vm):
             continue
@@ -1565,12 +2344,17 @@ def _parse_vtable_dump(text, root_ns):
     indices_re = re.compile(r"^VFTable indices for '([^']+)'")
     slot_re    = re.compile(r"^\s*(\d+)\s*\|\s*(.+?)\s*$")
     adj_re     = re.compile(r'\[this adjustment:\s*(-?\d+)\s+non-virtual\]')
+    # ``-- accessible via vfptr at offset N --`` (optionally preceded by
+    # ``vbtable index I,``) splits a class's indices by the vfptr they live in.
+    vfptr_re   = re.compile(
+        r'--\s*accessible via\s+(vbtable index\s+\d+,\s*)?vfptr at offset\s+(\d+)\s*--')
 
     state           = None     # 'indices' | 'full_block' | None
     cur_class       = None
     cur_full_class  = None
     cur_subobj_off  = 0
     cur_slots       = []
+    in_primary_vfptr = True   # within 'indices': current group is the vfptr at offset 0
 
     def flush_secondary():
         nonlocal cur_full_class, cur_subobj_off, cur_slots
@@ -1602,6 +2386,8 @@ def _parse_vtable_dump(text, root_ns):
             cur_class = m_idx.group(1)
             primary.setdefault(cur_class, [])
             state = 'indices'
+            # No group header at all means every index is in the vfptr at 0.
+            in_primary_vfptr = True
             continue
 
         m_for = for_re.match(ln)
@@ -1618,10 +2404,20 @@ def _parse_vtable_dump(text, root_ns):
             continue
 
         if state == 'indices':
-            if ln.lstrip().startswith(('--', '[')):
+            if ln.lstrip().startswith('--'):
+                # Slots listed under a secondary vfptr restart at 0; merging
+                # them into the primary list renamed primary slots (slot 0,
+                # the destructor, became the secondary base's first method).
+                m_grp = vfptr_re.search(ln)
+                in_primary_vfptr = bool(
+                    m_grp and not m_grp.group(1) and int(m_grp.group(2)) == 0)
+                continue
+            if ln.lstrip().startswith('['):
                 continue
             m_slot = slot_re.match(ln)
             if not m_slot:
+                continue
+            if not in_primary_vfptr:
                 continue
             sig = m_slot.group(2)
             if sig.startswith('[') or 'this adjustment' in sig:
@@ -1795,8 +2591,11 @@ def _apply_vtable_dump(structs, vtable_layouts, root_ns, verbose=False):
         for slot_idx, mname in slots:
             if mname in own_vms:
                 clang_own.append((mname, slot_idx * 8))
-        if not clang_own:
-            continue
+        # The class has a ``VFTable indices`` block, so clang's answer is
+        # complete for its own declarations -- also when it is EMPTY (every own
+        # virtual overrides a secondary base, so none sits in the vfptr at
+        # offset 0).  Falling back to the AST count there would append those
+        # overrides to the primary table as new slots.
         st['vfuncs'] = clang_own
         st['_vfuncs_from_dump'] = True
         replaced += 1
@@ -1850,11 +2649,22 @@ def _strip_anonymous_types(structs: dict, verbose: bool = False) -> int:
             rest = desc[4:]
             last = rest.rfind(':')
             if last > 0 and rest[last+1:].isdigit():
-                inner = _rewrite(rest[:last], None)
+                elem = rest[:last]
                 count = rest[last+1:]
-                if inner.startswith('struct:') or inner == 'ptr' or inner == '':
-                    return 'arr:u8:{}'.format(int(count))
-                return 'arr:{}:{}'.format(inner, count)
+                # Arrays of named types are left alone: only an ANONYMOUS
+                # element needs rewriting (``arr:struct:RE::NiPoint3:4`` used
+                # to become ``arr:u8:4`` -- the element COUNT written as a byte
+                # length -- for every struct/pointer element).
+                if not _name_is_anonymous(elem):
+                    return desc
+                if elem.startswith('ptr'):
+                    # pointers to an anonymous type: keep the pointer elements
+                    return 'arr:{}:{}'.format(_rewrite(elem, None), count)
+                # By-value anonymous elements: opaque bytes of the field's
+                # BYTE size (never the element count).
+                if byte_size and byte_size > 0:
+                    return 'bytes:{}'.format(byte_size)
+                return 'bytes:0'
         if desc.startswith('struct:'):
             ref = desc[7:]
             if _name_is_anonymous(ref):
@@ -1876,6 +2686,8 @@ def _strip_anonymous_types(structs: dict, verbose: bool = False) -> int:
         for mdict_key in ('vmethods', 'methods'):
             mdict = st.get(mdict_key) or {}
             for mname, info in list(mdict.items()):
+                if info is None:    # unparseable signature: slot only
+                    continue
                 if mdict_key == 'vmethods':
                     ret, params = info
                 else:
@@ -1958,13 +2770,20 @@ def _collect_descriptor_refs(structs):
             last = rest.rfind(':')
             if last > 0 and rest[last+1:].isdigit():
                 visit(rest[:last]); return
-        if t.startswith('struct:') or t.startswith('enum:'):
-            refs.add(t.split(':', 1)[1])
+        if t.startswith('struct:'):
+            refs.add(t[len('struct:'):])
+        elif t.startswith('enum:'):
+            name = t[len('enum:'):]
+            m_width = _ENUM_WIDTH_RE.match(name)
+            refs.add(m_width.group(1) if m_width else name)
 
     for st in structs.values():
         for f in st.get('fields', []):
             visit(f.get('type', ''))
-        for ret, params in st.get('vmethods', {}).values():
+        for info in st.get('vmethods', {}).values():
+            if info is None:        # unparseable signature: slot only
+                continue
+            ret, params = info
             visit(ret)
             for _pn, pt in params:
                 visit(pt)
@@ -2179,6 +2998,12 @@ def _propagate_template_methods(structs, ast_classes, root_ns='RE'):
             st['vmethods'] = dict(tmpl_def.get('vmethods', {}))
             if tmpl_def.get('_overload_aliases'):
                 st['_overload_aliases'] = dict(tmpl_def.get('_overload_aliases', {}))
+            if tmpl_def.get('_vm_decl_order'):
+                st['_vm_decl_order'] = list(tmpl_def.get('_vm_decl_order', []))
+            if tmpl_def.get('_vm_raw_sigs'):
+                st['_vm_raw_sigs'] = dict(tmpl_def.get('_vm_raw_sigs', {}))
+            if tmpl_def.get('_vm_overrides'):
+                st['_vm_overrides'] = list(tmpl_def.get('_vm_overrides', []))
         if not st.get('methods'):
             st['methods']  = dict(tmpl_def.get('methods', {}))
         if tmpl_def.get('has_vtable'):
@@ -2310,8 +3135,9 @@ def collect_types(header_path, include_path, parse_args,
         print('ERROR: clang.exe not found. Install LLVM or set PATH.')
         sys.exit(1)
 
+    version = require_pinned_clang(clang_binary)
     if verbose:
-        print('Using clang: {}'.format(clang_binary))
+        print('Using clang {}: {}'.format(version, clang_binary))
 
     parse_args, abi = _normalize_abi_args(parse_args, target_arch)
     if verbose:
@@ -2451,6 +3277,13 @@ def collect_types(header_path, include_path, parse_args,
 
     # --- Re-run vfunc computation so newly-populated vmethods get vtable slots.
     _compute_vfuncs(structs, root_ns=root_namespace)
+
+    # --- Final field sizing: enum sizes (AST) and forced/propagated template
+    # layouts are only known now.  Must precede the anonymous-type strip,
+    # which turns a field's byte size into ``bytes:N``.
+    _refine_field_sizes(
+        structs, pointer_size=abi['pointer_size'],
+        enum_sizes={name: e.get('size', 0) for name, e in enums.items()})
 
     # --- Strip clang-internal anonymous types (lambdas, unnamed structs) ---
     # Their names embed absolute paths (``(lambda at D:\path\file.h:LINE:COL)``)

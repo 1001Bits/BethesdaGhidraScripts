@@ -205,7 +205,7 @@ def run():
     rows.sort(key=lambda r: (r[0], int(r[1], 16)))
     if not os.path.isdir(os.path.dirname(out_csv)):
         os.makedirs(os.path.dirname(out_csv))
-    with open(out_csv, 'w', newline='') as fh:
+    with open(out_csv, 'w', newline='', encoding='utf-8') as fh:
         w = csv.writer(fh)
         w.writerow(['hkclass', 'offset', 'type', 'member', 'object_size'])
         for r in rows:
@@ -213,4 +213,9 @@ def run():
     print('  -> reflection PRESENT; wrote %s' % out_csv)
 
 
-run()
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('havok_mine'))

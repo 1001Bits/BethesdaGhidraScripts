@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Identity-pinned staged analysis for Fallout 4 Creation Kit 1.11.137.0.
 
-The stages are deliberately separate so the ExampleProject project is saved and the
+The stages are deliberately separate so the Combined project is saved and the
 JVM is released between expensive passes.  No stage will operate on a Program
 whose import-time identity and live layout do not match the exact Steam PE.
 
@@ -31,7 +31,7 @@ CORE_DIR = REPO_DIR / "scripts" / "core"
 GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
 
 DEFAULT_PROJECT_DIR = Path(r"C:\GhidraProjects")
-DEFAULT_PROJECT_NAME = "ExampleProject"
+DEFAULT_PROJECT_NAME = "Combined"
 DEFAULT_SOURCE = Path(
     r"C:\games\steam\steamapps\common\Fallout 4\CreationKit.exe")
 FOLDER_PATH = "/Creation Kit"
@@ -55,6 +55,7 @@ AGGRESSIVE_OPTION = "Aggressive Instruction Finder"
 
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 from binary_identity import (  # noqa: E402
     canonical_identity,
@@ -62,7 +63,8 @@ from binary_identity import (  # noqa: E402
     manifest_matches,
     verify_ghidra_program,
 )
-from pyghidra_result import end_outer_transaction  # noqa: E402
+from pyghidra_result import (end_outer_transaction,  # noqa: E402
+                             require_driver_completion)
 
 
 def _expected_identity() -> dict:
@@ -189,7 +191,7 @@ def _open_target(project, manifest: dict, consumer, monitor, *, update: bool):
     domain_file = _find_file(project.getProjectData().getRootFolder(), PROGRAM_PATH)
     if domain_file is None:
         raise RuntimeError("{} is not present in the project".format(PROGRAM_PATH))
-    program = domain_file.getDomainObject(consumer, update, False, monitor)
+    program = open_program(domain_file, consumer, monitor, write=update)
     verify_ghidra_program(program, [manifest])
     return program
 
@@ -204,7 +206,7 @@ def _import_target(project, source: Path, manifest: dict, monitor) -> None:
     existing = _find_file(root, PROGRAM_PATH)
     if existing is not None:
         consumer = java.lang.Object()
-        program = existing.getDomainObject(consumer, True, False, monitor)
+        program = open_program(existing, consumer, monitor, write=True)
         try:
             verify_ghidra_program(program, [manifest])
             from ghidra.program.model.listing import Program
@@ -244,7 +246,7 @@ def _import_target(project, source: Path, manifest: dict, monitor) -> None:
     log = MessageLog()
     # AutoImporter may enable dependency discovery based on saved/import UI
     # state.  CreationKit imports several adjacent and system DLLs; pulling
-    # those into ExampleProject is both out of scope and extremely expensive because
+    # those into Combined is both out of scope and extremely expensive because
     # each PE has its own exception table.  Bind the PE loader explicitly and
     # fail closed with both library-loading paths disabled.
     results = (ProgramLoader.builder()
@@ -273,7 +275,7 @@ def _import_target(project, source: Path, manifest: dict, monitor) -> None:
         raise RuntimeError("import completed but {} was not created".format(PROGRAM_NAME))
 
     consumer = java.lang.Object()
-    program = renamed.getDomainObject(consumer, True, False, monitor)
+    program = open_program(renamed, consumer, monitor, write=True)
     try:
         tx = program.startTransaction("Bind Fallout 4 Creation Kit identity")
         commit = False
@@ -349,6 +351,8 @@ def _run_unwind(project, manifest: dict, monitor) -> None:
             print(stdout.rstrip())
         if stderr and stderr.strip():
             raise RuntimeError("PE unwind script failed:\n" + stderr.strip())
+        # Never bind the "pe-unwind" stage for a driver that did not execute.
+        require_driver_completion(stdout, "pe_unwind_enrich")
         tx = program.startTransaction("Record PE unwind stage")
         commit = False
         try:
@@ -393,6 +397,7 @@ def _run_ckpe(project, manifest: dict, monitor, *, apply: bool,
         if stdout:
             print(stdout.rstrip())
         require_script_success(stderr, "Fallout 4 CKPE evidence")
+        require_driver_completion(stdout, "apply_fallout4_ckpe_evidence")
         if apply:
             program.save("exact Fallout 4 CKPE annotations", monitor)
             print("CKPE annotation checkpoint saved")
@@ -533,8 +538,7 @@ def main(argv=None) -> int:
     from ghidra.util.task import ConsoleTaskMonitor
 
     monitor = ConsoleTaskMonitor()
-    with pyghidra.open_project(
-            args.project_dir, args.project_name, create=False) as project:
+    with open_user_project(args.project_dir, args.project_name) as project:
         if args.stage == "import":
             _import_target(project, args.source, manifest, monitor)
         elif args.stage == "analyze":

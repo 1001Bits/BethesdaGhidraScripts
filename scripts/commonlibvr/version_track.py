@@ -19,12 +19,12 @@ running tool's open Version Tracking session. Pairs are taken from the generated
 CommonLibImport_CLVR_VR.py SYMBOLS (it already carries s/a/v for all runtimes).
 """
 import csv
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clvr_config import IMPORT_PATH, SCRIPT_DIR  # noqa: E402
+from generated_symbols import load_symbols  # noqa: E402
 AUDIT_CSV = os.environ.get('VT_AUDIT_CSV', IMPORT_PATH + '.vt_audit.csv')
 APPLY = os.environ.get('VT_APPLY', 'dry').lower() == 'go'
 
@@ -35,11 +35,21 @@ _spec.loader.exec_module(vt_plan)
 
 
 def _load_symbols():
-    with open(IMPORT_PATH) as f:
-        for line in f:
-            if line.startswith('SYMBOLS = '):
-                return json.loads(line[len('SYMBOLS = '):])
-    raise RuntimeError('SYMBOLS not found in ' + IMPORT_PATH)
+    return load_symbols(IMPORT_PATH)
+
+
+def destination_key(program_name):
+    """Offset key for a destination program, only for the exact builds CLVR maps.
+
+    The symbols carry ``a`` offsets for AE 1.6.1170 alone and ``v`` for VR
+    1.4.15; 1.6.640, 1.7.x and GOG builds have no offsets here.
+    """
+    name = program_name.replace('.', '_')
+    if 'VR' in name and '1_4_15' in name:
+        return 'v'
+    if '1_6_1170' in name:
+        return 'a'
+    return None
 
 
 def _resolve_sessions():
@@ -126,13 +136,10 @@ def run():
     audit_rows = []
     for sess in sessions:
         sname = sess.getDestinationProgram().getName()
-        # choose the runtime offset for the destination program
-        if 'VR' in sname:
-            dst_key = 'v'
-        elif '1170' in sname or 'AE' in sname:
-            dst_key = 'a'
-        else:
-            continue   # not a runtime we map
+        dst_key = destination_key(sname)
+        if dst_key is None:
+            print('VT skip %s: no CommonLib offsets for that build' % sname)
+            continue
         label = 'SE->' + ('VR' if dst_key == 'v' else 'AE')
         process_session(sess, symbols, 's', dst_key, label, audit_rows)
 
@@ -144,4 +151,5 @@ def run():
     print('VT audit conflicts: %d -> %s' % (len(audit_rows), AUDIT_CSV))
 
 
-run()
+if __name__ == '__main__':   # PyGhidra runs scripts as __main__
+    run()

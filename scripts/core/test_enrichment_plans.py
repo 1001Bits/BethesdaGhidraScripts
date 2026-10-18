@@ -4,14 +4,27 @@ string_anchor_match).  No Ghidra required -- run with::
     python scripts/core/test_enrichment_plans.py
     # or: pytest scripts/core/test_enrichment_plans.py
 """
+import importlib.util
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 
-import ctor_plan
-import globals_plan
-import string_anchor_match as sam
+
+def _load(name):
+    # core/ and commonlibvr/ both ship a ctor_plan / globals_plan; import by
+    # path under a private name so a full-suite run never mixes them up.
+    spec = importlib.util.spec_from_file_location(
+        'core_test_' + name, os.path.join(HERE, name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ctor_plan = _load('ctor_plan')
+globals_plan = _load('globals_plan')
+sam = _load('string_anchor_match')
 
 
 # --------------------------------------------------------------------------
@@ -30,8 +43,13 @@ def test_is_ctor():
 def test_field_label():
     assert ctor_plan.field_label('a_object') == 'object'
     assert ctor_plan.field_label('p_count') == 'count'
-    assert ctor_plan.field_label('param_3') is None or \
-        ctor_plan.field_label('param_3') == '3'   # param_ prefix stripped -> '3' digit
+    # param_ prefix stripped -> '3': never a field name.
+    assert ctor_plan.field_label('param_3') is None
+    assert ctor_plan.field_label('param3') is None
+    assert ctor_plan.field_label('a_2') is None
+    assert ctor_plan.field_label('a_x[1]') is None
+    assert ctor_plan.field_label('a_obj ref') is None
+    assert ctor_plan.field_label('a__count2') == '_count2'
     # noise names drop
     assert ctor_plan.field_label('this') is None
     assert ctor_plan.field_label('a_') is None

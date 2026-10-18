@@ -129,3 +129,84 @@ def test_registration_never_overwrites_nondefault_symbol_source():
     assert not rh._is_overwritable(
         Function("FUN_140001000", "USER_DEFINED"), "DEFAULT")
     assert not rh._is_overwritable(Function("sub_140001000", "DEFAULT"), "DEFAULT")
+
+
+def test_registration_resolves_the_decompiler_global_reference_shape(monkeypatch):
+    """String literals and handlers arrive as PTRSUB(const 0, const VA)."""
+    import sys
+    import types
+
+    class PcodeOp:
+        COPY, CAST, PTRSUB, INT_ADD, PTRADD = 1, 2, 3, 4, 5
+
+    module = types.ModuleType("ghidra.program.model.pcode")
+    module.PcodeOp = PcodeOp
+    for name in ("ghidra", "ghidra.program", "ghidra.program.model"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "ghidra.program.model.pcode", module)
+
+    class Space:
+        def equals(self, other):
+            return self is other
+
+        def getAddress(self, offset):
+            return Address(self, offset)
+
+    class Address:
+        def __init__(self, space, offset):
+            self.space, self.offset = space, offset
+
+        def getAddressSpace(self):
+            return self.space
+
+        def getOffset(self):
+            return self.offset
+
+        def add(self, delta):
+            return Address(self.space, self.offset + delta)
+
+    class Memory:
+        @staticmethod
+        def contains(_address):
+            return True
+
+    class Op:
+        def __init__(self, opcode, *inputs):
+            self.opcode, self.inputs = opcode, inputs
+
+        def getOpcode(self):
+            return self.opcode
+
+        def getInput(self, index):
+            return self.inputs[index]
+
+        def getNumInputs(self):
+            return len(self.inputs)
+
+    class Varnode:
+        def __init__(self, constant=None, definition=None):
+            self.constant, self.definition = constant, definition
+
+        def isAddress(self):
+            return False
+
+        def isConstant(self):
+            return self.constant is not None
+
+        def getOffset(self):
+            return self.constant
+
+        def getDef(self):
+            return self.definition
+
+    space = Space()
+    reference = Varnode(definition=Op(
+        PcodeOp.PTRSUB, Varnode(constant=0), Varnode(constant=0x140002000)))
+    resolved = rh._resolve_address(
+        reference, space, Memory(), 0x140000000, 0x140010000)
+    assert resolved.getOffset() == 0x140002000
+
+    outside = Varnode(definition=Op(
+        PcodeOp.PTRSUB, Varnode(constant=0), Varnode(constant=0x20)))
+    assert rh._resolve_address(
+        outside, space, Memory(), 0x140000000, 0x140010000) is None

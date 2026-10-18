@@ -21,7 +21,8 @@ CORE_DIR    = REPO_DIR / "scripts" / "core"
 sys.path.insert(0, str(CORE_DIR))
 from importer_binding import ImporterBindingError, verify_importer_for_program
 from pyghidra_result import end_outer_transaction, require_script_success
-from ghidra_project import open_user_project
+from ghidra_project import (find_program_by_name, open_program,
+                            open_user_project)
 
 PROJECT_DIR  = Path(r"C:/GhidraProjects/Starfield")
 PROJECT_NAME = "StarfieldProject"
@@ -63,31 +64,19 @@ def main():
         # Walk for the program domain file (recursive in case it sits under
         # a folder like /starfield/sf/ or /Starfield 1.6.34/).  Also match
         # Steamless-unpacked variants (Starfield.exe.unpacked.exe etc).
-        stem = program_name.rsplit('.', 1)[0]
-
-        def find(folder, prefix=""):
-            for f in folder.getFiles():
-                n = f.getName()
-                full = prefix + "/" + n
-                if target_path is not None:
-                    if full == target_path:
-                        return f
-                elif n == program_name or (n.startswith(stem) and n.lower().endswith('.exe')):
-                    return f
-            for sub in folder.getFolders():
-                hit = find(sub, prefix + "/" + sub.getName())
-                if hit is not None:
-                    return hit
-            return None
-
-        domain_file = find(root)
+        # Several matching builds is an error, never "the first one found".
+        try:
+            domain_file = find_program_by_name(root, program_name, target_path)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
         if domain_file is None:
             print(f"ERROR: {program_name} not found in project tree")
             sys.exit(1)
         print(f"Found program: {domain_file.getPathname()}")
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, True, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=True)
         try:
             try:
                 verify_importer_for_program(script_path, program)

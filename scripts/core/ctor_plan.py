@@ -15,6 +15,9 @@ so it is unit-testable.
 import re
 
 _ARG_PREFIX = re.compile(r'^(?:a_|p_|param_?)', re.IGNORECASE)
+# A proposed field name must be a C identifier: ``param_2`` minus its prefix is
+# ``2``, which named real struct members ``2`` before this check.
+_IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # Generic decompiler-invented arg names that carry no field meaning.
 _NOISE = {'this', 'param', 'arg', 'a', 'p', 'x', 'in', 'out', 'result', 'retval'}
 
@@ -43,13 +46,14 @@ def field_label(param_name):
     """Constructor parameter name -> field name.
 
     Drops the ``a_``/``p_`` arg prefix ('a_object' -> 'object').  Returns
-    None for absent or noise-only names so the driver keeps the type but
-    not a meaningless name.
+    None for absent or noise-only names, and for anything that is not a valid
+    identifier (``param_2`` -> ``2``, ``param_3[1]``), so the driver keeps the
+    type but not a meaningless or invalid name.
     """
     if not param_name:
         return None
     n = _ARG_PREFIX.sub('', param_name).strip()
-    if not n or n.lower() in _NOISE:
+    if not n or n.lower() in _NOISE or not _IDENTIFIER.match(n):
         return None
     return n
 

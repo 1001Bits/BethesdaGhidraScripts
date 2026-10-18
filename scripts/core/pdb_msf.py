@@ -13,6 +13,7 @@ import bisect
 from dataclasses import dataclass
 import struct
 import uuid
+import warnings
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -20,8 +21,17 @@ from typing import Optional, Sequence, Tuple
 MSF7_MAGIC = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00"
 S_PUB32 = 0x110E
 NIL_STREAM = 0xFFFF
+# A real MSVC PDB carries a handful of absolute (segment 0) publics.  Many
+# more than that means the section-header stream does not describe this PDB's
+# symbols, so the corpus is refused instead of silently thinned.
+MAX_SKIPPED_PUBLICS = 64
+MAX_SKIPPED_PUBLICS_FRACTION = 0.01
 DBI_HEADER = struct.Struct("<iIIHHHHHHiiiiiIiiHHI")
 SECTION_HEADER_SIZE = 40
+
+
+class SkippedPublicsWarning(UserWarning):
+    """Some ``S_PUB32`` records have no image section and were not imported."""
 
 
 class PDBMSFError(ValueError):
@@ -68,6 +78,10 @@ class PDBPublicCorpus:
     module_info_size: int
     sections: Tuple[PDBSection, ...]
     publics: Tuple[PDBPublic, ...]
+    # S_PUB32 records that name no image section (absolute symbols such as
+    # ``__guard_fids_table`` / ``__tls_array`` use segment 0 or section
+    # count + 1).  They have no RVA and are skipped, not fatal.
+    skipped_publics: int = 0
 
 
 def _ceil_div(value: int, divisor: int) -> int:
@@ -91,14 +105,25 @@ def read_msf_streams(path: str | Path) -> Tuple[Optional[bytes], ...]:
     if free_map_block >= block_count or block_map_block >= block_count:
         raise PDBMSFError("MSF special block lies outside the file")
     directory_blocks_count = _ceil_div(directory_size, block_size)
-    if directory_blocks_count > block_size // 4:
+    # The directory's block list lives in one or more "block map" pages.  The
+    # superblock names the first at offset 52; when the list does not fit one
+    # page (large PDBs with 1 KiB blocks: a 431 MB Fallout 4 PDB needs 1,731
+    # directory blocks = 7 map pages), the further page numbers follow it in
+    # the superblock, exactly as Microsoft's BigMsf ``mpspnpn`` array.  LLVM's
+    # reader refuses these ("Too many directory blocks"); Ghidra's accepts them.
+    entries_per_page = block_size // 4
+    map_pages_count = _ceil_div(directory_blocks_count, entries_per_page)
+    if 52 + map_pages_count * 4 > block_size:
         raise PDBMSFError("unsupported oversized MSF directory block map")
-    map_start = block_map_block * block_size
-    map_end = map_start + directory_blocks_count * 4
-    if map_end > len(data):
-        raise PDBMSFError("truncated MSF directory block map")
+    map_pages = struct.unpack_from("<{}I".format(map_pages_count), data, 52)
+    if (len(set(map_pages)) != len(map_pages) or
+            any(page == 0 or page >= block_count for page in map_pages)):
+        raise PDBMSFError("invalid MSF directory block map pages")
+    map_bytes = b"".join(
+        data[page * block_size:(page + 1) * block_size] for page in map_pages)
     directory_blocks = struct.unpack_from(
-        "<{}I".format(directory_blocks_count), data, map_start)
+        "<{}I".format(directory_blocks_count), map_bytes, 0)
+    claimed_map_pages = set(map_pages)
     if (len(set(directory_blocks)) != len(directory_blocks) or
             any(block >= block_count for block in directory_blocks)):
         raise PDBMSFError("invalid MSF directory block list")
@@ -115,7 +140,7 @@ def read_msf_streams(path: str | Path) -> Tuple[Optional[bytes], ...]:
         "<{}I".format(stream_count), directory, 4)
     cursor = sizes_end
     streams: list[Optional[bytes]] = []
-    claimed_blocks = set(directory_blocks)
+    claimed_blocks = set(directory_blocks) | claimed_map_pages
     for size in sizes:
         if size == 0xFFFFFFFF:
             streams.append(None)
@@ -253,6 +278,8 @@ def read_pdb_publics(path: str | Path) -> PDBPublicCorpus:
         _required_stream(streams, section_index, "section-header"))
     symbols = _required_stream(streams, symbol_stream, "symbol-record")
     publics = []
+    skipped_publics = 0
+    public_records = 0
     cursor = 0
     while cursor < len(symbols):
         if cursor + 4 > len(symbols):
@@ -262,20 +289,32 @@ def read_pdb_publics(path: str | Path) -> PDBPublicCorpus:
         if record_length < 2 or record_end > len(symbols):
             raise PDBMSFError("invalid CodeView symbol record length")
         if record_type == S_PUB32:
+            public_records += 1
             if cursor + 14 > record_end:
                 raise PDBMSFError("truncated S_PUB32 record")
             flags, section_offset, segment = struct.unpack_from(
                 "<IIH", symbols, cursor + 4)
             name_bytes = symbols[cursor + 14:record_end]
             terminator = name_bytes.find(b"\0")
-            if terminator < 0 or any(name_bytes[terminator + 1:]):
+            # Records are padded to 4 bytes.  Only the terminator is evidence:
+            # Microsoft's linker leaves the pad bytes uninitialised (340,834 of
+            # the 498,817 S_PUB32 records in the Fallout 4 1.10.155 PDB carry
+            # stray bytes such as 0x61 there), so their content means nothing.
+            if terminator < 0 or len(name_bytes) - terminator - 1 > 3:
                 raise PDBMSFError("invalid S_PUB32 name/padding")
             try:
                 name = name_bytes[:terminator].decode("utf-8", errors="strict")
             except UnicodeDecodeError as exc:
                 raise PDBMSFError("non-UTF-8 S_PUB32 name") from exc
-            if not name or not 1 <= segment <= len(sections):
-                raise PDBMSFError("invalid S_PUB32 name or segment")
+            if not name:
+                raise PDBMSFError("invalid S_PUB32 name")
+            if not 1 <= segment <= len(sections):
+                # Absolute / non-section public: every real MSVC PDB has a
+                # few.  Rejecting the whole PDB for them silently removed the
+                # PDB name source; they simply have no image RVA.
+                skipped_publics += 1
+                cursor = record_end
+                continue
             section = sections[segment - 1]
             if section_offset >= section.span:
                 raise PDBMSFError("S_PUB32 offset lies outside its section")
@@ -286,6 +325,18 @@ def read_pdb_publics(path: str | Path) -> PDBPublicCorpus:
                     rva, name, flags, segment, section_offset,
                     section.name, section.executable))
         cursor = record_end
+    if skipped_publics > max(MAX_SKIPPED_PUBLICS,
+                             int(public_records * MAX_SKIPPED_PUBLICS_FRACTION)):
+        raise PDBMSFError(
+            "{} of {} S_PUB32 records name no image section; the section "
+            "headers do not describe this PDB".format(
+                skipped_publics, public_records))
+    if skipped_publics:
+        warnings.warn(
+            "{}: skipped {} absolute/non-section S_PUB32 record(s) of {} "
+            "(no image RVA)".format(Path(path).name, skipped_publics,
+                                    public_records),
+            SkippedPublicsWarning, stacklevel=2)
     tpi = _required_stream(streams, 2, "TPI")
     type_record_count = 0
     if len(tpi) >= 16:
@@ -297,4 +348,4 @@ def read_pdb_publics(path: str | Path) -> PDBPublicCorpus:
         guid=guid, age=age, signature=signature, pdb_version=pdb_version,
         machine=machine, type_record_count=type_record_count,
         module_info_size=module_size, sections=sections,
-        publics=tuple(publics))
+        publics=tuple(publics), skipped_publics=skipped_publics)

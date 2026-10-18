@@ -14,7 +14,7 @@ Pipeline:
   AE names:     skyrimae.rename  (AE address ID → name mapping, fallback)
   Script gen:   ghidra_import_gen.py  (Ghidra Jython script emitter)
 
-Generates importers for Skyrim SE, AE 1.6.1170, AE 1.7.104, and VR.
+Generates importers for Skyrim SE, AE 1.6.640, AE 1.6.1170, AE 1.7.104, and VR.
 """
 
 import os
@@ -49,17 +49,26 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 sys.path.append(os.path.join(os.path.dirname(SCRIPT_DIR), 'commonlibsf'))
 from pe_layout import PELayout, attach_section, x64_runtime_function_starts
 from bytesig_evidence import load_validated as _load_bytesig_evidence
+from skyrim17_layouts import apply_ae17_layouts as _apply_ae17_layouts
 from vtable_policy import allow_vtable_emission as _allow_vtable_emission
+from vtable_label_check import validate_vtable_labels_for_layouts
 
 COMMONLIB_INCLUDE = os.path.join(PROJECT_DIR, 'extern', 'CommonLibSSE', 'include')
 SKYRIM_H = os.path.join(COMMONLIB_INCLUDE, 'RE', 'Skyrim.h')
 RE_INCLUDE = os.path.join(COMMONLIB_INCLUDE, 'RE')
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'ghidrascripts')
 
-_TARGET_DIRS = {'se': 'se', 'ae': 'ae', '17104': '17104', 'svr': 'vr'}
-_TARGET_KEYS = {'se': 's', 'ae': 'a', '17104': '17104', 'svr': 'v'}
+_TARGET_DIRS = {'se': 'se', 'ae': 'ae', '16640': '16640', '17104': '17104',
+                'svr': 'vr'}
+_TARGET_KEYS = {'se': 's', 'ae': 'a', '16640': '16640', '17104': '17104',
+                'svr': 'v'}
+# Address-library ID field per target key: SE 1.5.97 and VR 1.4.15 share the
+# SE namespace, every AE runtime the AE one.  Never cross them.
+RUNTIME_ID_FIELDS = {'s': ('si',), 'v': ('si',),
+                     'a': ('ai',), '16640': ('ai',), '17104': ('ai',)}
 _EXPECTED_VERSIONS = {
     'se': (1, 5, 97, 0), 'ae': (1, 6, 1170, 0),
+    '16640': (1, 6, 640, 0),
     '17104': (1, 7, 104, 0),
     'svr': (1, 4, 15, 0),
 }
@@ -86,7 +95,8 @@ def _trusted_pdb_derived(path, pdb_identity_valid):
 
 
 def _target_binding(version):
-    from binary_identity import artifact_is_fresh, inspect_pe, read_manifest
+    from binary_identity import (inspect_pe, load_fresh_lineage,
+                                 prove_section_equivalence)
     directory = os.path.join(PROJECT_DIR, 'exes', 'skyrim',
                              _TARGET_DIRS[version])
     if not os.path.isdir(directory):
@@ -100,12 +110,23 @@ def _target_binding(version):
     artifacts = [os.path.join(directory, n) for n in sorted(os.listdir(directory))
                  if 'unpacked' in n.lower() and n.lower().startswith(stem.lower())
                  and not n.lower().endswith('.identity.json')]
-    fresh = [p for p in artifacts if artifact_is_fresh(source, p)]
+    # load_fresh_lineage recomputes the advisory function_starts from the
+    # proven files: an old sidecar's start set predates the extractor fixes.
+    fresh = [(p, lineage) for p, lineage in
+             ((p, load_fresh_lineage(source, p)) for p in artifacts)
+             if lineage is not None]
     if len(fresh) > 1:
         raise RuntimeError('multiple fresh Steamless artifacts for {}'.format(source))
     if fresh:
-        binding = read_manifest(fresh[0] + '.identity.json')
-        analyzed = fresh[0]
+        analyzed, binding = fresh[0]
+        # A Program imported from the packed source is the same image when every
+        # section is byte-identical; record the proof so the importer accepts it.
+        proof = prove_section_equivalence(source, analyzed)
+        if proof is not None:
+            binding['equivalence'] = proof
+            print('  {}: source and Steamless artifact have byte-identical '
+                  'sections ({} sections, {} bytes); source import accepted'.format(
+                      version, proof['sections'], proof['section_bytes']))
     else:
         binding = inspect_pe(source)
         analyzed = source
@@ -144,13 +165,75 @@ def _validate_symbol_offsets(symbol, declared_kind, layouts):
         symbol.setdefault('sections', {})[key] = section
         symbol.setdefault('target_sha256', {})[key] = layout.sha256
 
+
+def _report_dir():
+    """Dropped-label reports are evidence: gitignored build/, never the source
+    tree (``basename(SCRIPT_DIR)`` keeps the VR forks' reports apart)."""
+    return os.path.join(PROJECT_DIR, 'build', 'evidence', 'vtable_labels',
+                        os.path.basename(SCRIPT_DIR))
+
+
+def validate_vtable_labels(symbols, layouts, class_labels=None):
+    """Drop VTABLE_* offsets that the staged executable's own RTTI refutes.
+
+    ``vtable[-1]`` -> CompleteObjectLocator -> TypeDescriptor names the class a
+    vtable really belongs to (core/vtable_label_check.py).  The dropped list
+    per runtime lands in build/evidence/vtable_labels/, with the ID of
+    that runtime's own namespace (SE/VR: SE ID, AE family: AE ID).
+    """
+    return validate_vtable_labels_for_layouts(
+        symbols, layouts, class_labels,
+        report_dir=_report_dir(),
+        id_fields=RUNTIME_ID_FIELDS)
+
+
+def _classify_symbol_offsets(symbol, layouts):
+    """Record the kind each staged runtime gives a symbol of UNKNOWN kind.
+
+    ``skyrimae.rename`` names functions and data alike without saying which.
+    Declaring every row ``func`` and validating against that deleted ~9k data
+    names per AE runtime whenever no 1.6.1170 exe was staged to correct the
+    guess.  The section role of the resolved RVA in THAT runtime's executable
+    decides instead (``kinds[key]``); only unmapped RVAs are rejected.
+    """
+    for key in _TARGET_KEYS.values():
+        layout = layouts.get(key)
+        if key not in symbol or layout is None:
+            continue
+        actual, section = layout.classify_rva(symbol[key])
+        if actual == 'unmapped':
+            symbol.setdefault('rejected_offsets', {})[key] = actual
+            del symbol[key]
+            continue
+        symbol.setdefault('kinds', {})[key] = actual
+        symbol.setdefault('sections', {})[key] = section
+        symbol.setdefault('target_sha256', {})[key] = layout.sha256
+
+
+def specialise_kinds_for_runtime(symbols, key):
+    """Return ``symbols`` with ``t`` set to the kind runtime ``key`` proved."""
+    out = []
+    for symbol in symbols:
+        kinds = symbol.get('kinds')
+        if kinds is None:
+            out.append(symbol)
+            continue
+        specialised = {k: v for k, v in symbol.items() if k != 'kinds'}
+        specialised['t'] = kinds.get(key, symbol['t'])
+        out.append(specialised)
+    return out
+
 # ---------------------------------------------------------------------------
 # AE rename database
 # ---------------------------------------------------------------------------
 
-def load_ae_rename_db(file_path, ae_db):
-    """Load skyrimae.rename: lines of '<ae_id> <name>', skip version line."""
-    result = {}  # ae_offset -> name
+def load_ae_rename_ids(file_path):
+    """Load skyrimae.rename as ``{ae_id: name}`` (AE ID namespace).
+
+    The ID is the identity of a row.  Reducing it to a 1.6.1170 RVA first lost
+    every name whose ID 1.6.1170 no longer has (650 for 1.6.640).
+    """
+    result = {}
     if not os.path.exists(file_path):
         return result
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -167,6 +250,14 @@ def load_ae_rename_db(file_path, ae_db):
             ae_id = int(parts[0])
         except ValueError:
             continue
+        result[ae_id] = name
+    return result
+
+
+def load_ae_rename_db(file_path, ae_db):
+    """``{ae_db RVA: name}`` view of skyrimae.rename for one AE runtime."""
+    result = {}  # ae_offset -> name
+    for ae_id, name in load_ae_rename_ids(file_path).items():
         off = ae_db.get(ae_id)
         if off:
             result[off] = name
@@ -182,9 +273,20 @@ VERSIONS = {
         'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE.py'),
     },
+    '16640': {
+        # Skyrim AE 1.6.640 -- AE ID namespace, same header configuration as
+        # the other AE runtimes.  The powerof3 headers describe post-1.6.1130
+        # layouts only, so types touched by that layout change are 1130+-shaped
+        # here (see the pre-1130 caveat in the README).
+        'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
+        'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE_1_6_640.py'),
+    },
     '17104': {
+        # The pinned headers have no 1.7 switch: they parse to the 1.6 AE
+        # shapes, which skyrim17_layouts rewrites to the 1.7.104 layouts.
         'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE_1_7_104.py'),
+        'layout_patch': _apply_ae17_layouts,
     },
     'svr': {
         # Skyrim VR (1.4.15) — same headers as SE; symbols come from VR
@@ -339,6 +441,12 @@ def run_version(version, symbols_json, fallback_symbols_json='[]',
             print('  WARNING: post-PDB flatten failed: {}: {}'.format(
                 type(e).__name__, e))
 
+    # Per-runtime layout rewrite, once every record source is merged and
+    # before vtables are built or bases flattened into derived records.
+    layout_patch = cfg.get('layout_patch')
+    if layout_patch is not None:
+        layout_patch(structs, enums)
+
     symbols_json = _enrich_symbols_with_sigs(symbols_json, structs)
 
     shift_map_path = os.path.join(
@@ -380,9 +488,11 @@ def run_version(version, symbols_json, fallback_symbols_json='[]',
     # ``gog_variants`` is [(label, build_db, rev_1170), ...].  Every AE-keyed
     # symbol is re-keyed through its address-library ID (stable across all
     # AE builds): 1.6.1170-RVA -> ID -> build-RVA.  Types/vtables are byte-
-    # identical across AE builds, so we reuse this parse's AST results and
-    # only swap the offsets.  Closes the gap where the GOG Edition binary
-    # was applied with Steam 1.6.1170 offsets.
+    # identical across the 1.6.x AE builds, so we reuse this parse's AST
+    # results and only swap the offsets.  Closes the gap where the GOG Edition
+    # binary was applied with Steam 1.6.1170 offsets.  NOT true for 1.7.x:
+    # the pinned headers have no 1.7 switch, so the 17104 run rewrites the
+    # records, enums and vtables that changed there (skyrim17_layouts).
     import json as _json
     for label, build_db, rev_1170 in (gog_variants or []):
         def _rekey(json_blob):
@@ -457,22 +567,193 @@ def _detect_exe_versions():
     return se_ver, ae_ver
 
 
+# Offset keys of the runtimes that live in the AE address-library ID namespace
+# but are not the primary ``a`` (1.6.1170) target.
+EXTRA_AE_RUNTIMES = ('16640', '17104')
+
+
+def attach_extra_ae_offsets(symbol, ae_id, extra_dbs):
+    """Resolve the extra AE runtimes through the AE ID namespace ONLY.
+
+    An SE ID looked up in an AE-namespace database lands on an unrelated
+    address (none of ~7,000 dual-ID symbols agree), so an SE-only symbol gets
+    no offset for these runtimes instead of a wrong one.  That mix-up put 437
+    wrong labels into the 1.7.104 importer (2026-09-21).
+    """
+    if ae_id is None:
+        return
+    for extra_key, extra_db in extra_dbs:
+        extra_rva = extra_db.get(ae_id)
+        if extra_rva:
+            symbol[extra_key] = extra_rva
+
+
+def assert_no_se_only_ae_offsets(symbols):
+    """Fail generation if an SE-only symbol carries an AE-namespace offset."""
+    bad = [s['n'] for s in symbols
+           if s.get('ai') is None and any(k in s for k in EXTRA_AE_RUNTIMES)]
+    if bad:
+        raise RuntimeError(
+            '{} symbol(s) without an AE ID carry an AE-namespace runtime '
+            'offset (first: {}); SE IDs must never be resolved through an AE '
+            'database'.format(len(bad), ', '.join(bad[:5])))
+
+
+def _extra_ae_dbs(addr_lib):
+    return (('16640', addr_lib.db_16640), ('17104', addr_lib.db_17104))
+
+
+def symbol_from_parser(parsed, kind, target_layouts, addr_lib=None):
+    """Build one importer symbol from a ``reloc_parser`` func/label dict.
+
+    The parser read the IDs out of the source text, so they are carried as
+    ``si`` / ``ai`` verbatim.  Deriving ``ai`` later from the 1.6.1170 RVA
+    (``ae_rva_to_id[sym['a']]``) made 1.6.640 / 1.7.104 depend on 1.6.1170:
+    an ID 1.6.1170 lacks, or an ``a`` offset the section check deleted, took
+    the other AE runtimes down with it.
+    """
+    if kind == 'func':
+        name = ('{}::{}'.format(parsed['class_'], parsed['name'])
+                if parsed.get('class_') else parsed['name'])
+        sig = ''
+        if parsed.get('ret'):
+            sig = '{}({})'.format(parsed['ret'], parsed.get('params', ''))
+            if parsed.get('is_static'):
+                sig = 'static ' + sig
+    else:
+        name, sig = parsed['name'], ''
+    sym = {'n': name, 't': kind, 'sig': sig, 'src': 'CommonLibSSE'}
+    if parsed.get('se_off'): sym['s'] = parsed['se_off']
+    if parsed.get('ae_off'): sym['a'] = parsed['ae_off']
+    if parsed.get('vr_off'): sym['v'] = parsed['vr_off']
+    if parsed.get('se_id'): sym['si'] = parsed['se_id']
+    if parsed.get('ae_id'):
+        sym['ai'] = parsed['ae_id']
+        if addr_lib is not None:
+            attach_extra_ae_offsets(sym, sym['ai'], _extra_ae_dbs(addr_lib))
+    _validate_symbol_offsets(sym, kind, target_layouts)
+    return sym
+
+
+def merge_ae_rename(symbols, name_to_syms, rename_ids, addr_lib, target_layouts):
+    """Merge ``skyrimae.rename`` (``{ae_id: name}``) into ``symbols``.
+
+    Everything is keyed on the AE ID: a row is new when no symbol owns that
+    ID, and each AE runtime is resolved from the ID in its own database.
+    Returns ``(added, merged)``.
+    """
+    extra_dbs = _extra_ae_dbs(addr_lib)
+    seen_ai = {s['ai'] for s in symbols if s.get('ai') is not None}
+    name_counts = {}
+    for rename_name in rename_ids.values():
+        name_counts[rename_name] = name_counts.get(rename_name, 0) + 1
+    added = merged = 0
+    for ae_id, name in rename_ids.items():
+        if ae_id in seen_ai:
+            continue
+        resolved = {}
+        if addr_lib.ae_db.get(ae_id):
+            resolved['a'] = addr_lib.ae_db[ae_id]
+        attach_extra_ae_offsets(resolved, ae_id, extra_dbs)
+        if not resolved:
+            continue
+        candidates = name_to_syms.get(name, [])
+        if len(candidates) == 1 and name_counts.get(name) == 1:
+            existing = candidates[0]
+            if existing.get('ai') is None and not existing.get('a'):
+                existing.update(resolved)
+                existing['ai'] = ae_id
+                _validate_symbol_offsets(existing, existing['t'], target_layouts)
+                rejected = existing.get('rejected_offsets', {})
+                if (any(k in rejected for k in resolved) or
+                        not any(k in existing for k in resolved)):
+                    # A name-only match the binary contradicts in any AE
+                    # runtime is not this symbol: undo the whole merge.
+                    for key in resolved:
+                        existing.pop(key, None)
+                    del existing['ai']
+                    continue
+                seen_ai.add(ae_id)
+                merged += 1
+            continue
+        sym = {'n': name, 't': 'func', 'sig': '', 'ai': ae_id,
+               'src': 'skyrimae.rename'}
+        sym.update(resolved)
+        _classify_symbol_offsets(sym, target_layouts)
+        if not any(k in sym for k in resolved):
+            continue
+        seen_ai.add(ae_id)
+        symbols.append(sym)
+        name_to_syms.setdefault(name, []).append(sym)
+        added += 1
+    return added, merged
+
+
+def attach_address_library_ids(symbols, addr_lib, target_layouts):
+    """Give every symbol its ``si`` / ``ai`` and the extra AE runtime offsets.
+
+    A parser-provided ID wins; the unique reverse map only serves sources that
+    know an RVA and nothing else (PDB publics).  No AE-namespace offset is ever
+    attached without an AE ID.  Returns the number of symbols with an ID.
+    """
+    se_rva_to_id, ambiguous_se_rvas = unique_reverse_ids(addr_lib.se_db)
+    ae_rva_to_id, ambiguous_ae_rvas = unique_reverse_ids(addr_lib.ae_db)
+    if ambiguous_se_rvas or ambiguous_ae_rvas:
+        print('Rejected ambiguous address-library reverse mappings: '
+              'SE={} AE={}'.format(
+                  len(ambiguous_se_rvas), len(ambiguous_ae_rvas)))
+    extra_dbs = _extra_ae_dbs(addr_lib)
+    id_count = 0
+    for s in symbols:
+        se_id = s.get('si')
+        if se_id is None:
+            se_id = se_rva_to_id.get(s.get('s'))
+        ae_id = s.get('ai')
+        if ae_id is None:
+            ae_id = ae_rva_to_id.get(s.get('a'))
+        if se_id is not None:
+            s['si'] = se_id
+        if ae_id is not None:
+            s['ai'] = ae_id
+        rejected = s.get('rejected_offsets', {})
+        fresh = {}
+        attach_extra_ae_offsets(fresh, ae_id, extra_dbs)
+        for key, rva in fresh.items():
+            if key not in s and key not in rejected:
+                s[key] = rva
+        if se_id is not None or ae_id is not None:
+            id_count += 1
+        if s.get('kinds') is not None or s.get('src') == 'skyrimae.rename':
+            _classify_symbol_offsets(s, target_layouts)
+        else:
+            _validate_symbol_offsets(s, s['t'], target_layouts)
+    assert_no_se_only_ae_offsets(symbols)
+    return id_count
+
+
+def _runtime_requested(version, selected, target_layouts):
+    """True when ``version`` was asked for or its importer will be emitted."""
+    if selected is not None:
+        return version in selected
+    return target_layouts.get(_TARGET_KEYS[version]) is not None
+
+
 def main():
     import argparse as _argparse
     import json as _json
 
     ap = _argparse.ArgumentParser(description='Generate CommonLibSSE importers.')
     ap.add_argument('--only', action='append', metavar='VERSION',
-                    help='generate just this runtime (se, ae, 17104, svr/vr; '
+                    help='generate just this runtime (se, ae, 16640, 17104, svr/vr; '
                          'repeatable).  Default: every Skyrim runtime.')
     cli = ap.parse_args()
     selected = None
     if cli.only:
         alias = {'vr': 'svr'}
         selected = {alias.get(v.lower(), v.lower()) for v in cli.only}
-        unknown = selected - {'se', 'ae', '17104', 'svr'}
+        unknown = selected - {'se', 'ae', '16640', '17104', 'svr'}
         if unknown:
-            ap.error('unknown runtime(s): {} (known: se, ae, 17104, vr)'.format(
+            ap.error('unknown runtime(s): {} (known: se, ae, 16640, 17104, vr)'.format(
                 ', '.join(sorted(unknown))))
 
     # Detect exe versions for address library selection
@@ -494,13 +775,19 @@ def main():
     # Load address databases (AddressLibrary picks fixed versions:
     # SE 1.5.97, AE 1.6.1170, VR 1.4.15 -- detected exe versions are
     # logged for diagnostics but don't currently feed the loader).
+    # A runtime whose importer will be emitted (its exe is staged) needs its
+    # database: without it every symbol of that runtime silently vanishes
+    # and a types-only importer is reported as success.
+    target_layouts = _load_target_layouts()
     addr_lib = AddressLibrary()
     addr_lib.load_all(
         os.path.join(PROJECT_DIR, 'addresslibrary'),
-        require_17104=(selected is not None and '17104' in selected))
-    print('SE entries: {}, AE entries: {}, 1.7.104 entries: {}'.format(
-        len(addr_lib.se_db), len(addr_lib.ae_db), len(addr_lib.db_17104)))
-    target_layouts = _load_target_layouts()
+        require_17104=_runtime_requested('17104', selected, target_layouts),
+        require_16640=_runtime_requested('16640', selected, target_layouts))
+    print('SE entries: {}, AE entries: {}, 1.6.640 entries: {}, '
+          '1.7.104 entries: {}'.format(
+              len(addr_lib.se_db), len(addr_lib.ae_db),
+              len(addr_lib.db_16640), len(addr_lib.db_17104)))
 
     print('\n=== Collecting symbols via regex relocation parser ===')
     import reloc_parser as _rp
@@ -523,13 +810,15 @@ def main():
         label_by_name.setdefault(lbl['name'], {
             'name': lbl['name'], 'se_off': None, 'ae_off': None, 'vr_off': None})
         entry = label_by_name[lbl['name']]
-        if lbl.get('se_off'): entry['se_off'] = lbl['se_off']
-        if lbl.get('ae_off'): entry['ae_off'] = lbl['ae_off']
-        if lbl.get('vr_off'): entry['vr_off'] = lbl['vr_off']
+        for field in ('se_off', 'ae_off', 'vr_off', 'se_id', 'ae_id',
+                      'vtable_class', 'vtable_index'):
+            if lbl.get(field) is not None:
+                entry[field] = lbl[field]
 
     merged_funcs = list(func_syms)
     seen_se = set(fs['se_off'] for fs in merged_funcs if fs.get('se_off'))
     seen_ae = set(fs['ae_off'] for fs in merged_funcs if fs.get('ae_off'))
+    seen_ids = set((fs.get('se_id'), fs.get('ae_id')) for fs in merged_funcs)
 
     for fs in src_func_syms:
         if not fs.get('is_static') and fs.get('class_') and fs.get('name'):
@@ -543,74 +832,41 @@ def main():
             continue
         if ae_off and ae_off in seen_ae:
             continue
+        if (not se_off and not ae_off and
+                (fs.get('se_id'), fs.get('ae_id')) in seen_ids):
+            continue
         if se_off: seen_se.add(se_off)
         if ae_off: seen_ae.add(ae_off)
+        seen_ids.add((fs.get('se_id'), fs.get('ae_id')))
         merged_funcs.append(fs)
 
     # Build SYMBOLS array
     symbols = []
     sym_seen_se = set()
-    sym_seen_ae = set()
 
     # Function symbols
     for fs in merged_funcs:
-        full_name = '{}::{}'.format(fs['class_'], fs['name']) if fs['class_'] else fs['name']
-        sig = ''
-        if fs.get('ret'):
-            sig = '{}({})'.format(fs['ret'], fs.get('params', ''))
-            if fs.get('is_static'):
-                sig = 'static ' + sig
-        sym = {'n': full_name, 't': 'func', 'sig': sig, 'src': 'CommonLibSSE'}
-        if fs['se_off']: sym['s'] = fs['se_off']; sym_seen_se.add(fs['se_off'])
-        if fs['ae_off']: sym['a'] = fs['ae_off']; sym_seen_ae.add(fs['ae_off'])
-        if fs.get('vr_off'): sym['v'] = fs['vr_off']
-        _validate_symbol_offsets(sym, 'func', target_layouts)
-        symbols.append(sym)
+        if fs['se_off']: sym_seen_se.add(fs['se_off'])
+        symbols.append(symbol_from_parser(fs, 'func', target_layouts, addr_lib))
 
-    # RTTI/VTABLE labels
+    # RTTI/NiRTTI/VTABLE labels
+    vtable_classes = {}
     for lbl in label_by_name.values():
-        sym = {'n': lbl['name'], 't': 'label', 'sig': '', 'src': 'CommonLibSSE'}
-        if lbl['se_off']: sym['s'] = lbl['se_off']; sym_seen_se.add(lbl['se_off'])
-        if lbl['ae_off']: sym['a'] = lbl['ae_off']; sym_seen_ae.add(lbl['ae_off'])
-        if lbl.get('vr_off'): sym['v'] = lbl['vr_off']
-        _validate_symbol_offsets(sym, 'label', target_layouts)
-        symbols.append(sym)
+        if lbl['se_off']: sym_seen_se.add(lbl['se_off'])
+        if lbl.get('vtable_class'):
+            vtable_classes[lbl['name']] = lbl['vtable_class']
+        symbols.append(symbol_from_parser(lbl, 'label', target_layouts, addr_lib))
+    validate_vtable_labels(symbols, target_layouts, vtable_classes)
 
     name_to_syms = {}
     for symbol in symbols:
         name_to_syms.setdefault(symbol['n'], []).append(symbol)
 
-    # AE rename database fallback
+    # AE rename database fallback (keyed on the AE ID, never on a 1170 RVA)
     rename_db = os.path.join(PROJECT_DIR, 'extern', 'AddressLibraryDatabase', 'skyrimae.rename')
-    ae_rename = load_ae_rename_db(rename_db, addr_lib.ae_db)
-    ae_name_counts = {}
-    for rename_name in ae_rename.values():
-        ae_name_counts[rename_name] = ae_name_counts.get(rename_name, 0) + 1
-    rename_added = rename_merged = 0
-    for ae_off, name in ae_rename.items():
-        if ae_off in sym_seen_ae:
-            continue
-        candidates = name_to_syms.get(name, [])
-        if len(candidates) == 1 and ae_name_counts.get(name) == 1:
-            existing = candidates[0]
-            if not existing.get('a'):
-                existing['a'] = ae_off
-                _validate_symbol_offsets(existing, existing['t'], target_layouts)
-                if not existing.get('a'):
-                    continue
-                sym_seen_ae.add(ae_off)
-                rename_merged += 1
-            continue
-        sym = {'n': name, 't': 'func', 'sig': '', 'a': ae_off, 'src': 'skyrimae.rename'}
-        ae_layout = target_layouts.get('a')
-        if ae_layout is not None:
-            if not attach_section(sym, 'a', ae_layout, declared_kind='func'):
-                continue
-            sym.setdefault('target_sha256', {})['a'] = ae_layout.sha256
-        sym_seen_ae.add(ae_off)
-        symbols.append(sym)
-        name_to_syms.setdefault(name, []).append(sym)
-        rename_added += 1
+    rename_added, rename_merged = merge_ae_rename(
+        symbols, name_to_syms, load_ae_rename_ids(rename_db), addr_lib,
+        target_layouts)
     print('Added {} new symbols from AE rename, merged AE offset into {} existing'.format(
         rename_added, rename_merged))
 
@@ -726,29 +982,9 @@ def main():
     # arguments and inheritance paths; replacing every occurrence with ``::``
     # fabricated namespaces.  Parser/PDB names already carry genuine ``::``.
 
-    # Attach address-library IDs to every symbol via reverse lookup
-    se_rva_to_id, ambiguous_se_rvas = unique_reverse_ids(addr_lib.se_db)
-    ae_rva_to_id, ambiguous_ae_rvas = unique_reverse_ids(addr_lib.ae_db)
-    if ambiguous_se_rvas or ambiguous_ae_rvas:
-        print('Rejected ambiguous address-library reverse mappings: '
-              'SE={} AE={}'.format(
-                  len(ambiguous_se_rvas), len(ambiguous_ae_rvas)))
-    id_count = 0
-    for s in symbols:
-        se_id = se_rva_to_id.get(s.get('s'))
-        ae_id = ae_rva_to_id.get(s.get('a'))
-        if se_id is not None:
-            s['si'] = se_id
-        if ae_id is not None:
-            s['ai'] = ae_id
-        shared_id = ae_id if ae_id is not None else se_id
-        if shared_id is not None:
-            rva_17104 = addr_lib.db_17104.get(shared_id)
-            if rva_17104:
-                s['17104'] = rva_17104
-        if se_id is not None or ae_id is not None:
-            id_count += 1
-        _validate_symbol_offsets(s, s['t'], target_layouts)
+    # Attach address-library IDs: the parser's own ID first, the unique
+    # RVA->ID reverse map only for RVA-only sources (PDB publics).
+    id_count = attach_address_library_ids(symbols, addr_lib, target_layouts)
     print('Attached address-library IDs to {} of {} symbols'.format(id_count, len(symbols)))
 
     funcs = [s for s in symbols if s['t'] == 'func']
@@ -772,20 +1008,31 @@ def main():
         len(se_fallback), len(ae_fallback)))
 
     se_fallback_json = _json.dumps(se_fallback, separators=(',', ':'))
-    ae_fallback_json = _json.dumps(ae_fallback, separators=(',', ':'))
+    # skyrimae.rename does not say whether a row is code or data; each AE
+    # runtime gets the kind its own executable proves for the resolved RVA.
+    ae_fallback_json_by_key = {
+        key: _json.dumps(specialise_kinds_for_runtime(ae_fallback, key),
+                         separators=(',', ':'))
+        for key in ('a',) + EXTRA_AE_RUNTIMES}
+    for key in ('a',) + EXTRA_AE_RUNTIMES:
+        if target_layouts.get(key) is not None:
+            kinds = [s.get('kinds', {}).get(key) for s in ae_fallback if key in s]
+            print('  AE rename pool for {}: {} funcs, {} labels'.format(
+                key, kinds.count('func'), kinds.count('label')))
 
     n_v = sum(1 for s in primary_symbols if s.get('v'))
     print('  VR coverage: {} symbols (SE-namespace IDs resolved against vr_db)'.format(n_v))
 
     fb_for = {
         'se':  se_fallback_json,
-        'ae':  ae_fallback_json,
-        '17104': ae_fallback_json,
+        'ae':  ae_fallback_json_by_key['a'],
+        '16640': ae_fallback_json_by_key['16640'],
+        '17104': ae_fallback_json_by_key['17104'],
         'svr': '[]',
     }
 
     # --- Persisted bytesig-port results (refs/bytesig_ported_<ver>.csv) ---
-    # Written by the reviewed byte-signature port workflow.
+    # Written by commonlibsse/bytesig_port_combined.py --write-back-script.
     # Merging here makes the ported names survive regeneration: previously
     # they only lived inside the generated scripts and every regen wiped
     # them until the ~42-min port was re-run.
@@ -845,6 +1092,8 @@ def main():
         return _json.dumps(existing, separators=(',', ':'))
 
     fb_for['ae']  = _merge_bytesig_csv(fb_for['ae'],  'bytesig_ported_ae.csv', 'a')
+    fb_for['16640'] = _merge_bytesig_csv(
+        fb_for['16640'], 'bytesig_ported_16640.csv', '16640')
     fb_for['17104'] = _merge_bytesig_csv(
         fb_for['17104'], 'bytesig_ported_17104.csv', '17104')
     fb_for['svr'] = _merge_bytesig_csv(fb_for['svr'], 'bytesig_ported_vr.csv', 'v')
@@ -923,7 +1172,7 @@ def main():
                 print('Loaded relib build {}: {:,} entries'.format(
                     '.'.join(str(x) for x in build), len(db)))
 
-    for version in ('se', 'ae', '17104', 'svr'):
+    for version in ('se', 'ae', '16640', '17104', 'svr'):
         if selected is not None and version not in selected:
             continue
         binding, _artifact = _target_binding(version)

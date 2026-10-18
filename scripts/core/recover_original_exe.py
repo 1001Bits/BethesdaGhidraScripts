@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
-from ghidra_project import open_user_project
+from ghidra_project import open_program, open_user_project
 
 
 class RecoveryError(RuntimeError):
@@ -61,23 +62,56 @@ def recover_original_exe(program, out_path: str | Path,
             "the program database stores no original file bytes (imported by "
             "an old Ghidra, or added as a raw memory image)")
 
+    # A file that is already there is the user's: the exporter used to
+    # truncate it, and a hash mismatch then DELETED it.  Never write onto, and
+    # never unlink, anything this call did not create.
+    if out_path.exists():
+        raise RecoveryError(
+            "refusing to overwrite the existing file {}; choose another "
+            "--out or move it away first".format(out_path))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        prefix=".recover-", suffix=".tmp", dir=str(out_path.parent))
+    os.close(handle)
+    temp_path = Path(temp_name)
+    try:
+        if not _export_original(program, temp_path, monitor):
+            raise RecoveryError("Ghidra's original-file exporter failed")
+        actual = _sha256(temp_path)
+        if actual != expected:
+            raise RecoveryError(
+                "recovered bytes hash to {} but the program was imported from "
+                "{}; discarded".format(actual[:16], expected[:16]))
+        _claim(temp_path, out_path)
+    finally:
+        if temp_path.exists():
+            os.unlink(temp_path)          # only ever our own temp file
+    return out_path
+
+
+def _export_original(program, destination, monitor=None) -> bool:
     from ghidra.app.util.exporter import OriginalFileExporter
     from ghidra.util.task import ConsoleTaskMonitor
     import java.io
 
     monitor = monitor or ConsoleTaskMonitor()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    exporter = OriginalFileExporter()
-    if not exporter.export(java.io.File(str(out_path)), program, None, monitor):
-        raise RecoveryError("Ghidra's original-file exporter failed")
+    return bool(OriginalFileExporter().export(
+        java.io.File(str(destination)), program, None, monitor))
 
-    actual = _sha256(out_path)
-    if actual != expected:
-        os.unlink(out_path)
+
+def _claim(temp_path, out_path) -> None:
+    """Move onto ``out_path`` only if it still does not exist (no clobber)."""
+    try:
+        if os.name == "nt":
+            os.rename(temp_path, out_path)      # fails when the target exists
+        else:
+            os.link(temp_path, out_path)        # atomic, fails when it exists
+            os.unlink(temp_path)
+    except FileExistsError as exc:
         raise RecoveryError(
-            "recovered bytes hash to {} but the program was imported from {}; "
-            "discarded".format(actual[:16], expected[:16]))
-    return out_path
+            "refusing to overwrite {}: it appeared while recovering".format(
+                out_path)) from exc
 
 
 def main() -> int:
@@ -108,7 +142,7 @@ def main() -> int:
             print("ERROR: no such program: {}".format(args.program_path))
             return 1
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, False, True, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         try:
             recovered = recover_original_exe(program, args.out, monitor)
         except RecoveryError as exc:

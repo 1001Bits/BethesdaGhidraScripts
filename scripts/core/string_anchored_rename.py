@@ -50,23 +50,37 @@ def _iter_strings(listing):
 
 
 def _collect(cp):
-    """func-entry-offset -> (func, set(candidate names)) from all patterns."""
+    """func-entry-offset -> (func, set(candidate names)) from all patterns.
+
+    Also returns the names that are already OWNED: a self-naming string that a
+    non-placeholder function references too belongs to that function, so an
+    unnamed helper or outlined block sharing the string must not inherit the
+    name.  Counting only placeholder referrers made such a helper look unique.
+    """
     fm, listing, rm = (cp.getFunctionManager(), cp.getListing(),
                        cp.getReferenceManager())
     by_func = {}
+    owned = set()
     for d, s in _iter_strings(listing):
         name, is_timer = sam.match_any(s, TELEMETRY_NS)
         if not name:
             continue
         for ref in rm.getReferencesTo(d.getAddress()):
             f = fm.getFunctionContaining(ref.getFromAddress())
-            if f is None or not _is_placeholder(f.getName()):
+            if f is None:
+                continue
+            if not _is_placeholder(f.getName()):
+                owned.add(name)
                 continue
             ep = f.getEntryPoint().getOffset()
             if is_timer and ref.getFromAddress().getOffset() - ep > ENTRY_WINDOW:
                 continue  # timer string must be at entry
             by_func.setdefault(ep, (f, set()))[1].add(name)
-    return by_func
+    for ep in list(by_func):
+        by_func[ep][1].difference_update(owned)
+        if not by_func[ep][1]:
+            del by_func[ep]
+    return by_func, owned
 
 
 def _namespace(cp, st, parts):
@@ -84,8 +98,17 @@ def run():
     from ghidra.program.model.symbol import SourceType
     cp = currentProgram  # noqa: F821
     st = cp.getSymbolTable()
-    by_func = _collect(cp)
+    by_func, owned = _collect(cp)
     plan, ambiguous = sam.resolve(by_func)
+    # A function that already carries the exact qualified name owns it too.
+    taken = set()
+    for ep, name in plan:
+        for symbol in st.getSymbols(name.split('::')[-1]):
+            if (str(symbol.getSymbolType()) == 'Function' and
+                    symbol.getName(True) == name):
+                taken.add(name)
+    plan = [(ep, name) for ep, name in plan if name not in taken]
+    owned |= taken
 
     applied = errors = 0
     tx = cp.startTransaction('string-anchored rename') if APPLY else None
@@ -109,6 +132,7 @@ def run():
 
     print('string-anchored rename (%s): %s'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN'))
+    print('  already-owned-skipped=%d' % len(owned))
     print('  %s=%d  errors=%d  ambiguous-skipped=%d'
           % ('renamed' if APPLY else 'would-rename',
              applied if APPLY else len(plan), errors, len(ambiguous)))
@@ -118,4 +142,9 @@ def run():
         print('  set BGS_ENRICH_APPLY=go to apply.')
 
 
-run()
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('string_anchored_rename'))

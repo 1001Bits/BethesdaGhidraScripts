@@ -16,7 +16,9 @@ cd BethesdaGhidraScripts
 
 ```
 exes/skyrim/se/SkyrimSE.exe       Skyrim SE    (1.5.97)
-exes/skyrim/ae/SkyrimSE.exe       Skyrim AE    (1.6.1170+)
+exes/skyrim/ae/SkyrimSE.exe       Skyrim AE    (1.6.1170)
+exes/skyrim/16640/SkyrimSE.exe    Skyrim AE    (1.6.640)   — pre-1.6.1130 layouts, see below
+exes/skyrim/17104/SkyrimSE.exe    Skyrim AE    (1.7.104)
 exes/skyrim/vr/SkyrimVR.exe       Skyrim VR    (1.4.15)
 exes/f4/og/Fallout4.exe           Fallout 4 OG (1.10.163) — types only
 exes/f4/ng/Fallout4.exe           Fallout 4 NG (1.10.984)
@@ -125,8 +127,9 @@ All binaries end up in a single Ghidra project at
 folders.
 
 The address library for each executable is selected automatically based on
-the detected PE version. For Skyrim AE, all versions from 1.6.317 to 1.6.1179
-are supported via the AddressLibraryDatabase.
+the detected PE version. Skyrim AE is supported as the exact builds 1.6.640,
+1.6.1170 and 1.7.104 only; any other AE build is refused rather than given a
+neighbouring build's offsets.
 
 ### Requirements
 
@@ -178,6 +181,8 @@ Windows when the source contains a SteamStub `.bind` section.
 |----------------|---------------------|--------------------|---------------------------------------------------|
 | Skyrim SE      | `exes/skyrim/se`    | `1-5-97-0`         | `powerof3/CommonLibSSE`                           |
 | Skyrim AE      | `exes/skyrim/ae`    | `1-6-1170-0`       | `powerof3/CommonLibSSE`                           |
+| Skyrim AE 1.6.640 | `exes/skyrim/16640` | `1-6-640-0`     | `powerof3/CommonLibSSE`                           |
+| Skyrim AE 1.7.104 | `exes/skyrim/17104` | `1-7-104-0` (V5) | `powerof3/CommonLibSSE`                          |
 | Skyrim VR      | `exes/skyrim/vr`    | `1-4-15-0` (csv)   | `powerof3/CommonLibSSE`                           |
 | Fallout 4 OG   | `exes/f4/og`        | `1-10-163-0`       | `libxse/commonlibf4`                              |
 | Fallout 4 NG   | `exes/f4/ng`        | `1-10-984-0`       | `libxse/commonlibf4`                              |
@@ -189,9 +194,20 @@ Windows when the source contains a SteamStub `.bind` section.
 You don't need all of them. The script detects which executables are present
 and only generates and runs what's needed.
 
-Skyrim VR shares the SE-derived ID namespace with SE/AE, so the same
-`CommonLibSSE` headers generate a VR-targeting script that resolves SE IDs
-against the VR address library.  The VR address library ships as a CSV
+Each Skyrim AE target is pinned to one exact build (1.6.640, 1.6.1170 or
+1.7.104); an executable of any other version is refused rather than given a
+neighbouring build's offsets.  All three resolve symbols through the AE ID
+namespace of their own address library, so labels and function names are
+exact per build.  Types are a different matter for 1.6.640: the powerof3
+headers carry a single AE layout with no pre-/post-1.6.1130 switch, so classes
+Bethesda changed in 1.6.1130 (`BSSystemUtility` / `BSWin32SystemUtility`, the
+Creations/bnet UI classes, and anything else reshaped for the extended plugin
+range) are imported in their 1.6.1130+ shape and must be checked by hand on
+1.6.640.  Vtable overlays are not emitted for 1.6.640 or 1.7.104.
+
+Skyrim VR shares the SE-derived ID namespace with SE (not with AE, which is a
+separate namespace), so the same `CommonLibSSE` headers generate a VR-targeting
+script that resolves SE IDs against the VR address library.  The VR address library ships as a CSV
 (community-maintained) rather than meh321's binary format.
 
 CommonLibF4's IDs sit in the NG/AE namespace (1.10.984 / 1.11.191), so those
@@ -338,6 +354,20 @@ unwind starts, decoded vtable targets, or other source evidence marked as a
 verified entry. Generated scripts preflight the exact target before opening a
 transaction and roll back types and symbols together on any error.
 
+Every `VTABLE_<Class>` label is checked against the executable's own RTTI (the
+Complete Object Locator in front of the table) when the exe is staged; labels
+the binary refutes are dropped and listed in `refs/vtable_labels_dropped_<ver>.csv`.
+Per-symbol failures are counted, and an import whose failures exceed a small
+budget rolls back as a whole.
+
+An importer bound to a Steamless-unpacked copy also accepts a program imported
+from the packed original when the generator could PROVE the two map to the same
+image (identical section table and byte-identical data in every section; see
+`binary_identity.prove_section_equivalence`). The proof is embedded in the
+importer's `TARGET_LINEAGE`, and the original is still checked for hash, size,
+sections and memory anchors. A packed file whose code is really encrypted can
+never produce the proof.
+
 ### Sharing synthetic PDBs
 
 Menu option **10** can create a shareable symbol bundle from any improved
@@ -366,7 +396,7 @@ that, the repo ships **binary-derived improvement drivers** that recover names
 and types straight from the analyzed binary — valuable where CommonLib is thin
 (newer builds, Starfield, FNV) or absent. They run against an exact-identity
 analyzed Ghidra
-project through menu option 9 or
+project via `scripts/discover_combined.py` (multi-program sequencer) or
 `scripts/apply_enrichment_to_user_project.py` (one driver, one program), and
 name mutators preserve analyst/imported symbols unless the selected reviewed
 apply workflow explicitly targets a datatype field or evidence decision.
@@ -380,6 +410,14 @@ apply workflow explicitly targets a datatype field or evidence decision.
 | `console_harvest` / `console_harvest_sf` | Names console-command handlers (`Cmd_*`) — table-based, plus Starfield's code-based registration |
 | `pe_unwind_enrich` | Recovers validated x64 function starts, chained unwind records, handlers, and unwind comments from the PE exception directory |
 | `registration_harvest` | Recovers decoded one-to-one registration/global associations and applies only high-confidence unique names |
+
+Every driver prints a `BGS-DRIVER-COMPLETE <name>` sentinel as its last act. The
+launchers treat a driver that returns without it as `FAIL-no-op`, roll its
+transaction back, and stop that program: a script that silently did nothing is
+a failure, not `OK 0s`. A dry run opens the program read-only, and no launcher
+opens a program that has unsaved Ghidra crash-recovery data (opening it from a
+script would delete that data) -- accept or discard the recovery in the GUI
+first.
 
 Mutation is opt-in by evidence group (`--apply-renames`, `--apply-ctors`,
 `--apply-globals`, `--apply-settings`, `--apply-console`, `--apply-metadata`,
@@ -415,13 +453,31 @@ python scripts/run_headless.py f4 ae
 python scripts/run_headless.py starfield sf --import-only
 
 # Creation Kit: independent RTTI/vtable audit (dry-run first)
-python scripts/core/run_vtable_pipeline.py C:/GhidraProjects ExampleProject "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe" --dry-run --target-pe C:/path/CreationKit.exe
+python scripts/core/run_vtable_pipeline.py C:/GhidraProjects Combined "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe" --dry-run --target-pe C:/path/CreationKit.exe
 
 # Creation Kit: reciprocal-unique Skyrim naming ledger (dry-run first)
-python scripts/creationkit/bytesig_port_skyrim_to_ck.py --project-dir C:/GhidraProjects --project-name ExampleProject --target-path "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe"
+python scripts/creationkit/bytesig_port_skyrim_to_ck.py --project-dir C:/GhidraProjects --project-name Combined --target-path "/Creation Kit/CreationKit Skyrim 1.6.1378.1.exe"
 
 # Compile every script, run static safety checks, then run maintained tests
 python scripts/quality_gate.py
+
+# Improve everything in Combined; steps have stable names (see --help)
+python scripts/enrich_combined.py --only skyrim-17104
+```
+
+The generators resolve the locked LLVM under `tools/llvm/bin` themselves, so a
+direct `parse_commonlib_types.py` run no longer picks up whatever `clang` is on
+PATH. A Clang other than the release pinned in `toolchain.lock.json` is refused
+(`BGS_ALLOW_UNPINNED_CLANG=1` overrides), and each generated importer records
+the release it was built with as `BGS_CLANG_VERSION`.
+
+To take out symbols that an older importer placed at wrong addresses --
+re-applying a corrected importer never removes them -- diff the two importers
+and clean up, dry run first:
+
+```bash
+python scripts/commonlibsse/diff_importer_symbols.py OLD.py NEW.py --runtime 17104 --out wrong.csv
+python scripts/commonlibsse/remove_wrong_importer_symbols.py --program-path /Skyrim/SkyrimAE_1_7_104.exe --csv wrong.csv
 ```
 
 ### Symbol priority

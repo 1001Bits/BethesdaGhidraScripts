@@ -1,10 +1,15 @@
 """Skyrim SE / AE / VR address library database loader.
 
-SE (1.5.97) and AE (1.6.1170) ship as compressed meh321 V1/V2 files;
+SE (1.5.97) and AE (1.6.640 / 1.6.1170) ship as compressed meh321 V1/V2 files;
 AE (1.7.104) uses the flat-indexed V5 format.  VR (1.4.15) ships as a flat
-CSV with a metadata row.  All
-three share the SE-derived ID namespace, so a single ID can be looked up
-across all three DBs.
+CSV with a metadata row.
+
+There are TWO ID namespaces.  SE and VR share the SE-derived one; every AE build
+(1.6.640 / 1.6.1170 / 1.7.104) shares the separate AE one.  An SE ID must never
+be looked up in an AE database or vice versa: ~387k AE IDs also exist
+numerically in the SE database, yet for none of the 930 CommonLibSSE
+``RELOCATION_ID(se, ae)`` pairs does the other namespace's ID give the right
+address (``commonlibf4/test_port_names_by_id.py`` measures this).
 """
 
 from __future__ import annotations
@@ -195,6 +200,7 @@ class AddressLibrary:
     def __init__(self):
         self.se_db: Dict[int, int] = {}
         self.ae_db: Dict[int, int] = {}
+        self.db_16640: Dict[int, int] = {}
         self.db_17104: Dict[int, int] = {}
         self.vr_db: Dict[int, int] = {}
 
@@ -374,18 +380,23 @@ class AddressLibrary:
                     len(db), declared_count))
         return db
 
-    def load_all(self, base_path: str, require_17104: bool = False) -> None:
+    def load_all(self, base_path: str, require_17104: bool = False,
+                 require_16640: bool = False) -> None:
         sse_dir = os.path.join(base_path, 'sse')
         self.se_db = self.load_bin(
             os.path.join(sse_dir, 'version-1-5-97-0.bin'), (1, 5, 97, 0))
         self.ae_db = self.load_bin(
             os.path.join(sse_dir, 'versionlib-1-6-1170-0.bin'), (1, 6, 1170, 0))
+        self.db_16640 = self.load_bin(
+            os.path.join(sse_dir, 'versionlib-1-6-640-0.bin'), (1, 6, 640, 0))
         self.db_17104 = self.load_bin(
             os.path.join(sse_dir, 'versionlib-1-7-104-0.bin'), (1, 7, 104, 0))
         self.vr_db = self.load_csv(os.path.join(sse_dir, 'version-1-4-15-0.csv'))
         missing = [name for name, db in (
             ('SE 1.5.97', self.se_db), ('AE 1.6.1170', self.ae_db),
             ('VR 1.4.15', self.vr_db)) if not db]
+        if require_16640 and not self.db_16640:
+            missing.append('AE 1.6.640')
         if require_17104 and not self.db_17104:
             missing.append('AE 1.7.104')
         if missing:

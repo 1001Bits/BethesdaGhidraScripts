@@ -12,23 +12,27 @@ class C, that global is very likely a ``C *``.
 This decompiles each in-scope function, walks CALL pcode ops, back-traces
 arg-0 to a global data address, and records (global, class, caller).
 globals_plan aggregates to a per-global consensus type + confidence,
-written to a review CSV.  Read-only: proposes, never writes.
+written to a review CSV.  Read-only: proposes, never writes.  The CSV is
+replaced atomically and only by a healthy run: a decompiler that does not
+start, or fails (almost) every function, raises and leaves the previous
+evidence in place.
 
 Knobs (env):
-  BGS_GLOBALS_CSV        output path (default: refs/globals_queue_<prog>.csv)
+  BGS_GLOBALS_CSV        output path (default: refs/globals_evidence_<folder>_<prog>.csv)
   BGS_GLOBALS_SCOPE      data|class|all (default data -- only functions that
                          reference a high-in-degree untyped global)
   BGS_GLOBALS_MAX_FUNCS  cap functions decompiled (0 = all)
   BGS_GLOBALS_MIN_INDEG  min distinct referrers for a data-scope global (default 8)
   BGS_GLOBALS_SAMPLES    referrers sampled per candidate global (default 4)
 """
-import csv
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import globals_plan as gp  # noqa: E402
 from evidence_identity import bind_evidence  # noqa: E402
+from review_queue import (GLOBALS, open_decompiler, queue_paths,  # noqa: E402
+                          require_decompile_health, write_csv_atomically)
 
 SCOPE = os.environ.get('BGS_GLOBALS_SCOPE', 'data').lower()
 MAX_FUNCS = int(os.environ.get('BGS_GLOBALS_MAX_FUNCS', '0') or 0)
@@ -111,8 +115,10 @@ def _ram_addr(vn, mem, addr_space, depth=0, pc=None,
             a, mem, addr_space, image_start, image_end)
                 else (None, False))
     if vn.isAddress():
+        # ``isAddress`` means the varnode is STORED in memory: its value is the
+        # content of that global, i.e. the global is a pointer slot.
         a = vn.getAddress()
-        return ((a, False) if (a.isMemoryAddress() and
+        return ((a, True) if (a.isMemoryAddress() and
                                _valid_address(a, mem, addr_space,
                                               image_start, image_end))
                 else (None, False))
@@ -126,6 +132,12 @@ def _ram_addr(vn, mem, addr_space, depth=0, pc=None,
     if op in (pc.PTRSUB, pc.INT_ADD):
         if d.getNumInputs() < 2 or not d.getInput(1).isConstant():
             return (None, False)
+        if (op == pc.PTRSUB and d.getInput(0).isConstant() and
+                int(d.getInput(0).getOffset()) == 0):
+            # The decompiler renders ``&global`` as PTRSUB(const 0, const VA):
+            # input 0 is the RAM space base, never an image address.
+            return _ram_addr(d.getInput(1), mem, addr_space, depth + 1, pc,
+                             image_start, image_end)
         addr, is_ptr = _ram_addr(
             d.getInput(0), mem, addr_space, depth + 1, pc,
             image_start, image_end)
@@ -171,14 +183,19 @@ def _ram_addr(vn, mem, addr_space, depth=0, pc=None,
     return (None, False)
 
 
+def _entry_offset(function):
+    return int(function.getEntryPoint().getOffset())
+
+
 def run():
     from ghidra.app.decompiler import DecompInterface
     from ghidra.program.model.pcode import PcodeOp
     from ghidra.program.model.symbol import SymbolType
     cp = currentProgram  # noqa: F821
-    from binary_identity import inspect_pe, verify_ghidra_program
-    backing_manifest = inspect_pe(str(cp.getExecutablePath()))
-    verify_ghidra_program(cp, [backing_manifest])
+    from target_pe import driver_target_manifest
+    # BGS_TARGET_PE (launcher-verified) or the recorded import path; either
+    # way the file is identity-verified against the Program here.
+    backing_manifest = driver_target_manifest(cp)
     fm = cp.getFunctionManager()
     mem = cp.getMemory()
     addr_space = cp.getAddressFactory().getDefaultAddressSpace()
@@ -187,9 +204,8 @@ def run():
     image_start = int(backing_manifest['image_base'])
     image_end = image_start + int(backing_manifest['image_size'])
 
-    out_csv = os.environ.get('BGS_GLOBALS_CSV') or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'refs',
-        'globals_queue_%s.csv' % cp.getName().replace('.', '_'))
+    # The same path the launchers and globals_apply use (BGS_GLOBALS_CSV wins).
+    out_csv = queue_paths(GLOBALS, cp)[0]
 
     def _in_data(addr):
         if not _valid_address(addr, mem, addr_space, image_start, image_end):
@@ -205,7 +221,10 @@ def run():
 
     def _is_class_method(f):
         p = f.getParentNamespace()
-        return (p is not gns and p.getSymbol() is not None
+        # JPype hands out a fresh wrapper per call: ``p is not gns`` is True
+        # even for the global namespace itself.  Ask Ghidra instead.
+        return (p is not None and not p.isGlobal() and p != gns
+                and p.getSymbol() is not None
                 and p.getSymbol().getSymbolType() == SymbolType.CLASS)
 
     def _data_scoped_funcs():
@@ -227,13 +246,15 @@ def run():
                 refs_by_g.setdefault(to.getOffset(), set()).add(f)
         cand = set(g for g, s in refs_by_g.items() if len(s) >= MIN_INDEG)
         sampled = set()
-        for g in cand:
-            for f in list(refs_by_g[g])[:SAMPLES]:
+        # Deterministic sample: a set of Java objects has no stable order, so
+        # ``list(set)[:N]`` mined different evidence on every run.
+        for g in sorted(cand):
+            for f in sorted(refs_by_g[g], key=_entry_offset)[:SAMPLES]:
                 sampled.add(f)
         print('  data-scope: %d refs scanned, %d untyped globals, %d with '
               'in-degree>=%d -> %d funcs to decompile'
               % (scanned, len(refs_by_g), len(cand), MIN_INDEG, len(sampled)))
-        return list(sampled), cand
+        return sorted(sampled, key=_entry_offset), cand
 
     cand_globals = None
     if SCOPE == 'all':
@@ -244,10 +265,15 @@ def run():
         funcs, cand_globals = _data_scoped_funcs()
 
     decomp = DecompInterface()
-    decomp.openProgram(cp)
+    try:
+        open_decompiler(decomp, cp, 'globals-harvest')
+    except Exception:
+        decomp.dispose()
+        raise
     observations = []
     ptr_votes = {}
-    n = done = 0
+    n = done = failed = 0
+    failures = []
     print('Globals harvest (%s): scope=%s, scanning %d functions ...'
           % (cp.getName(), SCOPE, len(funcs)))
     for f in funcs:
@@ -259,6 +285,10 @@ def run():
         try:
             r = decomp.decompileFunction(f, 30, monitor)  # noqa: F821
             if not (r and r.decompileCompleted()):
+                failed += 1
+                if len(failures) < 5:
+                    failures.append('%s: %s' % (
+                        f.getName(), r.getErrorMessage() if r else 'no result'))
                 continue
             hf = r.getHighFunction()
             for op in hf.getPcodeOps():
@@ -283,34 +313,42 @@ def run():
                 observations.append((gaddr.getOffset(), cls, f.getName()))
                 ptr_votes.setdefault(gaddr.getOffset(), []).append(is_ptr)
                 n += 1
-        except Exception:
+        except Exception as exc:  # noqa: BLE001  (one bad function, not the pass)
+            failed += 1
+            if len(failures) < 5:
+                failures.append('%s: %s' % (f.getName(), exc))
             continue
     decomp.dispose()
+    # Before anything is written: a broken decompiler must not replace the
+    # last good evidence with an empty CSV (nor print the sentinel).
+    require_decompile_health('globals-harvest', done, failed, failures)
 
     aggregated = gp.aggregate_global_types(observations)
     rows = gp.to_rows(aggregated)
     st = cp.getSymbolTable()
-    if not os.path.isdir(os.path.dirname(out_csv)):
-        os.makedirs(os.path.dirname(out_csv))
-    with open(out_csv, 'w', newline='') as fh:
-        w = csv.writer(fh)
-        w.writerow(['global_addr', 'current_symbol', 'inferred_type', 'is_pointer',
-                    'confidence', 'votes', 'total', 'distinct_classes', 'class_votes',
-                    'callers', 'decision_type'])
-        for g, typ, conf, votes, total, distinct, classes_str, callers in rows:
-            addr = addr_space.getAddress(g)
-            sym = st.getPrimarySymbol(addr)
-            cur = sym.getName() if sym is not None else ''
-            pv = ptr_votes.get(g, [])
-            is_ptr = sum(1 for b in pv if b) > len(pv) / 2.0
-            w.writerow(['0x%X' % g, cur, typ, '1' if is_ptr else '0', conf, votes,
-                        total, distinct, classes_str, callers, ''])
+    out_rows = []
+    for g, typ, conf, votes, total, distinct, classes_str, callers in rows:
+        addr = addr_space.getAddress(g)
+        sym = st.getPrimarySymbol(addr)
+        cur = sym.getName() if sym is not None else ''
+        pv = ptr_votes.get(g, [])
+        is_ptr = sum(1 for b in pv if b) > len(pv) / 2.0
+        out_rows.append(['0x%X' % g, cur, typ, '1' if is_ptr else '0', conf,
+                         votes, total, distinct, classes_str, callers, ''])
+    write_csv_atomically(
+        out_csv, ['global_addr', 'current_symbol', 'inferred_type',
+                  'is_pointer', 'confidence', 'votes', 'total',
+                  'distinct_classes', 'class_votes', 'callers',
+                  'decision_type'], out_rows)
     bind_evidence(out_csv, cp, 'globals_evidence', address_coordinate='VA')
 
     high = sum(1 for r in rows if r[2] == 'high')
     med = sum(1 for r in rows if r[2] == 'medium')
     print('\n=== Globals harvest summary (%s) ===' % cp.getName())
     print('  functions scanned=%d  global-as-this observations=%d' % (done, n))
+    if failed:
+        print('  %d of %d decompile(s) failed (first: %s)'
+              % (failed, done, '; '.join(failures[:3])))
     print('  candidate globals=%d  (high=%d, medium=%d, low=%d)'
           % (len(rows), high, med, len(rows) - high - med))
     for g, typ, conf, votes, total, distinct, classes_str, callers in rows[:15]:
@@ -319,5 +357,9 @@ def run():
     print('  -> ' + out_csv)
 
 
-if 'currentProgram' in globals():
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
     run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('globals_harvest'))

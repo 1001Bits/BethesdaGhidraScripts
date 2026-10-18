@@ -2,7 +2,7 @@
 r"""Port analyzed Fallout 4 game names into Fallout 4 Creation Kit 1.11.137.0.
 
 The target is pinned to the exact Steam executable SHA-256.  Source programs
-are opened read-only by exact ExampleProject project path.  Matching requires an
+are opened read-only by exact Combined project path.  Matching requires an
 exact or relocation-masked unique signature at analyzed function entries,
 enforces artifact-wide reciprocal name/address ownership, and never replaces
 an existing non-default target name.  Dry-run is the default; ``--apply`` is
@@ -11,7 +11,7 @@ required to save accepted names.
 Standalone usage (the project must not be open elsewhere)::
 
     python scripts/creationkit/bytesig_port_fallout4_to_ck.py \
-      --project-dir C:\\GhidraProjects --project-name ExampleProject
+      --project-dir C:\\GhidraProjects --project-name Combined
 
 The default target is
 ``/Creation Kit/CreationKit Fallout 4 1.11.137.0.exe``.  The default sources
@@ -54,7 +54,7 @@ CONFIG = shared.PortConfig(
         "Fallout 4 Creation Kit reciprocal-unique game byte-signature names"),
     source_help=(
         "repeatable configured identity-pinned source; defaults to analyzed "
-        "Fallout 4 1.11.221 and 1.10.163 programs in ExampleProject"),
+        "Fallout 4 1.11.221 and 1.10.163 programs in Combined"),
     allowed_source_sha256=(
         ("/Fallout4/Fallout4_1_11_221.exe",
          "488015e2010308bfa164d3720cb618deea7e1c098b1d61af530d258a6f17d27b"),

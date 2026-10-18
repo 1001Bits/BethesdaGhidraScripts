@@ -2,7 +2,7 @@
 globals_harvest review queue.  Technique adapted from alandtse's
 CommonLibVR fork (the apply half of the globals review pattern).
 
-Reads a ``globals_queue_<prog>.csv`` produced by globals_harvest and,
+Reads a ``globals_evidence_<folder>_<prog>.csv`` produced by globals_harvest and,
 for each row meeting the confidence bar, sets the global's data type to
 the inferred class (or a pointer to it) and renames the ``DAT_*`` slot
 to a readable singleton name.  A typed global lets the decompiler
@@ -11,19 +11,26 @@ the next discovery pass resolve one level deeper.
 
 DEFAULT IS DRY-RUN.  Set BGS_ENRICH_APPLY=go to write.  Only rows whose
 ``decision_type`` column is blank are auto-decided by confidence; a
-reviewer can hard-override a row by filling ``decision_type`` (that
-value wins, or ``skip`` excludes the row).
+reviewer can hard-override a row by filling ``decision_type`` in the
+DECISIONS csv (that value wins, or ``skip`` excludes the row).  The mined
+EVIDENCE csv is content-bound and must not be edited.
+
+When applying, missing/stale/unbound evidence or a missing decisions file
+RAISES (the launcher reports FAIL and rolls back); a dry-run prints a
+``REFUSED:`` line instead.
 
 Knobs (env):
   BGS_ENRICH_APPLY=go        actually type/name (default dry-run)
-  BGS_GLOBALS_APPLY_CSV      input queue CSV (default: refs/globals_queue_<prog>.csv)
+  BGS_GLOBALS_CSV            mined evidence (default: refs/globals_evidence_<folder>_<prog>.csv)
+  BGS_GLOBALS_APPLY_CSV      reviewer decisions (default: refs/globals_decisions_<folder>_<prog>.csv;
+                             written by the launchers after globals_harvest)
   BGS_GLOBALS_MIN_CONF       min confidence to auto-apply: high|medium (default high)
+  BGS_TARGET_PE              launcher-verified backing executable
 """
-import csv
 import os
-import sys
 
-from evidence_identity import EvidenceIdentityError, validate_evidence
+from review_queue import (GLOBALS, ReviewQueueError, load_reviewed_rows,
+                          queue_paths)
 
 APPLY = os.environ.get('BGS_ENRICH_APPLY', 'dry').lower() == 'go'
 MIN_CONF = os.environ.get('BGS_GLOBALS_MIN_CONF', 'high').lower()
@@ -41,12 +48,23 @@ def _resolve_struct(dtm, name):
     return next(iter(unique.values())) if len(unique) == 1 else None
 
 
+def inline_struct_width(struct):
+    """Bytes an inline ``struct`` occupies; 0 when it cannot be laid down
+    (a not-yet-defined / zero-length placeholder struct)."""
+    for flag in ('isNotYetDefined', 'isZeroLength'):
+        test = getattr(struct, flag, None)
+        if test is not None and test():
+            return 0
+    return max(int(struct.getLength()), 0)
+
+
 def run():
     from ghidra.program.model.symbol import SourceType
     cp = currentProgram  # noqa: F821
-    from binary_identity import inspect_pe, verify_ghidra_program
-    backing_manifest = inspect_pe(str(cp.getExecutablePath()))
-    verify_ghidra_program(cp, [backing_manifest])
+    from target_pe import driver_target_manifest
+    # BGS_TARGET_PE (launcher-verified) or the recorded import path; either
+    # way the file is identity-verified against the Program here.
+    backing_manifest = driver_target_manifest(cp)
     dtm = cp.getDataTypeManager()
     listing = cp.getListing()
     st = cp.getSymbolTable()
@@ -66,24 +84,59 @@ def run():
                 return True
         return False
 
-    in_csv = os.environ.get('BGS_GLOBALS_APPLY_CSV') or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'refs',
-        'globals_queue_%s.csv' % cp.getName().replace('.', '_'))
-    if not os.path.isfile(in_csv):
-        print('globals-apply: no queue CSV at ' + in_csv)
-        return
-    try:
-        binding = validate_evidence(
-            in_csv, cp, 'globals_decisions', require_content=True)
-        if binding.get('address_coordinate') != 'VA':
-            raise EvidenceIdentityError(
-                'global_addr evidence must use VA coordinates')
-    except EvidenceIdentityError as exc:
-        print('globals-apply: refusing stale/unbound queue: %s' % exc)
-        return
+    def span_fits(raw_va, addr, width, block):
+        """[addr, addr+width) is backing-PE data inside ONE loaded block."""
+        if not is_manifest_data_va(raw_va, width):
+            return False
+        try:
+            return bool(block.contains(addr.add(width - 1)))
+        except Exception:  # noqa: BLE001  (AddressOutOfBoundsException)
+            return False
 
-    rows = list(csv.DictReader(open(in_csv, newline='')))
-    typed = renamed = skipped = missing = 0
+    def span_conflict(addr, width):
+        """Any instruction or concrete (non-undefined) data in the span?"""
+        for delta in range(width):
+            location = addr.add(delta)
+            if listing.getInstructionContaining(location) is not None:
+                return True
+            existing = listing.getDefinedDataContaining(location)
+            if (existing is not None and not
+                    existing.getDataType().getName().startswith('undefined')):
+                return True
+        return False
+
+    def named_inside(addr, width):
+        """A non-default symbol strictly inside the span -- another named
+        global an inline struct would swallow?"""
+        if width <= 1:
+            return False
+        end = addr.add(width - 1)
+        symbols = st.getSymbolIterator(addr.add(1), True)
+        while symbols.hasNext():
+            symbol = symbols.next()
+            if symbol.getAddress().compareTo(end) > 0:
+                return False
+            if symbol.getSource() != SourceType.DEFAULT:
+                return True
+        return False
+
+    # Rows come from the content-bound EVIDENCE globals_harvest wrote; only the
+    # ``decision_type`` column is taken from the reviewer-editable DECISIONS
+    # file (identity-bound, not content-bound).  See review_queue.py.
+    evidence_csv, decisions_csv = queue_paths(GLOBALS, cp)
+    try:
+        rows, n_decisions = load_reviewed_rows(
+            evidence_csv, decisions_csv, cp, GLOBALS)
+    except ReviewQueueError as exc:
+        if APPLY:
+            # A refusal while applying is a FAILURE: raising reaches the
+            # launcher as stderr, so it rolls back and reports FAIL.
+            raise
+        print('globals-apply: REFUSED: %s' % exc)
+        return
+    print('globals-apply: %d evidence rows from %s, %d reviewer decision(s) '
+          'from %s' % (len(rows), evidence_csv, n_decisions, decisions_csv))
+    typed = renamed = skipped = missing = inline = 0
     had_parent_transaction = (
         APPLY and cp.getCurrentTransactionInfo() is not None)
     tx = cp.startTransaction('globals-apply') if APPLY else None
@@ -119,54 +172,58 @@ def run():
             if struct is None:
                 missing += 1
                 continue
-            # ALWAYS type as a pointer (Class*) at the program's ABI width. Typing
-            # the slot as the full inline struct is unreliable: large
-            # structs fail to create (clear rejected) or truncate to a few
-            # bytes, and a wrong inline/pointer guess would over-clear
-            # adjacent globals.  Class* is one pointer wide (no over-clear, no
-            # truncation), correct for the common pointer-slot singleton,
-            # and still lets the decompiler propagate one deref deeper.
-            dt = dtm.getPointer(struct, pointer_size)
+            is_inline = (r.get('is_pointer') or '1').strip() == '0'
+            if is_inline and not decision:
+                # An INLINE singleton (the address is the object itself) must
+                # not get ``Class *`` laid over its vtable pointer.  A reviewer
+                # decision is required to type it.
+                inline += 1
+                continue
+            if is_inline:
+                # Reviewer-approved INLINE singleton: the address IS the
+                # object, so it gets the struct itself -- never ``Class *``
+                # over its vtable.  It must fit entirely in data the backing
+                # PE and the program agree on, or the row is skipped.
+                dt = struct
+                width = inline_struct_width(struct)
+            else:
+                # A pointer slot: ``Class *`` at the program's ABI width (one
+                # pointer wide: no over-clear, no truncation), which still
+                # lets the decompiler propagate one deref deeper.
+                dt = dtm.getPointer(struct, pointer_size)
+                width = pointer_size
+            if width <= 0 or not span_fits(raw_va, addr, width, block):
+                skipped += 1
+                continue
 
             # Decide whether to (re)type this slot:
-            #  - undefined / no data        -> type as Class*
+            #  - undefined / no data        -> type as Class* / Class
             #  - already a pointer (Class*) -> done, skip
             #  - any concrete type/instruction -> preserve it.  Even a bare
             #    same-class struct may be analyst work; migrations must not
             #    infer permission to clear it.
-            conflict = False
-            for delta in range(pointer_size):
-                location = addr.add(delta)
-                if listing.getInstructionContaining(location) is not None:
-                    conflict = True
-                    break
-                existing = listing.getDefinedDataContaining(location)
-                if (existing is not None and not
-                        existing.getDataType().getName().startswith(
-                            'undefined')):
-                    conflict = True
-                    break
-            if conflict:
+            if span_conflict(addr, width) or (
+                    is_inline and named_inside(addr, width)):
                 skipped += 1
                 continue
 
+            # Decide naming BEFORE typing: once the slot is a pointer its
+            # default symbol reads ``PTR_...`` and no name test would match.
+            sym = st.getPrimarySymbol(addr)
+            placeholder = sym is None or sym.getSource() == SourceType.DEFAULT
             if not APPLY:
                 typed += 1
-                renamed += 1
+                renamed += 1 if placeholder else 0
                 continue
-            listing.clearCodeUnits(addr, addr.add(pointer_size - 1), False)
+            listing.clearCodeUnits(addr, addr.add(width - 1), False)
             if listing.createData(addr, dt) is None:
                 raise RuntimeError(
-                    'globals-apply failed to create pointer data')
+                    'globals-apply failed to create %s data at %s'
+                    % ('inline struct' if is_inline else 'pointer', addr))
             typed += 1
-            # Name the slot g_<Class> when it's a DAT_/g_ placeholder.
-            sym = st.getPrimarySymbol(addr)
-            if sym is None:
+            # Name the slot g_<Class> only when it carried no real name.
+            if placeholder:
                 st.createLabel(addr, 'g_' + cls, SourceType.ANALYSIS)
-                renamed += 1
-            elif (sym.getSource() == SourceType.DEFAULT and
-                  sym.getName().startswith(('DAT_', 'g_'))):
-                sym.setName('g_' + cls, SourceType.ANALYSIS)
                 renamed += 1
         commit = True
     finally:
@@ -177,12 +234,18 @@ def run():
 
     print('globals-apply (%s): %s  min-conf=%s'
           % (cp.getName(), 'APPLIED' if APPLY else 'DRY-RUN', MIN_CONF))
-    print('  %s=%d  %s=%d  skipped(low-conf)=%d  struct-not-found=%d'
+    print('  %s=%d  %s=%d  skipped=%d  inline-needs-review=%d  '
+          'struct-not-found=%d'
           % ('typed' if APPLY else 'would-type', typed,
-             'named' if APPLY else 'would-name', renamed, skipped, missing))
+             'named' if APPLY else 'would-name', renamed, skipped, inline,
+             missing))
     if not APPLY:
         print('  set BGS_ENRICH_APPLY=go to apply.')
 
 
-if 'currentProgram' in globals():
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
     run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('globals_apply'))

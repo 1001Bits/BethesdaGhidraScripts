@@ -174,7 +174,9 @@ def x64_runtime_function_starts(path: str) -> set[int]:
     This is deliberately conservative: x64 leaf functions without unwind
     records are omitted.  Cross-build evidence may lose coverage, but it can
     no longer land in the middle of an instruction sequence and be emitted as
-    an address-library function entry.
+    an address-library function entry.  Chained (``UNW_FLAG_CHAININFO``)
+    records are fragments of another function and are excluded for the same
+    reason: their begin RVA is mid-function.
     """
     with open(path, 'rb') as fh:
         data = fh.read()
@@ -190,25 +192,40 @@ def x64_runtime_function_starts(path: str) -> set[int]:
     sec_off = pe_off + 24 + opt_size
     pdata = None
     image_size = struct.unpack_from('<I', data, pe_off + 24 + 56)[0]
+    raw_spans = []   # (rva, raw_size, raw_offset) of every file-backed section
     for index in range(n_sections):
         off = sec_off + index * 40
         if off + 40 > len(data):
             raise ValueError('truncated section table in {}'.format(path))
         name = data[off:off + 8].split(b'\0', 1)[0]
-        if name == b'.pdata':
-            raw_size, raw_off = struct.unpack_from('<II', data, off + 16)
+        sec_rva, raw_size, raw_off = struct.unpack_from('<III', data, off + 12)
+        if raw_off and raw_size:
+            raw_spans.append((sec_rva, raw_size, raw_off))
+        if name == b'.pdata' and pdata is None:
             if raw_off + raw_size > len(data):
                 raise ValueError('truncated .pdata in {}'.format(path))
             pdata = data[raw_off:raw_off + raw_size]
-            break
     if pdata is None:
         raise ValueError('no .pdata section in {}'.format(path))
+
+    def _is_chained_fragment(unwind_rva):
+        # UNW_FLAG_CHAININFO (0x4 in the top five bits of the first
+        # UNWIND_INFO byte): the record is a fragment of another function and
+        # its BeginAddress is mid-function, not an entry point.
+        for sec_rva, raw_size, raw_off in raw_spans:
+            delta = unwind_rva - sec_rva
+            if 0 <= delta < raw_size and raw_off + delta < len(data):
+                return bool((data[raw_off + delta] >> 3) & 0x4)
+        return False
+
     starts = set()
     for off in range(0, len(pdata) - 11, 12):
         begin, end, unwind = struct.unpack_from('<III', pdata, off)
         if begin == end == unwind == 0:
             continue
         if 0 < begin < end <= image_size and unwind < image_size:
+            if _is_chained_fragment(unwind):
+                continue
             starts.add(begin)
     if not starts:
         raise ValueError('no valid runtime-function entries in {}'.format(path))

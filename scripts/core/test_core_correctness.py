@@ -442,6 +442,68 @@ def test_existing_replaced_backing_file_never_uses_missing_path_fallback(tmp_pat
         binary_identity.verify_ghidra_program(program, [allowed])
 
 
+def test_explicit_target_pe_rescues_a_recorded_path_holding_another_build(tmp_path):
+    """Combined's Starfield.exe records C:/Games/Starfield 1.7/, which holds a
+    different build; --target-pe with the imported bytes must be accepted."""
+    import target_pe
+
+    recorded = tmp_path / 'recorded' / 'Game.exe'
+    recorded.parent.mkdir()
+    _write_minimal_pe(recorded, 8, marker=1)
+    imported = tmp_path / 'copy' / 'Game.exe'
+    imported.parent.mkdir()
+    _write_minimal_pe(imported, 8, marker=2)
+    allowed = binary_identity.inspect_pe(str(imported))
+    program = _program_fixture(recorded, allowed, allowed['sha256'])
+
+    with pytest.raises(binary_identity.PEIdentityError,
+                       match='backing executable mismatch'):
+        binary_identity.verify_ghidra_program(program, [allowed])
+    assert binary_identity.verify_ghidra_program(
+        program, [allowed], target_pe=str(imported)) is allowed
+
+    path, selected = target_pe.select_target_pe(program, [str(imported)])
+    assert path == str(imported) and selected == allowed
+    assert binary_identity.verify_ghidra_program(program, [selected]) is selected
+    assert target_pe.driver_target_manifest(
+        program, {'BGS_TARGET_PE': str(imported)}) == allowed
+
+
+def test_explicit_target_pe_must_be_the_imported_bytes(tmp_path):
+    recorded = tmp_path / 'Game.exe'
+    _write_minimal_pe(recorded, 8, marker=1)
+    imported = tmp_path / 'imported.exe'
+    _write_minimal_pe(imported, 8, marker=2)
+    other = tmp_path / 'other.exe'
+    _write_minimal_pe(other, 8, marker=3)
+    allowed = binary_identity.inspect_pe(str(imported))
+    wrong = binary_identity.inspect_pe(str(other))
+
+    program = _program_fixture(recorded, allowed, allowed['sha256'])
+    with pytest.raises(binary_identity.PEIdentityError, match='not the imported'):
+        binary_identity.verify_ghidra_program(
+            program, [wrong], target_pe=str(other))
+    with pytest.raises(binary_identity.PEIdentityError, match='no allowed manifest'):
+        binary_identity.verify_ghidra_program(
+            program, [wrong], target_pe=str(imported))
+    with pytest.raises(binary_identity.PEIdentityError, match='exact import-time'):
+        binary_identity.verify_ghidra_program(
+            _program_fixture(recorded, allowed, None), [allowed],
+            target_pe=str(imported))
+    with pytest.raises(binary_identity.PEIdentityError, match='anchor mismatch'):
+        bad_bytes = {
+            int(anchor['rva']) + index: 0
+            for anchor in allowed['anchors']
+            for index, _byte in enumerate(bytes.fromhex(anchor['bytes']))
+        }
+        binary_identity.verify_ghidra_program(
+            _program_fixture(recorded, allowed, allowed['sha256'], bad_bytes),
+            [allowed], target_pe=str(imported))
+    with pytest.raises(binary_identity.PEIdentityError, match='not a regular file'):
+        binary_identity.verify_ghidra_program(
+            program, [allowed], target_pe=str(tmp_path / 'missing.exe'))
+
+
 def test_rtti_runner_attests_missing_import_path_with_exact_local_pe(tmp_path):
     exact = tmp_path / 'exact.exe'
     _write_minimal_pe(exact, 8, marker=7)
@@ -526,14 +588,43 @@ def test_find_clang_prefers_explicit_override_then_path(tmp_path, monkeypatch):
     on_path = tmp_path / 'path-clang.exe'
     explicit.write_bytes(b'explicit')
     on_path.write_bytes(b'path')
+    pinned = tmp_path / 'pinned-clang.exe'
     monkeypatch.setenv('BGS_CLANG_BINARY', str(explicit))
     monkeypatch.setattr(clang_types.shutil, 'which',
                         lambda executable: str(on_path))
+    monkeypatch.setattr(clang_types, '_PINNED_CLANG', str(pinned))
 
     assert clang_types.find_clang_binary() == str(explicit)
 
     monkeypatch.delenv('BGS_CLANG_BINARY')
     assert clang_types.find_clang_binary() == str(on_path)
+
+    # The repository-pinned LLVM beats whatever clang is first on PATH.
+    pinned.write_bytes(b'pinned')
+    assert clang_types.find_clang_binary() == str(pinned)
+
+
+def test_unpinned_clang_is_refused_unless_explicitly_allowed(monkeypatch):
+    pinned = clang_types.pinned_llvm_version()
+    monkeypatch.delenv('BGS_ALLOW_UNPINNED_CLANG', raising=False)
+    monkeypatch.setattr(clang_types, 'clang_version', lambda binary: '22.1.5')
+    monkeypatch.setattr(clang_types, '_USED_CLANG_VERSION', None)
+    try:
+        clang_types.require_pinned_clang('clang')
+    except clang_types.ToolchainMismatchError as exc:
+        assert '22.1.5' in str(exc) and pinned in str(exc)
+    else:
+        raise AssertionError('an unpinned Clang was accepted')
+    assert clang_types.used_clang_version() == 'none'
+
+    monkeypatch.setenv('BGS_ALLOW_UNPINNED_CLANG', '1')
+    assert clang_types.require_pinned_clang('clang') == '22.1.5'
+    assert clang_types.used_clang_version() == '22.1.5'
+
+    monkeypatch.delenv('BGS_ALLOW_UNPINNED_CLANG')
+    monkeypatch.setattr(clang_types, 'clang_version', lambda binary: pinned)
+    assert clang_types.require_pinned_clang('clang') == pinned
+    assert clang_types.used_clang_version() == pinned
 
 
 def test_find_clang_rejects_missing_explicit_override(tmp_path, monkeypatch):

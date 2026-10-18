@@ -19,6 +19,11 @@ the name-port to the exact target executable; produce it with::
 
 (it prints the SHA-256 to pass as ``--target-sha256``).
 
+``--create-missing`` uses ``apply_ida_csv_names.create_missing_function``:
+never inside an existing function, an instruction is required, and the
+address must be a ``.pdata`` start of the verified target executable when one
+is available (``--target-pe`` or the recorded import path).
+
 Usage:
   python apply_og_names.py <project_dir> <project_name> <program_path> \
       <funcs_json> --target-sha256 <sha> [--apply] [--overwrite] [--max N]
@@ -35,9 +40,25 @@ GHIDRA_DIR = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (Path(__file__).resolv
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
-from evidence_identity import read_binding  # noqa: E402
+from evidence_identity import read_binding, validate_evidence  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from apply_ida_csv_names import (create_missing_function,  # noqa: E402
+                                 verified_function_starts)
 
 _PLACEHOLDER = ("FUN_", "sub_", "thunk_FUN_", "thunk_sub_")
+
+
+def require_valid_evidence(funcs_json, program, binding):
+    """Validate the sidecar against the OPENED program, like the sibling
+    appliers (apply_idc_labels / apply_ida_csv_names).
+
+    ``--target-sha256`` only compares two strings the caller supplied.  This
+    checks the program's own identity (import hash vs BGS target manifest),
+    its pointer size and -- the evidence is VA-based -- that the program has
+    not been rebased away from the image base the names were mined at.
+    """
+    return validate_evidence(funcs_json, program, binding.get('kind'),
+                             require_content=True)
 
 
 def _resolve_program(project, program_path):
@@ -74,7 +95,11 @@ def main():
                     help="replace any existing name, not just placeholders")
     ap.add_argument("--create-missing", action="store_true",
                     help="create a function where Ghidra has none (recovers "
-                         "functions its analysis missed) before naming")
+                         "functions its analysis missed) before naming; never "
+                         "inside an existing function")
+    ap.add_argument("--target-pe",
+                    help="exact target executable for --create-missing's "
+                         ".pdata check (default: the recorded import path)")
     ap.add_argument("--max", type=int, default=0, help="limit to first N functions")
     args = ap.parse_args()
 
@@ -101,7 +126,6 @@ def main():
     pyghidra.start(install_dir=GHIDRA_DIR)
     from ghidra.util.task import ConsoleTaskMonitor
     from ghidra.app.cmd.label import DemanglerCmd
-    from ghidra.app.cmd.function import CreateFunctionCmd
     from ghidra.program.model.symbol import SourceType
     import java.lang
     monitor = ConsoleTaskMonitor()
@@ -111,23 +135,32 @@ def main():
         pdir = pdir + "/" + pname.rsplit("/", 1)[0]
         pname = pname.rsplit("/", 1)[1]
 
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    from ghidra_project import open_program, open_user_project
+    with open_user_project(pdir, pname) as project:
         df = _resolve_program(project, args.program_path)
         if df is None:
             print("ERROR: program not found: %s" % args.program_path)
             sys.exit(3)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, True, False, monitor)
+        # Read-only for a dry run; never destroys crash-recovery data.
+        program = open_program(df, consumer, monitor, write=bool(args.apply))
         try:
             actual_sha256 = (program.getExecutableSHA256() or '').lower()
             if actual_sha256 != args.target_sha256.lower():
                 raise RuntimeError('target executable SHA-256 mismatch')
+            if args.apply:
+                require_valid_evidence(args.funcs_json, program, binding)
+            function_starts = None
+            if args.apply and args.create_missing:
+                function_starts = verified_function_starts(
+                    program, args.target_sha256, args.target_pe)
             base = program.getImageBase().getOffset()
             space = program.getAddressFactory().getDefaultAddressSpace()
             fm = program.getFunctionManager()
             mem = program.getMemory()
             st = {"total": 0, "applied": 0, "no_func": 0, "skip_named": 0,
-                  "skip_noise": 0, "demangle_fail": 0, "created": 0}
+                  "skip_noise": 0, "demangle_fail": 0, "created": 0,
+                  "create_refused": 0}
 
             tx = program.startTransaction("apply OG names") if args.apply else None
             commit = False
@@ -147,12 +180,13 @@ def main():
                     func = fm.getFunctionAt(addr)
                     if func is None:
                         # recover a function Ghidra's analysis missed
-                        if (args.apply and args.create_missing and blk is not None
-                                and blk.isExecute() and blk.isInitialized()):
-                            if CreateFunctionCmd(addr).applyTo(program, monitor):
-                                func = fm.getFunctionAt(addr)
-                                if func is not None:
-                                    st["created"] += 1
+                        if args.apply and args.create_missing:
+                            func, outcome = create_missing_function(
+                                program, addr, monitor, function_starts)
+                            if func is not None:
+                                st["created"] += 1
+                            else:
+                                st["create_refused"] += 1
                         if func is None:
                             st["no_func"] += 1
                             continue
@@ -179,17 +213,19 @@ def main():
                 commit = True
             finally:
                 if tx is not None:
-                    program.endTransaction(tx, commit)
+                    if not program.endTransaction(tx, commit) and commit:
+                        raise RuntimeError("transaction did not commit; nothing was saved")
             if args.apply and commit and st["applied"]:
                 program.save("apply OG names", monitor)
         finally:
             program.release(consumer)
 
     mode = "APPLIED" if args.apply else "DRY-RUN"
-    print("%s: %d/%d names placed  (created %d missing funcs, no-func %d, "
-          "skip-already-named %d, skip-noise %d, fail %d)"
-          % (mode, st["applied"], st["total"], st["created"], st["no_func"],
-             st["skip_named"], st["skip_noise"], st["demangle_fail"]))
+    print("%s: %d/%d names placed  (created %d missing funcs, creation "
+          "refused %d, no-func %d, skip-already-named %d, skip-noise %d, fail %d)"
+          % (mode, st["applied"], st["total"], st["created"],
+             st["create_refused"], st["no_func"], st["skip_named"],
+             st["skip_noise"], st["demangle_fail"]))
     if not args.apply:
         print("  re-run with --apply to write + save (and --overwrite to replace "
               "byte-sig names).")

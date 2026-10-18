@@ -12,6 +12,10 @@ from pathlib import Path
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 
 def main():
@@ -30,7 +34,7 @@ def main():
     import java.lang
     monitor = ConsoleTaskMonitor()
 
-    with pyghidra.open_project(project_dir, project_name, create=False) as project:
+    with open_user_project(project_dir, project_name) as project:
         root = project.getProjectData().getRootFolder()
 
         def walk(folder, files):
@@ -47,7 +51,7 @@ def main():
             if program_filter and df.getName() != program_filter:
                 continue
             consumer = java.lang.Object()
-            program = df.getDomainObject(consumer, False, False, monitor)
+            program = open_program(df, consumer, monitor, write=False)
             try:
                 fm = program.getFunctionManager()
                 total = fm.getFunctionCount()

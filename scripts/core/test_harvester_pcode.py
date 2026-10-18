@@ -160,3 +160,36 @@ def test_constructor_parameter_phi_requires_unanimous_identity():
     params = {"a": "int", "b": "float"}
     assert ctor_mine._val_param(same, params, PC) == "a"
     assert ctor_mine._val_param(conflict, params, PC) is None
+
+
+def test_decompiler_global_reference_shape_is_resolved():
+    """``&global`` is PTRSUB(const 0, const VA); input 0 is the space base."""
+    space = Space()
+    reference = expr(PC.PTRSUB, const(0), const(0x2040))
+    addr, is_pointer = globals_harvest._ram_addr(
+        reference, Memory(), space, pc=PC, image_start=0x1000, image_end=0x9000)
+    assert addr.getOffset() == 0x2040
+    assert is_pointer is False          # the address IS the object (inline)
+
+    field = expr(PC.PTRSUB, reference, const(0x18))
+    assert globals_harvest._ram_addr(
+        field, Memory(), space, pc=PC, image_start=0x1000,
+        image_end=0x9000)[0].getOffset() == 0x2058
+
+    # outside the image it stays unresolved, never clamped or guessed
+    outside = expr(PC.PTRSUB, const(0), const(0x20))
+    assert globals_harvest._ram_addr(
+        outside, Memory(), space, pc=PC, image_start=0x1000,
+        image_end=0x9000)[0] is None
+
+
+def test_memory_stored_varnode_is_a_pointer_slot():
+    """``Varnode.isAddress()`` = stored in memory, so its VALUE is the content."""
+    space = Space()
+    slot = Varnode(address=Address(space, 0x3000))
+    addr, is_pointer = globals_harvest._ram_addr(slot, Memory(), space, pc=PC)
+    assert addr.getOffset() == 0x3000 and is_pointer is True
+
+    loaded = expr(PC.LOAD, const(0), expr(PC.PTRSUB, const(0), const(0x3000)))
+    addr, is_pointer = globals_harvest._ram_addr(loaded, Memory(), space, pc=PC)
+    assert addr.getOffset() == 0x3000 and is_pointer is True

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Propagate function names between game versions via shared address-library IDs.
 
-F4's NG/AE/1.11.221 and Skyrim's SE/AE/VR each share one meh321 address-library
-ID namespace: the same ID resolves to a (usually different) RVA in each build,
-so a name known at one build's RVA can be placed at the *exact* corresponding
-RVA in a sibling -- no byte-signature guessing.  This is how a poorer decomp
+Builds that share one meh321 address-library ID namespace resolve the same ID
+to a (usually different) RVA in each build, so a name known at one build's RVA
+can be placed at the *exact* corresponding RVA in a sibling -- no byte-signature
+guessing.  The shared groups are F4 NG/AE/1.11.221/1.11.240, Skyrim SE/VR, and
+Skyrim AE 1.6.640/1.6.1170/1.7.104.  Skyrim SE and AE are DIFFERENT namespaces:
+387k AE IDs also exist numerically in the SE database, but for none of the 930
+CommonLibSSE ``RELOCATION_ID(se, ae)`` pairs does the AE ID resolve to the right
+SE address, so an SE<->AE port by ID mis-places every name.  This is how a poorer decomp
 (F4 221 was 36.8% named) inherits a richer one (AE reached 72%+ after the
 IDA-name port).  Pick the game with ``--game`` (default f4).
 
@@ -16,6 +20,13 @@ identity-gated, namespace-aware, ``--create-missing`` applier already in use.
 Namespaces that do NOT share IDs (OG and VR are each disjoint from NG/AE/221)
 are rejected: an ID means nothing across them, so porting would mis-place every
 name.  Use byte-signature porting (``run_bytesig_port.py``) for those.
+
+Nothing is guessed: a source RVA that several IDs share (identical-code
+folding) has no unique ID and is dropped, a target RVA claimed by two different
+names is dropped, vtable-slot placeholders (``X::FuncN``, ``X::Unk_XX``) are not
+ported, and a name embedding the source function's own address
+(``Unwind@1415c4354``, ``Foo_14053EB00``) is retargeted to the target address --
+or dropped when the embedded address is not its own.
 
 Two source modes:
   * ``--from-program <name>``   pull names from a sibling Ghidra program
@@ -31,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import os
 import re
@@ -43,22 +55,37 @@ REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO / "scripts" / "commonlibsse"))
 sys.path.insert(0, str(REPO / "scripts" / "core"))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 _PDB_LINE = re.compile(r'^\s*public \[0x([0-9A-Fa-f]+)\]\s+(.*\S)\s*$')
+# Slot-numbered vtable placeholders: the number is a build-specific slot.
+SLOT_PLACEHOLDER_RE = re.compile(r"(?:^|::)(?:Func\d+(?:_v\d+)?|Unk_[0-9A-Fa-f]+)$")
+_EMBEDDED_ADDRESS = re.compile(r"^(.*?)([_@])(14[0-9A-Fa-f]{7})$")
+IMAGE_BASE = 0x140000000    # every F4 / Skyrim x64 build
 
-# Per game: the builds that share ONE address-library ID namespace (so an ID
-# ports exactly), and how each maps onto the loader's per-build dict.  OG/VR
-# (F4) are each disjoint and intentionally absent -- use byte-sig porting there.
+# Per game: the GROUPS of builds that share one address-library ID namespace (an
+# ID ports exactly only inside a group), and how each build maps onto the
+# loader's per-build dict.  F4 OG/VR are intentionally absent -- use byte-sig
+# porting there.  test_port_names_by_id.py checks every group, and every pair
+# kept apart, against the address libraries themselves.
 _GAMES = {
     "f4": {
-        "shared": {"ng", "ae", "221"},
-        "attr": {"ng": "ng_db", "ae": "ae_db", "221": "db_221"},
+        "groups": [{"ng", "ae", "221", "240"}],
+        "attr": {"ng": "ng_db", "ae": "ae_db", "221": "db_221",
+                 "240": "db_240"},
     },
     "skyrim": {
-        "shared": {"se", "ae", "vr"},
-        "attr": {"se": "se_db", "ae": "ae_db", "vr": "vr_db"},
+        "groups": [{"se", "vr"}, {"ae", "16640", "17104"}],
+        "attr": {"se": "se_db", "ae": "ae_db", "vr": "vr_db",
+                 "16640": "db_16640", "17104": "db_17104"},
     },
 }
+
+
+def shared_namespace(game, source, target):
+    """True only when both builds sit in the same shared-ID group."""
+    return any(source in group and target in group
+               for group in _GAMES[game]["groups"])
 
 
 def _load_module(rel_path, mod_name):
@@ -87,10 +114,75 @@ def _load_library(game):
 
 
 def _rva_to_id(db):
-    out = {}
+    """(RVA -> ID, ambiguous RVAs).  An RVA that several IDs share (identical
+    code folding) has no unique ID: it is dropped, never first-wins (the same
+    rule as ``commonlibsse/address_library.unique_reverse_ids``)."""
+    reverse = {}
+    ambiguous = set()
     for ident, rva in db.items():
-        out.setdefault(rva, ident)
-    return out
+        if rva in ambiguous:
+            continue
+        if rva in reverse:
+            reverse.pop(rva)
+            ambiguous.add(rva)
+        else:
+            reverse[rva] = ident
+    return reverse, ambiguous
+
+
+def port_name(name, source_rva, target_rva):
+    """The name to place at ``target_rva``, or None when it must not travel.
+
+    Slot placeholders carry a build-specific slot number.  A local name that
+    embeds the source function's OWN address is rewritten to the target
+    address (same separator and letter case); one embedding any other address
+    names something else in the source build and is dropped.
+    """
+    if SLOT_PLACEHOLDER_RE.search(name):
+        return None
+    namespace, separator, local = name.rpartition("::")
+    match = _EMBEDDED_ADDRESS.match(local)
+    if match:
+        if int(match.group(3), 16) != IMAGE_BASE + source_rva:
+            return None
+        digits = "{:X}".format(IMAGE_BASE + target_rva)
+        if match.group(3) != match.group(3).upper():
+            digits = digits.lower()
+        local = match.group(1) + match.group(2) + digits
+    return namespace + separator + local
+
+
+def plan_rows(pairs, src_db, tgt_db):
+    """CSV rows ``(name, '', '', target_rva_hex, id)`` plus drop statistics.
+
+    Every target RVA receives at most one name: when different names claim
+    it, all of them are dropped (no first-wins)."""
+    reverse, ambiguous = _rva_to_id(src_db)
+    stats = collections.Counter()
+    claims = collections.defaultdict(dict)       # target rva -> {name: ids}
+    for rva, name in pairs:
+        ident = reverse.get(rva)
+        if ident is None:
+            stats["ambiguous-source-rva" if rva in ambiguous else "no-id"] += 1
+            continue
+        tgt_rva = tgt_db.get(ident)
+        if tgt_rva is None:
+            stats["id-absent-in-target"] += 1
+            continue
+        ported = port_name(str(name), rva, tgt_rva)
+        if ported is None:
+            stats["not-portable"] += 1
+            continue
+        claims[tgt_rva].setdefault(ported, set()).add(ident)
+    rows = []
+    for tgt_rva in sorted(claims):
+        names = claims[tgt_rva]
+        if len(names) != 1:
+            stats["target-claimed-twice"] += sum(len(ids) for ids in names.values())
+            continue
+        (ported, ids), = names.items()
+        rows.append((ported, "", "", "%X" % tgt_rva, str(min(ids))))
+    return rows, stats
 
 
 def _source_pairs_from_pdb(path):
@@ -121,12 +213,12 @@ def _source_pairs_from_program(project_dir, project_name, program_name):
         pname = pname.rsplit("/", 1)[1]
 
     out = []
-    with pyghidra.open_project(pdir, pname, create=False) as project:
+    with open_user_project(pdir, pname) as project:
         df = _walk(project.getProjectData().getRootFolder(), program_name)
         if df is None:
             raise SystemExit("source program not found: " + program_name)
         consumer = java.lang.Object()
-        program = df.getDomainObject(consumer, False, False, monitor)
+        program = open_program(df, consumer, monitor, write=False)
         try:
             base = program.getImageBase().getOffset()
             for func in program.getFunctionManager().getFunctions(True):
@@ -172,19 +264,23 @@ def main():
 
     game = _GAMES[args.game]
     for role, value in (("source", args.source), ("target", args.target)):
-        if value not in game["shared"]:
-            ap.error("{} build {!r} is not in {}'s shared-ID namespace {} "
-                     "(disjoint builds need byte-sig porting)".format(
-                         role, value, args.game, sorted(game["shared"])))
+        if value not in game["attr"]:
+            ap.error("{} build {!r} is unknown for {} (known: {})".format(
+                role, value, args.game, sorted(game["attr"])))
     if args.source == args.target:
         ap.error("source and target are the same build")
+    if not shared_namespace(args.game, args.source, args.target):
+        ap.error("{} and {} do not share an address-library ID namespace "
+                 "(shared groups: {}); an ID means nothing across them, so "
+                 "use byte-signature porting".format(
+                     args.source, args.target,
+                     [sorted(group) for group in game["groups"]]))
     if not (bool(args.from_program) ^ bool(args.from_pdb)):
         ap.error("pass exactly one of --from-program / --from-pdb")
 
     lib = _load_library(args.game)
     src_db = getattr(lib, game["attr"][args.source])
     tgt_db = getattr(lib, game["attr"][args.target])
-    src_rva_to_id = _rva_to_id(src_db)
 
     if args.from_pdb:
         pairs = _source_pairs_from_pdb(args.from_pdb)
@@ -193,18 +289,11 @@ def main():
             args.project_dir, args.project_name, args.from_program)
     print("source names: %d" % len(pairs))
 
-    rows = []
-    seen = set()
-    for rva, name in pairs:
-        ident = src_rva_to_id.get(rva)
-        if ident is None:
-            continue
-        tgt_rva = tgt_db.get(ident)
-        if tgt_rva is None or tgt_rva in seen:
-            continue
-        seen.add(tgt_rva)
-        rows.append((name, "", "", "%X" % tgt_rva, str(ident)))
+    rows, dropped = plan_rows(pairs, src_db, tgt_db)
     print("mapped to %s RVAs via shared id: %d" % (args.target, len(rows)))
+    if dropped:
+        print("  dropped: " + ", ".join(
+            "{}={}".format(k, v) for k, v in sorted(dropped.items())))
 
     out = Path(args.out) if args.out else (
         REPO / "build" / "idres" / "port_by_id" /
@@ -239,7 +328,8 @@ def main():
     if args.apply:
         apply_cmd.append("--apply")
     if args.create_missing:
-        apply_cmd.append("--create-missing")
+        # the applier checks .pdata starts of this exact (bound) executable
+        apply_cmd += ["--create-missing", "--target-pe", args.target_exe]
     if args.overwrite:
         apply_cmd.append("--overwrite")
     print("+ " + " ".join(apply_cmd))

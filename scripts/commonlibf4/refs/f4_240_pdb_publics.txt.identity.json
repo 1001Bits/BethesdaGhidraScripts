@@ -34,7 +34,7 @@
     "canonical_filename": "Fallout4_1_11_240_for_debug.pdb",
     "kind": "community-generated public-symbol-only PDB",
     "license": "unknown",
-    "origin": "local-file:C:\\Users\\Noud\\Downloads\\Fallout4_1_11_240_for_debug.pdb",
+    "origin": "local-file:Fallout4_1_11_240_for_debug.pdb",
     "original_filename": "Fallout4_1_11_240_for_debug.pdb",
     "redistribution": "raw PDB not bundled; obtain author permission/license before redistribution",
     "retrieved_utc": "2026-08-20T10:00:27Z",
@@ -53,6 +53,18 @@
       "image_size": 69574656,
       "machine": 34404,
       "sha256": "fdcef37ac1230af6d0b0050eb2142b139ef3a867b37b9211fb6edfcc646072f8"
+    },
+    {
+      "file": "Fallout4.exe.unpacked.exe",
+      "file_version": [
+        1,
+        11,
+        240,
+        0
+      ],
+      "image_size": 69574656,
+      "machine": 34404,
+      "sha256": "44bad7d287d5ec95d2b0bef11db4e51aaea087d64e24248e29ca0f013ad4aaca"
     }
   ]
 }

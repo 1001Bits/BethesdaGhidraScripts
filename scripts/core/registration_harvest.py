@@ -4,11 +4,12 @@ The pass looks for a repeated direct registration call receiving exactly one
 identifier-like string and one executable function pointer.  It never scans
 raw instruction bytes.  Candidates are aggregated by registration callee and
 must be one-to-one before they can be applied.  Evidence is always written to
-CSV; mutation is dry-run unless ``BGS_ENRICH_APPLY=go``.
+CSV -- atomically, and only by a healthy run: a decompiler that does not
+start, or fails (almost) every function, raises before the previous CSV is
+touched; mutation is dry-run unless ``BGS_ENRICH_APPLY=go``.
 """
 
 import collections
-import csv
 import os
 import re
 import sys
@@ -19,6 +20,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from evidence_identity import bind_evidence, program_sha256  # noqa: E402
+from review_queue import (open_decompiler, program_tag,  # noqa: E402
+                          require_decompile_health, write_csv_atomically)
 
 
 APPLY = os.environ.get("BGS_ENRICH_APPLY", "dry").lower() == "go"
@@ -133,6 +136,14 @@ def _resolve_address(vn, address_space, memory, image_start=0,
         return _resolve_address(
             definition.getInput(0), address_space, memory,
             image_start, image_end, depth + 1)
+    if (opcode == PcodeOp.PTRSUB and definition.getNumInputs() >= 2 and
+            definition.getInput(0).isConstant() and
+            int(definition.getInput(0).getOffset()) == 0):
+        # ``&global`` / string literal / function address: PTRSUB(const 0, VA).
+        # Input 0 is the RAM space base, never an image address.
+        return _resolve_address(
+            definition.getInput(1), address_space, memory,
+            image_start, image_end, depth + 1)
     if opcode in (PcodeOp.PTRSUB, PcodeOp.INT_ADD):
         base = _resolve_address(
             definition.getInput(0), address_space, memory,
@@ -214,9 +225,10 @@ def run():
     # A detached/legacy Program with no executable SHA-256 is not a safe
     # source of persistent improvement evidence.
     target_sha = _target_sha(program)
-    from binary_identity import inspect_pe, verify_ghidra_program
-    backing_manifest = inspect_pe(str(program.getExecutablePath()))
-    verify_ghidra_program(program, [backing_manifest])
+    from target_pe import driver_target_manifest
+    # BGS_TARGET_PE (launcher-verified) or the recorded import path; either
+    # way the file is identity-verified against the Program here.
+    backing_manifest = driver_target_manifest(program)
     memory = program.getMemory()
     fm = program.getFunctionManager()
     listing = program.getListing()
@@ -225,9 +237,10 @@ def run():
     image_end = image_start + int(backing_manifest["image_size"])
     observations = []
     decompiler = DecompInterface()
-    decompiler.openProgram(program)
-    scanned = 0
+    scanned = attempted = failed = 0
+    failures = []
     try:
+        open_decompiler(decompiler, program, "registry-harvest")
         for function in fm.getFunctions(True):
             if MAX_FUNCS and scanned >= MAX_FUNCS:
                 break
@@ -237,8 +250,14 @@ def run():
                         function.getEntryPoint(), address_space, memory,
                         image_start, image_end):
                     continue
+                attempted += 1
                 result = decompiler.decompileFunction(function, 30, monitor)  # noqa: F821
                 if not result or not result.decompileCompleted():
+                    failed += 1
+                    if len(failures) < 5:
+                        failures.append("%s: %s" % (
+                            function.getName(),
+                            result.getErrorMessage() if result else "no result"))
                     continue
                 for op in result.getHighFunction().getPcodeOps():
                     if op.getOpcode() != PcodeOp.CALL or op.getNumInputs() < 3:
@@ -288,33 +307,33 @@ def run():
                         "string": string_addr.getOffset(),
                         "handler": handler.getEntryPoint().getOffset(),
                     })
-            except Exception:
+            except Exception as exc:  # noqa: BLE001  (one bad function, not the pass)
+                failed += 1
+                if len(failures) < 5:
+                    failures.append("%s: %s" % (function.getName(), exc))
                 continue
     finally:
         decompiler.dispose()
+    # Before anything is written or applied: a broken decompiler must not
+    # replace the last good evidence with an empty CSV (nor print the sentinel).
+    require_decompile_health("registry-harvest", attempted, failed, failures)
 
     rows = aggregate_observations(observations, MIN_SITES)
     out_path = os.environ.get("BGS_REGISTRY_CSV") or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "refs",
-        "registrations_%s.csv" % program.getName().replace(".", "_"))
-    directory = os.path.dirname(out_path)
-    if directory and not os.path.isdir(directory):
-        os.makedirs(directory)
-    with open(out_path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["program", "target_sha256", "address_coordinate",
-                         "registry_callee", "callsite", "caller", "name_arg",
-                         "handler_arg", "name", "string_address", "handler",
-                         "confidence", "registry_sites"])
-        for row in rows:
-            writer.writerow([
-                program.getName(), target_sha, "VA", "0x%X" % row["callee"],
-                "0x%X" % row["callsite"], "0x%X" % row["caller"],
-                row["name_arg"], row["handler_arg"], row["name"],
-                "0x%X" % row["string"],
-                "0x%X" % row["handler"], row["confidence"],
-                row["registry_sites"],
-            ])
+        "registrations_%s.csv" % program_tag(program))
+    write_csv_atomically(
+        out_path,
+        ["program", "target_sha256", "address_coordinate",
+         "registry_callee", "callsite", "caller", "name_arg",
+         "handler_arg", "name", "string_address", "handler",
+         "confidence", "registry_sites"],
+        [[program.getName(), target_sha, "VA", "0x%X" % row["callee"],
+          "0x%X" % row["callsite"], "0x%X" % row["caller"],
+          row["name_arg"], row["handler_arg"], row["name"],
+          "0x%X" % row["string"],
+          "0x%X" % row["handler"], row["confidence"],
+          row["registry_sites"]] for row in rows])
     bind_evidence(out_path, program, "registration_evidence", "VA")
 
     applied = 0
@@ -354,7 +373,14 @@ def run():
         "applied" if APPLY else "would-apply-high",
         applied if APPLY else sum(1 for row in rows
                                   if row["confidence"] == "high"), out_path))
+    if failed:
+        print("  %d of %d decompile(s) failed (first: %s)"
+              % (failed, attempted, "; ".join(failures[:3])))
 
 
-if "currentProgram" in globals():
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
     run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line("registration_harvest"))

@@ -157,4 +157,9 @@ def run():
              no_func, ambiguous))
 
 
-run()
+from pyghidra_result import completion_line, script_program  # noqa: E402
+
+if script_program(globals()) is not None:
+    run()
+    # Positive proof of execution; launchers fail closed without it.
+    print(completion_line('console_harvest'))

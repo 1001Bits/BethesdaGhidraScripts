@@ -21,9 +21,13 @@ from typing import List, Tuple
 
 REPO_DIR    = Path(__file__).resolve().parent.parent.parent
 GHIDRA_DIR  = Path(os.environ.get("GHIDRA_INSTALL_DIR") or (REPO_DIR / "tools" / "ghidra"))
+_BGS_CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+if str(_BGS_CORE_DIR) not in sys.path:
+    sys.path.append(str(_BGS_CORE_DIR))
+from ghidra_project import open_program, open_user_project  # noqa: E402
 
 PROJECT_DIR  = "C:/GhidraProjects"
-PROJECT_NAME = "ExampleProject"
+PROJECT_NAME = "Combined"
 PROGRAM_PATH = "/Starfield/Starfield 1.16.236"
 
 IN_CSV       = REPO_DIR / "scripts" / "commonlibsf" / "refs" / "sf116_commonlib_names.csv"
@@ -56,14 +60,14 @@ def main():
     # Build a quick set of all "is a vtable" VAs for end-detection
     vtable_va_set = {v for v, _ in vtable_rows}
 
-    with pyghidra.open_project(PROJECT_DIR, PROJECT_NAME, create=False) as project:
+    with open_user_project(PROJECT_DIR, PROJECT_NAME) as project:
         domain_file = project.getProjectData().getFile(PROGRAM_PATH)
         if domain_file is None:
             print(f"ERROR: program not found: {PROGRAM_PATH}")
             sys.exit(2)
 
         consumer = java.lang.Object()
-        program = domain_file.getDomainObject(consumer, False, False, monitor)
+        program = open_program(domain_file, consumer, monitor, write=False)
         try:
             memory = program.getMemory()
             addr_factory = program.getAddressFactory()

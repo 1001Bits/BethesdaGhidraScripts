@@ -98,8 +98,9 @@ def parse_unwind_info(data: bytes, offset: int = 0) -> Dict[str, Any]:
             raise ValueError("unsupported unwind opcode {}".format(op))
         if op == 1 and op_info not in (0, 1):
             raise ValueError("invalid ALLOC_LARGE op-info {}".format(op_info))
-        if op == 3 and op_info != 0:
-            raise ValueError("SET_FPREG has nonzero op-info")
+        # UWOP_SET_FPREG: OpInfo is reserved, not required-zero; real linkers
+        # emit non-zero values (1 start in F4 1.11.240, 20 in Skyrim 1.6.640).
+        # binary_identity accepts them, and the extractors must agree.
         if op in (6, 7) and version != 2:
             raise ValueError("version 1 cannot contain opcode {}".format(op))
         if op == 10 and op_info not in (0, 1):
@@ -164,7 +165,8 @@ def parse_unwind_info(data: bytes, offset: int = 0) -> Dict[str, Any]:
     return result
 
 
-def validated_runtime_function_starts(path: str) -> set[int]:
+def validated_runtime_function_starts(path: str,
+                                      include_chained: bool = False) -> set[int]:
     """Return structurally valid AMD64 ``.pdata`` begin RVAs quickly.
 
     This boundary-only path deliberately avoids decoding ~200k unwind programs
@@ -172,6 +174,11 @@ def validated_runtime_function_starts(path: str) -> set[int]:
     PE, requires an entirely file-backed exception directory, validates sorted
     non-overlapping executable ranges, and checks that each unwind RVA points
     into physically backed non-executable data.
+
+    Records whose UNWIND_INFO carries ``UNW_FLAG_CHAININFO`` describe a
+    *fragment* of another function (their BeginAddress is mid-function), so
+    they are not function starts and are omitted unless *include_chained* is
+    set by a caller that wants every runtime-function range boundary.
     """
     manifest = inspect_pe(path)
     if int(manifest["machine"]) != 0x8664:
@@ -203,10 +210,22 @@ def validated_runtime_function_starts(path: str) -> set[int]:
                  not unwind_section["executable"])
         if not valid:
             raise ValueError("malformed AMD64 runtime-function table")
-        rva_to_offset(manifest, unwind_rva, 4)
-        starts.add(begin)
+        unwind_offset = rva_to_offset(manifest, unwind_rva, 4)
         last_begin, last_end = begin, end
+        if (not include_chained and
+                (blob[unwind_offset] >> 3) & UNW_FLAG_CHAININFO):
+            continue
+        starts.add(begin)
     return starts
+
+
+def is_function_start(row: Dict[str, Any]) -> bool:
+    """True when an ``extract_runtime_functions`` row is a real entry point.
+
+    Chained rows stay in ``runtime_functions`` (their ranges and parent links
+    are evidence in their own right) but must not be used as function starts.
+    """
+    return not (row.get("unwind") or {}).get("chained")
 
 
 def extract_runtime_functions(path: str) -> Dict[str, Any]:
