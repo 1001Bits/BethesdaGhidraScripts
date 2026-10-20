@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-# Method names that look plausible but do not exist on the Ghidra 12.0.4 class
+# Method names that look plausible but do not exist on the Ghidra 12.1.2 class
 # they are called on.  PyGhidra only fails at call time, so a driver that is
 # rarely executed can carry one for months.  name -> the real spelling.
 WRONG_GHIDRA_METHODS = {

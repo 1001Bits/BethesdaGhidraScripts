@@ -4,7 +4,7 @@
 # metadata pin over the tested CPython 3.14 bridge below.  run.py does this
 # automatically.  --only-binary=:all: prevents slow, machine-dependent native
 # builds from looking like a frozen setup.
-pyghidra==3.0.2
+pyghidra==3.1.0
 JPype1==1.5.2; python_version < '3.14'
 JPype1==1.7.1; python_version >= '3.14' and python_version < '3.15'
 packaging==25.0
