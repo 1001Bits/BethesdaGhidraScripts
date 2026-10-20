@@ -10,10 +10,10 @@
     "version": "0.3"
   },
   "ghidra": {
-    "asset": "ghidra_12.0.4_PUBLIC_20260303.zip",
-    "release_tag": "Ghidra_12.0.4_build",
-    "sha256": "c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120",
-    "version": "12.0.4"
+    "asset": "ghidra_12.1.2_PUBLIC_20260605.zip",
+    "release_tag": "Ghidra_12.1.2_build",
+    "sha256": "b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d",
+    "version": "12.1.2"
   },
   "llvm": {
     "release_tag": "llvmorg-20.1.8",

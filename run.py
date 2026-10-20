@@ -51,14 +51,14 @@ GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
 STATE_FILE          = REPO_DIR / ".last_run_state"
 TOOLCHAIN_LOCK_FILE = REPO_DIR / "toolchain.lock.json"
 
-PINNED_GHIDRA_VERSION = "12.0.4"
+PINNED_GHIDRA_VERSION = "12.1.2"
 PINNED_STEAMLESS_VERSION = "3.1.0.5"
 PINNED_LLVM_VERSION = "20.1.8"
 PINNED_FAKEPDB_VERSION = "0.3"
 
 GHIDRA_RELEASES_URL = (
     "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/"
-    "Ghidra_12.0.4_build")
+    "Ghidra_12.1.2_build")
 STEAMLESS_RELEASES_URL = (
     "https://api.github.com/repos/atom0s/Steamless/releases/tags/v3.1.0.5")
 LLVM_RELEASES_URL = (
@@ -67,8 +67,8 @@ FAKEPDB_RELEASES_URL = (
     "https://api.github.com/repos/Mixaill/FakePDB/releases/tags/v0.3")
 
 LOCKED_ASSET_DIGESTS = {
-    "ghidra_12.0.4_PUBLIC_20260303.zip":
-        "sha256:c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120",
+    "ghidra_12.1.2_PUBLIC_20260605.zip":
+        "sha256:b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d",
     "Steamless.v3.1.0.5.-.by.atom0s.zip":
         "sha256:e3e2d22e098ff3fb359b2876aa2bed9596f0501e6ff588cbffae90a76d2dc4f5",
     "clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz":
@@ -115,7 +115,7 @@ def _require_supported_python():
 
 
 def _jpype_requirement(version_info=None):
-    # PyGhidra 3.0.2 pins JPype 1.5.2, whose published wheels stop at
+    # PyGhidra 3.1.0 pins JPype 1.5.2, whose published wheels stop at
     # CPython 3.13.  JPype 1.7.1 fixes the 1.6.0 Windows import race and is
     # the tested compatibility bridge for CPython 3.14.
     if _python_minor(version_info) >= (3, 14):
@@ -124,7 +124,7 @@ def _jpype_requirement(version_info=None):
 
 
 PYTHON_LOCK_REQUIREMENTS = frozenset({
-    "pyghidra==3.0.2",
+    "pyghidra==3.1.0",
     "JPype1==1.5.2; python_version < '3.14'",
     "JPype1==1.7.1; python_version >= '3.14' and python_version < '3.15'",
     "packaging==25.0",
@@ -133,7 +133,7 @@ PYTHON_LOCK_REQUIREMENTS = frozenset({
 })
 
 REQUIRED_PACKAGES = {
-    "pyghidra": "pyghidra==3.0.2",
+    "pyghidra": "pyghidra==3.1.0",
     "jpype": _jpype_requirement(),
     "packaging": "packaging==25.0",
     # capstone + numpy are only consumed by scripts/commonlibf4/run_bytesig_port.py
@@ -555,7 +555,7 @@ def _ensure_python_packages(*, announce=False):
     if missing:
         print(f"  Installing: {', '.join(missing)} ...")
         # Every direct and transitive runtime dependency is listed explicitly
-        # in requirements.lock.txt.  --no-deps is intentional: PyGhidra 3.0.2
+        # in requirements.lock.txt.  --no-deps is intentional: PyGhidra 3.1.0
         # hard-pins JPype 1.5.2, but CPython 3.14 requires our tested JPype
         # 1.7.1 bridge because 1.5.2 has no cp314 wheel.
         command = [
@@ -631,7 +631,7 @@ def setup_ghidra():
         release = json.loads(resp.read())
 
     asset = next((a for a in release.get("assets", [])
-                  if a["name"] == "ghidra_12.0.4_PUBLIC_20260303.zip"), None)
+                  if a["name"] == "ghidra_12.1.2_PUBLIC_20260605.zip"), None)
     if not asset:
         print("  ERROR: no Ghidra zip found in pinned release")
         sys.exit(1)

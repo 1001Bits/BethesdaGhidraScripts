@@ -49,7 +49,7 @@ This opens an interactive menu:
 ============================================================
 
   Tools:
-    Ghidra      : 12.0.4
+    Ghidra      : 12.1.2
     Clang       : clang version 20.1.8
     Steamless   : OK
     Python pkgs : OK
@@ -83,7 +83,7 @@ The status panel at the top shows what's installed and detected. Menu options:
 
 | Option | What it does |
 |--------|-------------|
-| **1** | Installs the locked Python packages and exact Ghidra 12.0.4, LLVM 20.1.8, Steamless 3.1.0.5, and FakePDB 0.3 assets. Downloads and installed native binaries are SHA-256/receipt verified. PDB identity/public extraction uses the repository's strict MSF reader and LLVM tooling; the obsolete `pdbparse` dependency is not installed. |
+| **1** | Installs the locked Python packages and exact Ghidra 12.1.2, LLVM 20.1.8, Steamless 3.1.0.5, and FakePDB 0.3 assets. Downloads and installed native binaries are SHA-256/receipt verified. PDB identity/public extraction uses the repository's strict MSF reader and LLVM tooling; the obsolete `pdbparse` dependency is not installed. |
 | **2** | Runs `git submodule update --init --recursive` and restores the reviewed commits recorded by this repository. It does not silently move the evidence base to an unreviewed upstream revision. |
 | **3** | Per-version submenu: pick one detected version (e.g. just Skyrim VR, or just Fallout 4 OG) and run a subset of the pipeline against it -- generate only that version's script, import only its binary, etc. Useful when you don't want to rerun every game. |
 | **4** | Parses every supported CommonLib's headers with clang and generates the Ghidra import scripts under `ghidrascripts/` for **all** detected versions. Requires clang (option 1 installs it). |
@@ -135,6 +135,11 @@ neighbouring build's offsets.
 
 - **CPython 3.11 through 3.14** (64-bit)
 - **Git**
+- **Visual Studio 2022 Build Tools** with the *Desktop development with C++*
+  workload (MSVC + Windows SDK). Clang parses the CommonLib headers against
+  the MSVC standard library and Windows SDK headers; without them generation
+  fails with `fatal error: 'algorithm' file not found`. From an elevated shell:
+  `winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`
 
 Clang, Ghidra, Steamless, and Python packages are all fetched automatically on
 first run. Reproducible versions and asset digests live in
@@ -144,7 +149,7 @@ supported CPython instead of blindly using the newest Python on the machine.
 It verifies and, when necessary, installs the locked runtime into that selected
 interpreter before displaying the menu, so a newly selected Python cannot reach
 an improvement action without PyGhidra being present.
-For CPython 3.14 it installs PyGhidra 3.0.2 without dependency re-resolution and
+For CPython 3.14 it installs PyGhidra 3.1.0 without dependency re-resolution and
 uses the tested JPype 1.7.1 bridge; PyGhidra's older JPype 1.5.2 pin has no
 CPython 3.14 wheel. Consequently, `pip check` on 3.14 reports PyGhidra's stale
 JPype metadata pin even though the locked bridge is intentional and tested.
@@ -161,7 +166,7 @@ is intentionally excluded on every Python version. This does not disable the
 maintained PDB path: exact GUID/age validation and public-symbol extraction use
 the built-in MSF 7 reader, with LLVM/DIA used where richer records are needed.
 Here, “3.11 through 3.14” refers to the **CPython** version; the automatically
-installed Ghidra version is separately locked to 12.0.4.
+installed Ghidra version is separately locked to 12.1.2.
 
 For a manual dependency install, preserve the lock's no-resolution rule:
 
