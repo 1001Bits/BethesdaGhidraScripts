@@ -135,6 +135,11 @@ neighbouring build's offsets.
 
 - **CPython 3.11 through 3.14** (64-bit)
 - **Git**
+- **Visual Studio 2022 Build Tools** with the *Desktop development with C++*
+  workload (MSVC + Windows SDK). Clang parses the CommonLib headers against
+  the MSVC standard library and Windows SDK headers; without them generation
+  fails with `fatal error: 'algorithm' file not found`. From an elevated shell:
+  `winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`
 
 Clang, Ghidra, Steamless, and Python packages are all fetched automatically on
 first run. Reproducible versions and asset digests live in
